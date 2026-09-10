@@ -32,6 +32,15 @@ body:
     validations:
       required: true
 
+  - type: input
+    id: version
+    attributes:
+      label: Neural Lens version
+      description: Shown at the top of the menu, and printed when the lens starts.
+      placeholder: 0.1.0
+    validations:
+      required: true
+
   - type: dropdown
     id: passes
     attributes:
@@ -90,8 +99,11 @@ body:
       description: |
         Every launch archives the previous session's logs to
         `%LOCALAPPDATA%\NeuralLens\logs`. So launch once more after the problem, then attach
-        the newest archived `ReShade.log`. The useful lines mention `feature=18 (DLSSNR`
-        and `evaluation succeeded (count=`.
+        the newest archived `ReShade.log`. The line that confirms Neural Rendering was
+        running is `feature=18 (DLSSNR`.
+
+        If you were using more than one pass, attach the archived `ReShade.log1` as well.
+        ReShade writes one log per stage, so a multi-pass run produces several.
       render: shell
 
   - type: checkboxes

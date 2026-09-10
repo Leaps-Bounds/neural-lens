@@ -1,9 +1,9 @@
 """
-DLSS 5 Neural Lens v3 - a floating see-through window that neural-renders
+DLSS 5 Neural Lens v3: a floating see-through window that neural-renders
 whatever is behind it. Drag it by the title bar. The viewport is click-through,
 so the mouse reaches the desktop underneath, like the Windows Magnifier lens.
 
-How it works - every piece below was measured before it was built:
+How it works. Every piece below was measured before it was built:
 
   1. A Windows Magnification API host window sits UNDER the lens, on the exact
      same rect, with our own windows (host, chrome, mpv) on its EXCLUDE filter
@@ -14,7 +14,7 @@ How it works - every piece below was measured before it was built:
      reads a window's own DWM buffer, so it does not matter that the lens sits
      on top of it. Verified: host fully covered by an opaque window, WGC still
      returns the source content at ~52 fps, while Desktop Duplication of the
-     same rect returns the occluder. (ddagrab could never work here - Desktop
+     same rect returns the occluder. (ddagrab could never work here; Desktop
      Duplication cannot see under an occluding window, excluded or not.)
 
   3. Frames go straight into mpv's stdin as raw BGRA. No ffmpeg, no encode, no
@@ -298,7 +298,7 @@ class Lens:
         self.tweak = not self.tweak
         if self.tweak:
             self.set_interactive(True)
-            self.info.config(text="TWEAK MODE  -  Home hides/shows the ReShade menu", fg="#fbbf24")
+            self.info.config(text="TWEAK MODE: Home hides/shows the ReShade menu", fg="#fbbf24")
             self.root.after(150, self.focus_mpv)
             self.root.after(320, lambda: self.press(0x24))
         else:

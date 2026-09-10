@@ -62,17 +62,17 @@ restarts, so it stays smooth.
 
 ## Dead ends, with the measurement that killed each
 
-- **Desktop Duplication (`ddagrab`) under the lens** - it cannot see beneath an occluding
+- **Desktop Duplication (`ddagrab`) under the lens**: it cannot see beneath an occluding
   window, excluded-from-capture or not, even with a magnifier repainting underneath.
   Region under the lens: YAVG 18 (black is 16) vs 46 elsewhere. Only transient dirty rects land
   in it, which produced mouse trails and window-drag smears.
-- **`gdigrab`/BitBlt of the magnifier window** - blank even unoccluded; the magnifier
+- **`gdigrab`/BitBlt of the magnifier window**: blank even unoccluded; the magnifier
   composites via DWM and BitBlt only sees the empty GDI surface.
-- **`MagSetImageScalingCallback`** - deprecated, accepted, deadlocks on the next call from
+- **`MagSetImageScalingCallback`**: deprecated, accepted, deadlocks on the next call from
   ctypes. Replaced entirely by WGC on the host window.
-- **UDP transport** - resyncs badly after a restart (353 buffering events, frames every few
+- **UDP transport**: resyncs badly after a restart (353 buffering events, frames every few
   seconds). Moot now that nothing restarts; TCP and a pipe both measured 60 fps.
-- **`--untimed`** - the original "runaway neural blob". Presents outnumbered frame arrivals.
+- **`--untimed`**: the original "runaway neural blob". Presents outnumbered frame arrivals.
 
 ## Gotchas
 

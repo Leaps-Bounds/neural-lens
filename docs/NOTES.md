@@ -144,33 +144,74 @@ Several wrong conclusions during development came from bad measurement rather th
 
 ## Where the frame rate actually goes
 
-Nothing here is GPU bound; the GPU sits near 30 percent at any pass count. The rate is set by
-two things in the lens itself, and finding them took several wrong turns worth recording.
+Nothing here is GPU bound; the GPU sits near 30 percent at any pass count.
+
+**The single biggest factor was a library default.** `windows_capture`'s
+`WindowsCapture(...)` takes a `minimum_update_interval` parameter, and its default throttles
+frame delivery to roughly 60 per second. Setting it to `0` more than doubles delivery on an
+identical source:
 
 ```
-WGC on an ordinary animating window                    59.0 fps
-magnifier host, paced at 120 Hz, 1400x1000             59.0 fps
-magnifier host, paced at 120 Hz, 350x250               59.0 fps   (size is irrelevant)
-lens driven by tkinter after(16)                       47.1 fps
-lens, paced pump thread, write still inline            50.5 fps
-lens, paced pump thread, capture only (no pipe write)  58.7 fps
-lens, paced pump thread + writer thread                58.4 fps
+window capture, defaults                    59.4 fps
+window capture, minimum_update_interval=0  124.6 fps
+window capture, dirty_region True / False   59.0 / 58.6   (irrelevant)
 ```
+
+End to end in the lens at 1400x1000, before and after removing the throttle:
+
+```
+            before   after     GPU after
+1 pass        58.4   111.4        32%
+2 passes      49.8    84.7        57%
+3 passes      44.3    89.9        80%
+```
+
+The fps counter increments in stage 1's capture callback, so at multi-pass it reports
+capture rate rather than what the final stage presents, which is why three passes can
+appear faster than two. Treat the multi-pass figures as input side only.
+
+Two other things mattered, both in how the lens drives itself:
 
 1. **tkinter's `after()` is too coarse to pace repaints.** An `after(16)` tick lands nearer
-   20 ms, which capped the lens around 50. A thread pacing `InvalidateRect` at 120 Hz fixes it.
-   `InvalidateRect` from another thread only posts `WM_PAINT`; tkinter's mainloop dispatches it,
-   since the host window belongs to that thread.
-2. **The 5.6 MB `stdin.write` into mpv blocks the WGC delivery thread.** Removing the write
-   entirely measured 58.7 against 50.5 with it. A writer thread with a one slot handoff absorbs
-   the stall. The slot is overwritten rather than queued, because for a live view only the
-   newest frame matters.
+   20 ms, which capped the lens at 47 to 52 fps. A thread pacing `InvalidateRect` fixes it.
+   Calling `InvalidateRect` from another thread only posts `WM_PAINT`; tkinter's mainloop
+   dispatches it, because the host window belongs to that thread.
+2. **The multi-megabyte `stdin.write` into mpv blocks the WGC delivery thread.** Removing the
+   write entirely measured 58.7 fps against 50.5 with it inline. A writer thread with a one
+   slot handoff absorbs the stall. The slot is overwritten rather than queued, because for a
+   live view only the newest frame is worth having.
 
-**The Magnification API is not the bottleneck.** An earlier measurement of 51.6 fps for it was
-an artifact: that harness paced its own pump loop with `time.sleep(0.02)`, which is 50 Hz. It
-measured my sleep interval, not the magnifier.
+### Four wrong explanations for the same number, and why
 
-Things that measured as pure noise and are not worth redoing: replacing the double per frame
-copy (2.93 ms to 0.18 ms), removing a redundant `MagSetWindowSource` from every tick, and
-raising the Windows timer resolution with `timeBeginPeriod(1)`. All three are kept because they
-are strictly cheaper, but none of them moved the frame rate.
+The 60 fps ceiling was blamed on the Magnification API, then the compositor, then treated as a
+fixed display cadence, before turning out to be the parameter above. Each wrong answer came
+from explaining a measurement instead of questioning the setup that produced it. What actually
+falsified them:
+
+- **"The magnifier is the limit."** It is not. Paced properly it delivers the same rate as an
+  ordinary window, and the magnified region's size makes no difference at all (1.4 Mpx and
+  0.1 Mpx both measured 59.0). An earlier reading of 51.6 fps for it was an artifact: that
+  harness paced its own pump loop with `time.sleep(0.02)`, which is 50 Hz. It measured the
+  sleep, not the magnifier.
+- **"The compositor is the limit."** It is not. `DwmFlush` returns about 148 times a second on
+  this machine, and the display runs at 120 Hz, so composition was never the constraint.
+- **"The test source is the limit."** Also no. The tkinter source issues about 924 redraws a
+  second.
+
+Invalidating more often does not help either: locking invalidation to composition with
+`DwmFlush` and free running at 240 Hz both produced 59, because the throttle was downstream of
+invalidation entirely.
+
+Things that measured as pure noise and are not worth redoing: replacing a double per frame copy
+(2.93 ms to 0.18 ms), removing a redundant `MagSetWindowSource` from every tick, and raising
+Windows timer resolution with `timeBeginPeriod(1)`. All three are kept because they are strictly
+cheaper, but none of them moved the frame rate.
+
+### Harness traps that cost several failed benchmarks
+
+- A magnifier host needs a **real Win32 message pump on its owning thread**, or `WM_PAINT` is
+  never processed, the magnifier never redraws, and capture delivers almost nothing. A synthetic
+  rig that just calls `time.sleep()` in the main thread measures zero. Either run a proper
+  `PeekMessage` and `DispatchMessage` loop, or instrument the real lens.
+- Window capture delivers frames when a window is **recomposited**, so a static source with no
+  forced invalidation produces almost no frames. That is not a failure of the capture path.

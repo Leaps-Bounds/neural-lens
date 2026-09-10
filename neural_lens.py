@@ -303,7 +303,10 @@ class Lens:
 
     def start_capture(self, src_hwnd, dst_proc, count=False):
         """WGC on src_hwnd, frames written to dst_proc's stdin."""
-        cap = WindowsCapture(cursor_capture=False, draw_border=False, window_hwnd=src_hwnd)
+        # minimum_update_interval defaults to a value that throttles delivery to about
+        # 60 fps. Setting it to 0 more than doubles it: 59.4 -> 124.6 on the same source.
+        cap = WindowsCapture(cursor_capture=False, draw_border=False,
+                             minimum_update_interval=0, window_hwnd=src_hwnd)
         lens = self
         # WGC hands back a row padded, non contiguous view. Copying it with
         # ascontiguousarray().tobytes() costs two full copies, measured at 2.93 ms

@@ -47,6 +47,18 @@ restarts, so it stays smooth.
 | `deploy.cmd` | copies the files to `C:\Games`, where the launchers expect them |
 | `legacy/` | earlier lens designs kept for reference; they do not work (see below) |
 
+## Troubleshooting
+
+NR occasionally fails to engage: the window opens and drags normally but the image is a
+passthrough. Toggling NR with the dropdown's **Toggle NR on/off (F6)** is the quickest check;
+with NR live the picture changes obviously (measured at 12.7/255 mean absolute difference on
+plain text). Relaunching has cleared it so far.
+
+Each launch copies the previous session's `ReShade.log` and `dlss5-feed.log` into
+`C:\Games\_lens-logs` (40 files kept), so the evidence from a failed run survives the next
+launch. Check the archived `ReShade.log` for `feature=18 (DLSSNR` and
+`evaluation succeeded (count=`.
+
 ## Limits
 
 - **Size is fixed per run.** Resizing recreates mpv's swapchain, which makes the NR add-on

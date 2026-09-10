@@ -1,0 +1,15 @@
+# Copy this file to neural-lens.ini and edit.
+# Every setting is optional. Command line and environment variables win over
+# this file.
+
+# The mpv install carrying the DLSS 5 Neural Rendering stack, meaning ReShade
+# as the Vulkan layer plus dlss5-feed.addon64, renodx-dlss5.addon64,
+# nvngx_dlss.dll and NVIDIA's nvngx_dlssnr.dll.
+#
+# If this is not set, the lens looks for an "mpv" folder beside the script,
+# then C:\Games\_mpv.
+mpv_dir = C:\Games\_mpv
+
+# Where the lens keeps its window position and its archived logs.
+# Defaults to %LOCALAPPDATA%\NeuralLens
+# data_dir = D:\NeuralLens

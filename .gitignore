@@ -1,7 +1,9 @@
-# per-machine state written by the apps
-_screennr-*-state.txt*
+# local configuration, per machine
+neural-lens.ini
+
 __pycache__/
 *.pyc
+
 # never commit the neural stack itself (NVIDIA DLL, ReShade, add-ons)
 *.dll
 *.addon64

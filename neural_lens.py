@@ -31,14 +31,20 @@ How it works. Every piece below was measured before it was built:
      magnifier renders it back into stage 1's input, which is a feedback loop
      that collapses the picture into a dark blob within seconds.
 
-  5. Moving the lens just moves the windows and re-aims the magnifier, and
-     adding or removing a pass only spawns or kills a stage. Neither of those
-     restarts anything. RESIZING is the one thing that cannot be done live: it
-     recreates mpv's swapchain, which forces the NR add-on to release the DLSS
-     feature and crash with 0xC0000005. So the menu's resize saves the new
-     geometry and relaunches the process at that size instead. That handover
-     must not use os.execv: on Windows it does not quote arguments containing
-     spaces, and this project's own path has one in "DLSS 5".
+  5. Moving the lens just moves the windows and re-aims the magnifier, and never
+     restarts anything. Changing the pass count DOES respawn every stage, because
+     the frame rate declared to mpv depends on how many stages there are and is
+     fixed when the process spawns. Declaring a higher rate than the chain can
+     deliver makes mpv present without a new frame, and NR then re-runs over its
+     own output until the picture collapses to black and recovers, over and over.
+     See _fps_for for the measurements.
+
+  6. RESIZING is the one thing that cannot be done live: it recreates mpv's
+     swapchain, which forces the NR add-on to release the DLSS feature and crash
+     with 0xC0000005. So the menu's resize saves the new geometry and relaunches
+     the process at that size instead. That handover must not use os.execv: on
+     Windows it does not quote arguments containing spaces, and this project's
+     own path has one in "DLSS 5".
 
 Configuration: see neural-lens.ini.example. State and logs live in
 %LOCALAPPDATA%/NeuralLens by default.
@@ -166,8 +172,32 @@ def _rate(key, default):
 
 
 DISPLAY_HZ = _display_hz()
-FPS = _rate("fps", DISPLAY_HZ)          # declared to mpv, so it presents at this rate
+BASE_FPS = _rate("fps", DISPLAY_HZ)     # ceiling, before dividing by stage count
 PUMP_HZ = _rate("pump_hz", DISPLAY_HZ)  # magnifier repaint pacing
+
+
+def _fps_for(stages):
+    """The rate declared to mpv, which must never exceed what the chain delivers.
+
+    Every pass is another full capture and present stage, so throughput divides
+    roughly by the number of stages. Declaring more than actually arrives makes
+    mpv present without a new frame to draw, and Neural Rendering then re-runs
+    over its own previous output until the picture crushes toward black, until
+    something forces a fresh frame and it recovers. It looks like the image
+    blobbing and resetting every few seconds.
+
+    Measured on a 120 Hz display, as samples out of 14 that collapsed:
+
+        120 fps   1 stage 0/14    2 stages 8/14    3 stages 4/14
+         90 fps                   2 stages 0/14
+         60 fps                   2 stages 0/14    3 stages 0/14   4 stages 4/14
+         30 fps                   2 stages 0/14
+
+    Dividing by the stage count gives 120, 60, 40, 30, each at or below every
+    clean measurement. It is deliberately conservative at three stages, where 60
+    is known to work, because a cliff is worse than a few lost frames.
+    """
+    return max(24, BASE_FPS // max(1, stages))
 
 u = ctypes.windll.user32
 mag = ctypes.windll.magnification
@@ -237,16 +267,24 @@ def _save_ini(key, value):
 
 def archive_logs():
     """Keep the PREVIOUS session's logs before mpv overwrites them. Without this,
-    launching again destroys the only evidence of a failure."""
+    launching again destroys the only evidence of a failure.
+
+    ReShade rotates to ReShade.log1, ReShade.log2 and so on when the first file is
+    already locked, which is exactly what happens with more than one stage. So a
+    multi-pass run leaves one log per stage, and copying only ReShade.log threw
+    every stage but one away.
+    """
     try:
         os.makedirs(LOGDIR, exist_ok=True)
         stamp = time.strftime("%Y%m%d-%H%M%S")
-        for name in ("ReShade.log", "dlss5-feed.log"):
+        names = [n for n in os.listdir(MPV_DIR)
+                 if n.startswith("ReShade.log") or n == "dlss5-feed.log"]
+        for name in sorted(names):
             src = os.path.join(MPV_DIR, name)
-            if os.path.exists(src) and os.path.getsize(src) > 0:
+            if os.path.isfile(src) and os.path.getsize(src) > 0:
                 shutil.copy2(src, os.path.join(LOGDIR, "%s-%s" % (stamp, name)))
         files = sorted(os.listdir(LOGDIR))
-        while len(files) > 40:
+        while len(files) > 80:
             os.remove(os.path.join(LOGDIR, files.pop(0)))
     except Exception:
         pass
@@ -358,16 +396,15 @@ class Lens:
         if not self.hmag:
             raise SystemExit("magnifier control failed")
 
-        # ---- stage 1: the magnifier host feeds the first mpv
-        proc, hwnd = self.spawn_mpv(TITLE, x, y)
-        ctl = self.start_capture(self.host, proc, count=True)
-        self.stages.append({"title": TITLE, "proc": proc, "hwnd": hwnd, "ctl": ctl})
-        self.refresh_filter()
+        # ---- stage 1: the magnifier host feeds the first mpv. The rate declared
+        # to mpv depends on how many stages there will be, so it is settled first.
+        self.fps = _fps_for(passes)
+        self._build_first(x, y)
         self.raise_chrome()
         self.aim()
 
         for _ in range(max(0, passes - 1)):
-            self.add_pass(save=False)
+            self._append_stage()
         self.update_info()
 
         self.start_pump()
@@ -380,7 +417,7 @@ class Lens:
         cmd = [MPV, "-",
                "--demuxer=rawvideo", "--demuxer-rawvideo-w=%d" % self.cw,
                "--demuxer-rawvideo-h=%d" % self.ch, "--demuxer-rawvideo-mp-format=bgra",
-               "--demuxer-rawvideo-fps=%d" % FPS,
+               "--demuxer-rawvideo-fps=%d" % self.fps,
                "--geometry=%dx%d+%d+%d" % (self.cw, self.ch, x, y),
                "--hidpi-window-scale=no", "--no-border", "--no-osc",
                "--no-window-dragging", "--ontop", "--force-window=immediate",
@@ -407,8 +444,16 @@ class Lens:
         u.SetWindowPos(hwnd, HWND_TOPMOST, x, y, self.cw, self.ch, SWP_NOACTIVATE)
         return proc, hwnd
 
-    def start_capture(self, src_hwnd, dst_proc, count=False):
-        """WGC on src_hwnd, frames written to dst_proc's stdin."""
+    def start_capture(self, src_hwnd, dst_proc, count=False, alive=None):
+        """WGC on src_hwnd, frames written to dst_proc's stdin.
+
+        alive is a one key dict the owning stage can clear. Without it the writer
+        thread only ever exits on lens.closing or a failed write, so rebuilding
+        the chain would strand one thread per stage waiting on a condition that
+        nothing will ever signal again.
+        """
+        if alive is None:
+            alive = {"ok": True}
         # minimum_update_interval defaults to a value that throttles delivery to about
         # 60 fps. Setting it to 0 more than doubles it: 59.4 -> 124.6 on the same source.
         cap = WindowsCapture(cursor_capture=False, draw_border=False,
@@ -431,9 +476,9 @@ class Lens:
         cv = threading.Condition()
 
         def writer():
-            while not lens.closing:
+            while alive["ok"] and not lens.closing:
                 with cv:
-                    while slot["ready"] is None and not lens.closing:
+                    while slot["ready"] is None and alive["ok"] and not lens.closing:
                         cv.wait(0.2)
                     idx = slot["ready"]
                     slot["ready"] = None
@@ -447,7 +492,7 @@ class Lens:
         threading.Thread(target=writer, daemon=True).start()
 
         def on_frame_arrived(frame: Frame, control: InternalCaptureControl):
-            if lens.closing:
+            if lens.closing or not alive["ok"]:
                 control.stop()
                 return
             try:
@@ -497,28 +542,29 @@ class Lens:
     def visible(self):
         return self.stages[-1]["hwnd"]
 
-    def add_pass(self, save=True):
-        if self.closing or len(self.stages) >= MAX_PASSES:
-            return
+    def _build_first(self, x, y):
+        """Stage 1, fed by the magnifier host rather than by another stage."""
+        alive = {"ok": True}
+        proc, hwnd = self.spawn_mpv(TITLE, x, y)
+        ctl = self.start_capture(self.host, proc, count=True, alive=alive)
+        self.stages.append({"title": TITLE, "proc": proc, "hwnd": hwnd,
+                            "ctl": ctl, "alive": alive})
+        self.refresh_filter()
+
+    def _append_stage(self):
+        """One more mpv on the end, neural rendering the stage before it."""
         x, y = self.inner()
         n = len(self.stages) + 1
         title = "%sp%d" % (TITLE, n)
-        try:
-            proc, hwnd = self.spawn_mpv(title, x, y)
-        except SystemExit:
-            return
-        ctl = self.start_capture(self.stages[-1]["hwnd"], proc)
-        self.stages.append({"title": title, "proc": proc, "hwnd": hwnd, "ctl": ctl})
+        alive = {"ok": True}
+        proc, hwnd = self.spawn_mpv(title, x, y)
+        ctl = self.start_capture(self.stages[-1]["hwnd"], proc, alive=alive)
+        self.stages.append({"title": title, "proc": proc, "hwnd": hwnd,
+                            "ctl": ctl, "alive": alive})
         self.refresh_filter()
-        self.raise_chrome()
-        self.update_info()
-        if save:
-            self.save_state()
 
-    def drop_pass(self, save=True):
-        if self.closing or len(self.stages) <= 1:
-            return
-        s = self.stages.pop()
+    def _kill_stage(self, s):
+        s.get("alive", {})["ok"] = False
         for step in (lambda: s["ctl"].stop(),
                      lambda: s["proc"].stdin.close(),
                      lambda: (s["proc"].terminate(), s["proc"].wait(timeout=3))):
@@ -531,11 +577,57 @@ class Lens:
                 s["proc"].kill()
         except Exception:
             pass
-        self.refresh_filter()
+
+    def set_passes(self, n, save=True):
+        """Rebuild the whole chain at n passes.
+
+        Appending a single stage is not enough. The frame rate declared to mpv
+        depends on how many stages there are and is fixed when the process
+        spawns, so every stage has to be respawned at the new rate. Leaving the
+        earlier ones alone is what made two and three passes collapse.
+        """
+        n = max(1, min(MAX_PASSES, n))
+        if self.closing or n == len(self.stages):
+            return
+        self.info.config(text="rebuilding at %d pass%s ..."
+                              % (n, "" if n == 1 else "es"), fg=WARN)
+        self.root.update_idletasks()
+        # Every stage tweak mode applied to is about to be destroyed, and the
+        # replacements are built click-through, so the flag has to come back down
+        # or the lens believes it is interactive while behaving otherwise. The
+        # ReShade overlay itself dies with the mpv process that was hosting it.
+        self.tweak = False
+        for s in reversed(self.stages):
+            self._kill_stage(s)
+        self.stages = []
+        self.fps = _fps_for(n)
+        self.frames, self.t_first = 0, None
+        x, y = self.inner()
+        try:
+            self._build_first(x, y)
+            for _ in range(n - 1):
+                self._append_stage()
+        except SystemExit:
+            self.info.config(text="a stage failed to start", fg=WARN)
+        if not self.stages:
+            # nothing left to show. visible() is stages[-1], so carrying on would
+            # raise on the next menu action rather than here, where it is clear.
+            messagebox.showerror("Neural Lens",
+                                 "No stage could be started, so the lens has to close.\n"
+                                 "The most recent logs are in:\n%s" % LOGDIR)
+            self.quit()
+            return
         self.raise_chrome()
+        self.aim()
         self.update_info()
         if save:
             self.save_state()
+
+    def add_pass(self, save=True):
+        self.set_passes(len(self.stages) + 1, save)
+
+    def drop_pass(self, save=True):
+        self.set_passes(len(self.stages) - 1, save)
 
     # ---- geometry
     def inner(self):
@@ -739,6 +831,13 @@ class Lens:
             wd, ht = t.winfo_width(), t.winfo_height()
             if (wd, ht) == st["start"]:
                 return
+            # Pausing in the middle of a drag looks exactly like finishing one, so
+            # never confirm while the button is still held. Tk cannot see these
+            # events during a window manager resize, because the window manager
+            # holds the mouse capture for the duration, so ask Windows directly.
+            if u.GetAsyncKeyState(0x01) & 0x8000:      # 0x01 is VK_LBUTTON
+                st["after"] = self.root.after(120, settled)
+                return
             st["done"] = True
             # rootx/rooty, not x/y: save_state stores the viewport origin
             nx, ny = t.winfo_rootx(), t.winfo_rooty()
@@ -794,16 +893,33 @@ class Lens:
     # ReShade's own key can only give the processed image. The lens holds the exact
     # frame it handed to mpv, so it can save a genuinely aligned before and after
     # from the same moment, plus a composite, which is the shot worth posting.
-    def _capture_once(self, hwnd, timeout=2.0):
-        out = {"a": None}
+    def _capture_once(self, hwnd, timeout=2.0, skip=1):
+        """One frame from a window, for screenshots and for measurement.
+
+        The opening frame of a freshly started capture session is sometimes
+        handed over uninitialised and comes back black. Measured at roughly one
+        sample in 14, and since the before and after screenshot takes its "after"
+        image through here, that was a black PNG with no explanation. So skip the
+        first frames and refuse a buffer that is entirely empty.
+        """
+        out = {"a": None, "n": 0}
 
         def on_frame_arrived(frame: Frame, control: InternalCaptureControl):
-            if out["a"] is None:
-                try:
-                    out["a"] = np.array(
-                        frame.frame_buffer[:frame.height, :frame.width, :], copy=True)
-                except Exception:
-                    out["a"] = False
+            out["n"] += 1
+            if out["n"] <= skip:
+                return
+            try:
+                a = np.array(
+                    frame.frame_buffer[:frame.height, :frame.width, :], copy=True)
+            except Exception:
+                out["a"] = False
+                control.stop()
+                return
+            # an uninitialised buffer is all zeros; a real frame never is. Give up
+            # rejecting after a few tries so a genuinely black window still returns.
+            if out["n"] < skip + 6 and not a[:, :, :3].any():
+                return
+            out["a"] = a
             control.stop()
 
         def on_closed():
@@ -913,9 +1029,10 @@ class Lens:
 
         tk.Button(t, text="Browse", command=browse, relief="flat",
                   bg="#334155", fg=FG).grid(row=1, column=2, padx=(0, 12), pady=4)
-        tk.Label(t, text="Display %d Hz, so frames are paced at %d and mpv is told %d.\n"
+        tk.Label(t, text="Display %d Hz. Repaints are paced at %d, and mpv is told %d,\n"
+                         "which is %d divided by the %d stage(s) now running.\n"
                          "Override with fps and pump_hz in neural-lens.ini."
-                         % (DISPLAY_HZ, PUMP_HZ, FPS),
+                         % (DISPLAY_HZ, PUMP_HZ, self.fps, BASE_FPS, len(self.stages)),
                  bg=BG, fg=DIM, justify="left",
                  font=("Segoe UI", 9)).grid(row=2, column=0, columnspan=3,
                                             sticky="w", padx=12, pady=(10, 4))

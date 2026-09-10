@@ -178,6 +178,16 @@ The F6 toggle is unambiguous instead, measuring 12.7/255 on plain text.
 - `evaluation succeeded (count=` in `ReShade.log` is a **milestone line**, emitted at count 1
   and count 60 and then not again. The number of occurrences is not a measure of how much
   Neural Rendering ran, and finding only two of them does not mean only two evaluations.
+- **ReShade rotates its log.** A second instance in the same folder cannot open `ReShade.log`,
+  so it writes `ReShade.log1`, and a third writes `ReShade.log2`. Every multi-pass run therefore
+  leaves one log per stage, and `feature=18` appears once per *file* rather than once per run.
+  Counting it in a single file and concluding that only one stage created the feature is wrong.
+  `archive_logs` originally copied only `ReShade.log`, which silently threw away every stage but
+  one on every multi-pass run; it now copies anything starting `ReShade.log`.
+- `GetAsyncKeyState` is the way to tell whether a mouse button is still held during a window
+  manager resize. Tk sees no button events for the whole drag, because the window manager holds
+  the mouse capture, so a settle timer alone cannot distinguish a pause mid drag from the end of
+  one. Verified with a real injected press rather than only a stubbed key state.
 
 ## How to measure this thing without fooling yourself
 
@@ -243,6 +253,43 @@ Two other things mattered, both in how the lens drives itself:
    write entirely measured 58.7 fps against 50.5 with it inline. A writer thread with a one
    slot handoff absorbs the stall. The slot is overwritten rather than queued, because for a
    live view only the newest frame is worth having.
+
+### The rate declared to mpv must never exceed what actually arrives
+
+`--demuxer-rawvideo-fps` tells mpv how fast the stream is, and mpv presents at that rate.
+Declare more than the chain delivers and mpv presents without a new frame to draw, so Neural
+Rendering re-runs over its own previous output. The picture crushes toward black over a few
+seconds, something forces a fresh frame, it recovers, and it does it again. This is the
+`--untimed` runaway reached by a slower route.
+
+Throughput divides roughly by the number of stages, because every pass is another full capture
+and present. Samples out of 14 that collapsed, measured at 1314x1332 on a 120 Hz display:
+
+```
+            1 stage   2 stages   3 stages   4 stages
+120 fps       0/14       8/14       4/14
+ 90 fps                  0/14
+ 60 fps                  0/14       0/14       4/14
+ 30 fps                  0/14
+```
+
+So `_fps_for` declares `BASE_FPS // stages`, which gives 120, 60, 40 and 30. Each sits at or
+below a measured clean value. It is deliberately conservative at three stages, where 60 is known
+to work, because a cliff is far worse than a few lost frames.
+
+Two consequences that are easy to miss:
+
+- **The rate is fixed when mpv spawns.** Changing the pass count therefore has to respawn every
+  stage rather than append one on the end. Leaving stage 1 running at its old rate is exactly
+  what made two and three passes collapse, so `set_passes` rebuilds the whole chain.
+- **Rebuilding needs a per stage stop flag.** The writer thread only ever exited on
+  `lens.closing` or a failed write, so tearing a stage down while the lens stayed open stranded
+  a thread waiting on a condition that nothing would signal again.
+
+This was a regression. `FPS` was a fixed 60 when multiple passes were built, and 60 is clean at
+two and three stages, so nothing looked wrong until it became the display rate. Note also that
+four stages at 60 collapses, which means four passes was broken from the day it was offered and
+simply never exercised: the cumulative table at the top of this file only ever went to three.
 
 ### Four wrong explanations for the same number, and why
 

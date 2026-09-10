@@ -4,6 +4,43 @@ What was tried and rejected, each with the measurement that killed it, plus the 
 that are easy to get wrong. Worth reading before changing the capture path, because most of
 these look reasonable on paper and fail only when measured.
 
+## The multi-pass chain
+
+The add-on that works in mpv, `renodx-dlss5` v4.7, has **no pass control**. Its complete set of
+settings is `EnableHooks, NRAutoMask, NRColorStrength, NRDepthMode, NREnableUpscaling,
+NRIntensity, NRLocalStructure, NRLocalTone, NRMVecScaleX, NRMVecScaleY, NRPaperWhiteScale,
+NRPreset, NRScreenshotKey, NRSkinStructure, NRStyle, NRToggleKey, NRTransferStrength,
+NRUICorrection, NeuralUplift`. The newer `renodx-dlss` add-on does have
+`DirectNeuralRenderingPassCount`, but it will not inject into mpv at all (see below), so it is
+not an option here.
+
+So passes are made by chaining: stage N captures stage N-1's mpv window with WGC and renders
+it again. Measured cumulative change from the raw source:
+
+```
+                        stacked      side by side control
+1 pass                    7.71               7.71
+2 passes                 14.05              14.06
+3 passes                 19.45              19.52
+same chain, NR disabled   0.24  (round trip is nearly lossless)
+```
+
+The stacked and separated numbers agreeing is the proof that stacking is sound.
+
+### The trap: every stage must be on the magnifier's exclude list
+
+`MagSetWindowFilterList` starts out excluding the host, the chrome and stage 1's mpv. Stack
+stages 2 and 3 on the same rect **without adding them**, and the magnifier renders them back
+into stage 1's input. That is a feedback loop, and it is fast and total:
+
+```
+with the stages excluded        7.71 / 14.05 / 19.45
+with stages 2 and 3 missing     7.70 / 62.52 / 61.23   (dark blob, ghosted text, saturated)
+```
+
+`refresh_filter()` rebuilds the whole list after every add or remove for exactly this reason.
+The call has to happen inside the process that owns the magnifier.
+
 ## Dead ends
 
 ### Desktop Duplication (ddagrab) under the lens
@@ -41,6 +78,13 @@ Deprecated. It is accepted and returns TRUE, and then the next Mag call deadlock
 from ctypes, most likely because the callback takes structures by value. Made unnecessary by
 capturing the host window with WGC instead.
 
+### The newer renodx-dlss add-on (the one with PassCount)
+
+Will not inject into mpv on either `--gpu-api=vulkan` or `d3d11`. Zero
+`DLSS-NR direct: EvaluateFeature` in both cases, both stopping at
+`WARN NVNGX parameter module is not loaded yet: nvngx.dll`, and the Vulkan attempt segfaulted
+mpv. It needs `nvngx.dll` loaded by a real DLSS integration, which mpv cannot provide.
+
 ### UDP transport
 
 Resyncs badly after a restart: 353 buffering events, with frames arriving every few seconds.
@@ -71,6 +115,8 @@ The F6 toggle is unambiguous instead, measuring 12.7/255 on plain text.
 - Passing `HWND_TOPMOST` as Python `-1` through ctypes silently fails on x64, because a 32 bit
   int goes into a pointer parameter. Use `ctypes.c_void_p(-1)`. mpv resets its own z order
   anyway, so give it `--ontop` rather than forcing the z order from outside.
+- Stage windows share a title prefix, so find them by **exact** title match. Substring
+  matching returns the wrong stage.
 - `MagSetWindowTransform` is optional, and it deadlocks if called after the scaling callback
   has been set. Skip it; the identity transform is the default.
 - The lens is deliberately **not** excluded from capture, which is what makes its output
@@ -79,3 +125,17 @@ The F6 toggle is unambiguous instead, measuring 12.7/255 on plain text.
 - `RegisterHotKey` posts `WM_HOTKEY` to the registering thread's message queue. It has to be
   registered on the same thread that pumps messages, not on a thread whose queue belongs to
   something else such as a tkinter mainloop.
+
+## How to measure this thing without fooling yourself
+
+Several wrong conclusions during development came from bad measurement rather than bad code.
+
+- **Never measure with a moving source.** An early A/B read 16.1% changed pixels, but an
+  animated avatar was in frame. The static half of the same image showed the real figure.
+- **Establish a noise floor** by capturing the same state twice before trusting any difference.
+- **Do not infer NR state from the F6 toggle log.** The focus dance sometimes fails to register
+  a press, which inverts the inference. Measure absolutely instead: capture the region with the
+  lens absent, then with the lens over it. Passthrough means off, a large difference means on.
+- Neural Rendering's strength scales with local detail, about 4.5x stronger on the most
+  detailed tenth of an image than on the flattest half. Flat content changing very little is
+  expected, not a fault.

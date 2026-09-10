@@ -1,31 +1,41 @@
 """
-DLSS 5 Neural Lens v3: a floating see-through window that neural-renders
-whatever is behind it. Drag it by the title bar. The viewport is click-through,
-so the mouse reaches the desktop underneath, like the Windows Magnifier lens.
+DLSS 5 Neural Lens: a floating see-through window that neural-renders whatever
+is behind it. Drag it by the title bar. The viewport is click-through, so the
+mouse reaches the desktop underneath, like the Windows Magnifier lens.
 
 How it works. Every piece below was measured before it was built:
 
   1. A Windows Magnification API host window sits UNDER the lens, on the exact
-     same rect, with our own windows (host, chrome, mpv) on its EXCLUDE filter
-     list. It asks DWM to render the true desktop content for that rect. This is
-     what Windows Magnifier does; it does not capture the screen.
+     same rect, with our own windows on its EXCLUDE filter list. It asks DWM to
+     render the true desktop content for that rect. This is what Windows
+     Magnifier does; it does not capture the screen.
 
   2. Windows.Graphics.Capture captures that host window BY HWND. Window capture
      reads a window's own DWM buffer, so it does not matter that the lens sits
-     on top of it. Verified: host fully covered by an opaque window, WGC still
-     returns the source content at ~52 fps, while Desktop Duplication of the
-     same rect returns the occluder. (ddagrab could never work here; Desktop
-     Duplication cannot see under an occluding window, excluded or not.)
+     on top of it. Verified: with the host fully covered by an opaque window,
+     WGC still returns the source content at about 52 fps, while Desktop
+     Duplication of the same rect returns the occluder instead.
 
   3. Frames go straight into mpv's stdin as raw BGRA. No ffmpeg, no encode, no
-     decode. mpv's existing NR stack (ReShade + dlss5-feed + renodx-dlss5) does
-     the neural rendering. Verified: feature 18 attaches, 60 fps present rate.
+     decode. mpv's NR stack (ReShade + dlss5-feed + renodx-dlss5) does the
+     neural rendering.
 
-  4. Moving the lens just moves the three windows and updates the magnifier's
-     source rect every tick. Nothing restarts. RESIZING is different: it
-     recreates mpv's swapchain, which forces the NR add-on to release the DLSS
-     feature -> 0xC0000005. So the size is fixed per run; change it in the
-     state file and relaunch.
+  4. MULTI-PASS by chaining. The add-on that mpv can use has no pass count, so
+     extra passes are made by running the whole thing again: stage N captures
+     stage N-1's mpv window with WGC and neural-renders it a second time. All
+     stages stack on the lens rect and only the last one is visible. Measured
+     cumulative change from the raw source: 7.71, 14.06, 19.52 for one, two and
+     three passes, against a round-trip cost of only 0.24 with NR disabled.
+
+     EVERY stage must be on the magnifier's exclude list. Miss one and the
+     magnifier renders it back into stage 1's input, which is a feedback loop
+     that collapses the picture into a dark blob within seconds.
+
+  5. Moving the lens just moves the windows and re-aims the magnifier each tick,
+     and adding or removing a pass only spawns or kills a stage. Nothing
+     restarts and nothing resizes. RESIZING is the one thing that cannot be done
+     live: it recreates mpv's swapchain, which forces the NR add-on to release
+     the DLSS feature and crash with 0xC0000005.
 
 Configuration: see neural-lens.ini.example. State and logs live in
 %LOCALAPPDATA%/NeuralLens by default.
@@ -43,6 +53,7 @@ from tkinter import messagebox
 
 import numpy as np
 from windows_capture import WindowsCapture, Frame, InternalCaptureControl
+
 
 def _script_dir():
     return os.path.dirname(os.path.abspath(__file__))
@@ -96,8 +107,14 @@ DATA_DIR = (os.environ.get("NEURAL_LENS_DATA") or _INI.get("data_dir")
 STATE = os.path.join(DATA_DIR, "lens-state.txt")
 LOGDIR = os.path.join(DATA_DIR, "logs")
 
+try:
+    MAX_PASSES = max(1, min(8, int(_INI.get("max_passes", 4))))
+except ValueError:
+    MAX_PASSES = 4
+
 BAR, EDGE = 34, 2
 KEY, BG, FG, ACCENT = "#010203", "#1b2430", "#cbd5e1", "#4ade80"
+DIM, WARN = "#64748b", "#fbbf24"
 FPS = 60                     # declared to mpv; WGC delivers ~52, mpv presents on arrival
 
 u = ctypes.windll.user32
@@ -111,8 +128,9 @@ GWL_STYLE, GWL_EXSTYLE = -16, -20
 WS_CHILD, WS_VISIBLE, WS_POPUP = 0x40000000, 0x10000000, 0x80000000
 WS_THICKFRAME, WS_MAXIMIZEBOX = 0x00040000, 0x00010000
 WS_EX_LAYERED, WS_EX_TRANSPARENT, WS_EX_NOACTIVATE = 0x00080000, 0x00000020, 0x08000000
-HWND_TOPMOST, HWND_NOTOPMOST = ctypes.c_void_p(-1), ctypes.c_void_p(-2)   # pointer-sized, NOT int -1
+HWND_TOPMOST = ctypes.c_void_p(-1)          # pointer sized, NOT int -1
 SWP_NOSIZE, SWP_NOMOVE, SWP_NOZORDER, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0004, 0x0010
+SWP_FRAMECHANGED = 0x0020
 MW_FILTERMODE_EXCLUDE = 0
 LWA_ALPHA = 0x2
 
@@ -134,7 +152,9 @@ def archive_logs():
         pass
 
 
-def find_mpv():
+def find_mpv(title):
+    """Exact title match. Stage titles share a prefix, so substring matching
+    would return the wrong window."""
     hits = []
 
     @ctypes.WINFUNCTYPE(ctypes.c_bool, w.HWND, w.LPARAM)
@@ -146,7 +166,7 @@ def find_mpv():
         u.GetWindowTextW(h, b, n + 1)
         c = ctypes.create_unicode_buffer(256)
         u.GetClassNameW(h, c, 256)
-        if c.value == "mpv" and TITLE.lower() in b.value.lower():
+        if c.value == "mpv" and b.value == title:
             hits.append(h)
         return True
 
@@ -155,13 +175,14 @@ def find_mpv():
 
 
 class Lens:
-    def __init__(self, root, x, y, cw, ch):
+    def __init__(self, root, x, y, cw, ch, passes):
         self.root, self.cw, self.ch = root, cw, ch
         self.drag = None
         self.closing = False
-        self.tweak = False          # True while the viewport is interactive for the ReShade overlay
+        self.tweak = False          # True while the viewport is interactive
         self.frames = 0
         self.t_first = None
+        self.stages = []            # [{title, proc, hwnd, ctl}], last one is visible
 
         # ---- chrome (tk): title bar + subtle border + transparent hole
         t = tk.Toplevel(root)
@@ -173,22 +194,38 @@ class Lens:
         t.geometry("%dx%d+%d+%d" % (cw + EDGE * 2, ch + BAR + EDGE, x - EDGE, y - BAR))
         bar = tk.Frame(t, bg=BG, height=BAR)
         bar.place(x=EDGE, y=0, width=cw, height=BAR)
+
         self.menu_btn = tk.Label(bar, text=" \u2630 ", bg=BG, fg=FG, font=("Segoe UI", 12))
         self.menu_btn.pack(side="left", padx=(6, 0))
         self.menu_btn.bind("<Button-1>", self.menu)
         tk.Label(bar, text="  DLSS 5 Neural Lens", bg=BG, fg=ACCENT,
                  font=("Segoe UI", 10, "bold")).pack(side="left")
-        self.info = tk.Label(bar, text="%d x %d" % (cw, ch), bg=BG, fg="#64748b",
+        self.info = tk.Label(bar, text="%d x %d" % (cw, ch), bg=BG, fg=DIM,
                              font=("Consolas", 9))
         self.info.pack(side="left", padx=10)
+
         self.x_btn = tk.Label(bar, text="  \u2715  ", bg=BG, fg=FG, font=("Segoe UI", 12))
         self.x_btn.pack(side="right")
         self.x_btn.bind("<Button-1>", lambda e: self.quit())
         self.x_btn.bind("<Enter>", lambda e: self.x_btn.config(bg="#e11d48"))
         self.x_btn.bind("<Leave>", lambda e: self.x_btn.config(bg=BG))
+
+        self.plus = tk.Label(bar, text=" + ", bg=BG, fg=FG, font=("Segoe UI", 13, "bold"))
+        self.plus.pack(side="right")
+        self.plus.bind("<Button-1>", lambda e: self.add_pass())
+        self.pass_lbl = tk.Label(bar, text="1 pass", bg=BG, fg=ACCENT, font=("Consolas", 9))
+        self.pass_lbl.pack(side="right", padx=2)
+        self.minus = tk.Label(bar, text=" \u2212 ", bg=BG, fg=FG, font=("Segoe UI", 13, "bold"))
+        self.minus.pack(side="right")
+        self.minus.bind("<Button-1>", lambda e: self.drop_pass())
+        for b in (self.plus, self.minus):
+            b.bind("<Enter>", lambda e, b=b: b.config(bg="#334155"))
+            b.bind("<Leave>", lambda e, b=b: b.config(bg=BG))
+
         tk.Frame(t, bg=KEY).place(x=EDGE, y=BAR, width=cw, height=ch)
+        nodrag = (self.x_btn, self.menu_btn, self.plus, self.minus)
         for wdg in (bar,) + tuple(bar.winfo_children()):
-            if wdg not in (self.x_btn, self.menu_btn):
+            if wdg not in nodrag:
                 wdg.bind("<ButtonPress-1>", self.down)
                 wdg.bind("<B1-Motion>", self.move)
                 wdg.bind("<ButtonRelease-1>", self.up)
@@ -211,48 +248,134 @@ class Lens:
         if not self.hmag:
             raise SystemExit("magnifier control failed")
 
-        # ---- mpv: raw BGRA on stdin, NR via ReShade. Spawned from its own dir.
-        env = dict(os.environ, DISABLE_DLSS5_VK_BRIDGE="1")
-        cmd = [MPV, "-",
-               "--demuxer=rawvideo", "--demuxer-rawvideo-w=%d" % cw,
-               "--demuxer-rawvideo-h=%d" % ch, "--demuxer-rawvideo-mp-format=bgra",
-               "--demuxer-rawvideo-fps=%d" % FPS,
-               "--geometry=%dx%d+%d+%d" % (cw, ch, x, y), "--hidpi-window-scale=no",
-               "--no-border", "--no-osc", "--no-window-dragging", "--ontop",
-               "--force-window=immediate", "--keep-open=yes", "--cache=no",
-               "--demuxer-max-bytes=%d" % (cw * ch * 4 * 3), "--title=%s" % TITLE]
-        self.mpv = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.DEVNULL, cwd=MPV_DIR, env=env)
-        self.mpv_hwnd = None
-        for _ in range(120):
-            self.mpv_hwnd = find_mpv()
-            if self.mpv_hwnd:
-                break
-            time.sleep(0.25)
-        if not self.mpv_hwnd:
-            raise SystemExit("mpv window never appeared")
-        h = self.mpv_hwnd
-        st = u.GetWindowLongPtrW(h, GWL_STYLE)
-        u.SetWindowLongPtrW(h, GWL_STYLE, st & ~WS_THICKFRAME & ~WS_MAXIMIZEBOX)
-        ex = u.GetWindowLongPtrW(h, GWL_EXSTYLE)
-        u.SetWindowLongPtrW(h, GWL_EXSTYLE, ex | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE)
-        u.SetWindowPos(h, HWND_TOPMOST, x, y, cw, ch, SWP_NOACTIVATE)
-        u.SetWindowPos(self.chrome, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
-
-        # ---- the magnifier must never see us
-        arr = (w.HWND * 3)(self.host, self.chrome, h)
-        mag.MagSetWindowFilterList(self.hmag, MW_FILTERMODE_EXCLUDE, 3, arr)
+        # ---- stage 1: the magnifier host feeds the first mpv
+        proc, hwnd = self.spawn_mpv(TITLE, x, y)
+        ctl = self.start_capture(self.host, proc, count=True)
+        self.stages.append({"title": TITLE, "proc": proc, "hwnd": hwnd, "ctl": ctl})
+        self.refresh_filter()
+        self.raise_chrome()
         self.aim()
 
-        # ---- WGC: capture the host by HWND, push frames to mpv
-        self.cap = WindowsCapture(cursor_capture=False, draw_border=False,
-                                  window_hwnd=self.host)
-        self.cap.event(self.on_frame_arrived)
-        self.cap.event(self.on_closed)
-        self.ctl = self.cap.start_free_threaded()
+        for _ in range(max(0, passes - 1)):
+            self.add_pass(save=False)
+        self.update_info()
 
         self.root.after(16, self.tick)
         self.root.after(1000, self.stats)
+
+    # ---- stage plumbing
+    def spawn_mpv(self, title, x, y):
+        """Start one mpv reading raw BGRA on stdin, and return (proc, hwnd)."""
+        env = dict(os.environ, DISABLE_DLSS5_VK_BRIDGE="1")
+        cmd = [MPV, "-",
+               "--demuxer=rawvideo", "--demuxer-rawvideo-w=%d" % self.cw,
+               "--demuxer-rawvideo-h=%d" % self.ch, "--demuxer-rawvideo-mp-format=bgra",
+               "--demuxer-rawvideo-fps=%d" % FPS,
+               "--geometry=%dx%d+%d+%d" % (self.cw, self.ch, x, y),
+               "--hidpi-window-scale=no", "--no-border", "--no-osc",
+               "--no-window-dragging", "--ontop", "--force-window=immediate",
+               "--keep-open=yes", "--cache=no",
+               "--demuxer-max-bytes=%d" % (self.cw * self.ch * 4 * 3),
+               "--title=%s" % title]
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, cwd=MPV_DIR, env=env)
+        hwnd = None
+        for _ in range(140):
+            hwnd = find_mpv(title)
+            if hwnd:
+                break
+            time.sleep(0.25)
+        if not hwnd:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            raise SystemExit("mpv window %r never appeared" % title)
+        st = u.GetWindowLongPtrW(hwnd, GWL_STYLE)
+        u.SetWindowLongPtrW(hwnd, GWL_STYLE, st & ~WS_THICKFRAME & ~WS_MAXIMIZEBOX)
+        self.set_interactive(hwnd, False)
+        u.SetWindowPos(hwnd, HWND_TOPMOST, x, y, self.cw, self.ch, SWP_NOACTIVATE)
+        return proc, hwnd
+
+    def start_capture(self, src_hwnd, dst_proc, count=False):
+        """WGC on src_hwnd, frames written to dst_proc's stdin."""
+        cap = WindowsCapture(cursor_capture=False, draw_border=False, window_hwnd=src_hwnd)
+        lens = self
+
+        def on_frame_arrived(frame: Frame, control: InternalCaptureControl):
+            if lens.closing:
+                control.stop()
+                return
+            try:
+                b = frame.frame_buffer[:frame.height, :frame.width, :]
+                dst_proc.stdin.write(np.ascontiguousarray(b).tobytes())
+                if count:
+                    if lens.t_first is None:
+                        lens.t_first = time.perf_counter()
+                    lens.frames += 1
+            except (BrokenPipeError, OSError, ValueError):
+                control.stop()
+
+        def on_closed():
+            pass
+
+        cap.event(on_frame_arrived)
+        cap.event(on_closed)
+        return cap.start_free_threaded()
+
+    def refresh_filter(self):
+        """The magnifier must never see any of our windows. Missing even one
+        stage creates a feedback loop that collapses the image to a dark blob."""
+        hs = [self.host, self.chrome] + [s["hwnd"] for s in self.stages]
+        arr = (w.HWND * len(hs))(*hs)
+        mag.MagSetWindowFilterList(self.hmag, MW_FILTERMODE_EXCLUDE, len(hs), arr)
+
+    def raise_chrome(self):
+        u.SetWindowPos(self.chrome, HWND_TOPMOST, 0, 0, 0, 0,
+                       SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+
+    def visible(self):
+        return self.stages[-1]["hwnd"]
+
+    def add_pass(self, save=True):
+        if self.closing or len(self.stages) >= MAX_PASSES:
+            return
+        x, y = self.inner()
+        n = len(self.stages) + 1
+        title = "%sp%d" % (TITLE, n)
+        try:
+            proc, hwnd = self.spawn_mpv(title, x, y)
+        except SystemExit:
+            return
+        ctl = self.start_capture(self.stages[-1]["hwnd"], proc)
+        self.stages.append({"title": title, "proc": proc, "hwnd": hwnd, "ctl": ctl})
+        self.refresh_filter()
+        self.raise_chrome()
+        self.update_info()
+        if save:
+            self.save_state()
+
+    def drop_pass(self, save=True):
+        if self.closing or len(self.stages) <= 1:
+            return
+        s = self.stages.pop()
+        for step in (lambda: s["ctl"].stop(),
+                     lambda: s["proc"].stdin.close(),
+                     lambda: (s["proc"].terminate(), s["proc"].wait(timeout=3))):
+            try:
+                step()
+            except Exception:
+                pass
+        try:
+            if s["proc"].poll() is None:
+                s["proc"].kill()
+        except Exception:
+            pass
+        self.refresh_filter()
+        self.raise_chrome()
+        self.update_info()
+        if save:
+            self.save_state()
 
     # ---- geometry
     def inner(self):
@@ -265,8 +388,10 @@ class Lens:
 
     def place(self):
         x, y = self.inner()
-        u.SetWindowPos(self.host, 0, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)
-        u.SetWindowPos(self.mpv_hwnd, 0, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)
+        flags = SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE
+        u.SetWindowPos(self.host, 0, x, y, 0, 0, flags)
+        for s in self.stages:
+            u.SetWindowPos(s["hwnd"], 0, x, y, 0, 0, flags)
 
     def tick(self):
         if self.closing:
@@ -275,31 +400,30 @@ class Lens:
         u.InvalidateRect(self.hmag, None, True)
         self.root.after(16, self.tick)
 
+    def update_info(self):
+        n = len(self.stages)
+        self.pass_lbl.config(text="%d pass%s" % (n, "" if n == 1 else "es"),
+                             fg=ACCENT if n == 1 else WARN)
+        self.plus.config(fg=DIM if n >= MAX_PASSES else FG)
+        self.minus.config(fg=DIM if n <= 1 else FG)
+
     def stats(self):
         if self.closing:
             return
         if self.t_first and self.frames > 30 and not self.tweak:
             fps = self.frames / max(time.perf_counter() - self.t_first, 1e-6)
-            self.info.config(text="%d x %d   %.0f fps" % (self.cw, self.ch, fps))
+            self.info.config(text="%d x %d   %.0f fps" % (self.cw, self.ch, fps), fg=DIM)
         self.root.after(1000, self.stats)
 
-    # ---- WGC callbacks (capture thread)
-    def on_frame_arrived(self, frame: Frame, control: InternalCaptureControl):
-        if self.closing:
-            return
+    def save_state(self):
+        x, y = self.inner()
         try:
-            b = frame.frame_buffer[:frame.height, :frame.width, :]
-            self.mpv.stdin.write(np.ascontiguousarray(b).tobytes())
-            if self.t_first is None:
-                self.t_first = time.perf_counter()
-            self.frames += 1
-        except (BrokenPipeError, OSError, ValueError):
-            self.root.after(0, self.quit)
+            with open(STATE, "w") as f:
+                f.write("%d %d %d %d %d\n" % (self.cw, self.ch, x, y, len(self.stages)))
+        except OSError:
+            pass
 
-    def on_closed(self):
-        pass
-
-    # ---- drag (title bar only; move never resizes)
+    # ---- drag (title bar only; a move never resizes)
     def down(self, e):
         self.drag = (e.x_root - self.t.winfo_x(), e.y_root - self.t.winfo_y())
 
@@ -314,44 +438,49 @@ class Lens:
             self.drag = None
             self.place()
             self.aim()
-            x, y = self.inner()
-            with open(STATE, "w") as f:
-                f.write("%d %d %d %d\n" % (self.cw, self.ch, x, y))
+            self.save_state()
 
     # ---- menu / tweak mode
-    # The ReShade overlay lives INSIDE mpv's swapchain, so it cannot be moved to a
-    # separate window. Tweak mode makes the viewport interactive (drops
+    # The ReShade overlay lives INSIDE mpv's swapchain, so it cannot be moved to
+    # a separate window. Tweak mode makes the viewport interactive (drops
     # WS_EX_TRANSPARENT / WS_EX_NOACTIVATE), focuses it and presses Home so the
     # overlay opens in place; leaving tweak mode presses Home again and restores
-    # click-through. Single keys (F6 NR toggle, F5 screenshot) do the same dance
-    # for a fraction of a second. mpv's input.conf has "HOME ignore", so the key
-    # reaches ReShade, not mpv.
+    # click-through. mpv's input.conf has "HOME ignore", so the key reaches
+    # ReShade rather than mpv. With several passes the overlay belongs to the
+    # visible stage, while F6 and F5 are sent to every stage in turn.
     def menu(self, e):
         m = tk.Menu(self.t, tearoff=0)
         m.add_command(label=("Done tweaking  (back to click-through)" if self.tweak
                              else "Tweak NR settings  (ReShade overlay, Home)"),
                       command=self.toggle_tweak)
-        m.add_command(label="Toggle NR on/off   (F6)", command=lambda: self.send_key(0x75))
+        m.add_command(label="Toggle NR on/off   (F6, all passes)",
+                      command=lambda: self.send_key(0x75))
         m.add_command(label="NR screenshot        (F5)", command=lambda: self.send_key(0x74))
+        m.add_separator()
+        m.add_command(label="Add a pass      (+)", command=self.add_pass)
+        m.add_command(label="Remove a pass   (\u2212)", command=self.drop_pass)
         m.add_separator()
         m.add_command(label="Why can't I resize?", command=self.resize_hint)
         m.add_separator()
         m.add_command(label="Close", command=self.quit)
         m.tk_popup(self.t.winfo_x() + 6, self.t.winfo_y() + BAR)
 
-    def set_interactive(self, on):
-        h = self.mpv_hwnd
-        ex = u.GetWindowLongPtrW(h, GWL_EXSTYLE)
-        ex = (ex & ~(WS_EX_TRANSPARENT | WS_EX_NOACTIVATE)) if on             else (ex | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE)
-        u.SetWindowLongPtrW(h, GWL_EXSTYLE, ex)
-        u.SetWindowPos(h, 0, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | 0x0020)
+    def set_interactive(self, hwnd, on):
+        ex = u.GetWindowLongPtrW(hwnd, GWL_EXSTYLE)
+        if on:
+            ex &= ~(WS_EX_TRANSPARENT | WS_EX_NOACTIVATE)
+        else:
+            ex |= WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE
+        u.SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex)
+        u.SetWindowPos(hwnd, 0, 0, 0, 0, 0,
+                       SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED)
 
-    def focus_mpv(self):
+    def focus(self, hwnd):
         me = k32.GetCurrentThreadId()
-        tid = u.GetWindowThreadProcessId(self.mpv_hwnd, None)
+        tid = u.GetWindowThreadProcessId(hwnd, None)
         u.AttachThreadInput(me, tid, True)
-        u.SetForegroundWindow(self.mpv_hwnd)
-        u.SetFocus(self.mpv_hwnd)
+        u.SetForegroundWindow(hwnd)
+        u.SetFocus(hwnd)
         u.AttachThreadInput(me, tid, False)
 
     @staticmethod
@@ -361,54 +490,58 @@ class Lens:
         u.keybd_event(vk, 0, 2, 0)
 
     def toggle_tweak(self):
+        h = self.visible()
         self.tweak = not self.tweak
         if self.tweak:
-            self.set_interactive(True)
-            self.info.config(text="TWEAK MODE: Home hides/shows the ReShade menu", fg="#fbbf24")
-            self.root.after(150, self.focus_mpv)
+            self.set_interactive(h, True)
+            self.info.config(text="TWEAK MODE: Home hides/shows the ReShade menu", fg=WARN)
+            self.root.after(150, lambda: self.focus(h))
             self.root.after(320, lambda: self.press(0x24))
         else:
-            self.focus_mpv()
+            self.focus(h)
             self.press(0x24)
-            self.root.after(250, lambda: self.set_interactive(False))
-            self.info.config(text="%d x %d" % (self.cw, self.ch), fg="#64748b")
+            self.root.after(250, lambda: self.set_interactive(h, False))
+            self.info.config(text="%d x %d" % (self.cw, self.ch), fg=DIM)
 
-    def send_key(self, vk):
-        if self.tweak:
-            self.focus_mpv()
+    def send_key(self, vk, idx=0):
+        """Walk the stages one at a time so every pass gets the key."""
+        if self.closing or idx >= len(self.stages):
+            return
+        h = self.stages[idx]["hwnd"]
+        if self.tweak and idx == len(self.stages) - 1:
+            self.focus(h)
             self.press(vk)
             return
-        self.set_interactive(True)
-        self.root.after(150, self.focus_mpv)
-        self.root.after(320, lambda: self.press(vk))
-        self.root.after(600, lambda: self.set_interactive(False))
+        self.set_interactive(h, True)
+        self.root.after(120, lambda: self.focus(h))
+        self.root.after(260, lambda: self.press(vk))
+        self.root.after(420, lambda: self.set_interactive(h, False))
+        self.root.after(540, lambda: self.send_key(vk, idx + 1))
 
     def resize_hint(self):
         messagebox.showinfo(
             "Resize",
             "The lens cannot resize while running. A resize recreates mpv's "
             "swapchain, which forces the NR add-on to release the DLSS feature "
-            "and crash (0xC0000005).\n\nClose it, edit width/height on the first "
-            "line of:\n%s\nand relaunch." % STATE)
+            "and crash (0xC0000005). Passes can be changed live because adding "
+            "one never resizes anything.\n\nTo resize: close the lens, edit the "
+            "width and height on the first line of:\n%s\nand relaunch." % STATE)
 
     def quit(self):
         if self.closing:
             return
         self.closing = True
-        try:
-            self.ctl.stop()
-        except Exception:
-            pass
-        try:
-            self.mpv.stdin.close()
-        except Exception:
-            pass
-        try:
-            self.mpv.terminate()
-            self.mpv.wait(timeout=3)
-        except Exception:
+        for s in reversed(self.stages):
+            for step in (lambda s=s: s["ctl"].stop(),
+                         lambda s=s: s["proc"].stdin.close(),
+                         lambda s=s: (s["proc"].terminate(), s["proc"].wait(timeout=3))):
+                try:
+                    step()
+                except Exception:
+                    pass
             try:
-                self.mpv.kill()
+                if s["proc"].poll() is None:
+                    s["proc"].kill()
             except Exception:
                 pass
         try:
@@ -434,22 +567,28 @@ def main():
         input("\nPress Enter to close.")
         return
     os.makedirs(DATA_DIR, exist_ok=True)
-    cw, ch, x, y = 1400, 1000, 500, 400
+    cw, ch, x, y, passes = 1400, 1000, 500, 400, 1
     if os.path.exists(STATE):
         try:
-            cw, ch, x, y = [int(v) for v in open(STATE).read().split()[:4]]
+            v = [int(n) for n in open(STATE).read().split()]
+            cw, ch, x, y = v[:4]
+            if len(v) > 4:
+                passes = v[4]
         except Exception:
             pass
     cw -= cw % 2
     ch -= ch % 2
+    passes = max(1, min(MAX_PASSES, passes))
     archive_logs()
     root = tk.Tk()
     root.withdraw()
-    lens = Lens(root, x, y, cw, ch)
-    print("lens ready %dx%d at (%d,%d)" % (cw, ch, x, y), flush=True)
+    lens = Lens(root, x, y, cw, ch, passes)
+    print("lens ready %dx%d at (%d,%d), %d pass%s"
+          % (cw, ch, x, y, len(lens.stages), "" if len(lens.stages) == 1 else "es"),
+          flush=True)
 
     def watch():
-        while not lens.closing and lens.mpv.poll() is None:
+        while not lens.closing and lens.stages[0]["proc"].poll() is None:
             time.sleep(0.4)
         root.after(0, lens.quit)
 

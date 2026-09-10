@@ -1,39 +1,101 @@
 # DLSS 5 Neural Lens
 
-A floating see-through window for Windows that applies **DLSS 5 Neural Rendering** to whatever
-is behind it. Drag it over any window on the desktop and the content underneath is
-neural-rendered live inside it, while the mouse passes straight through to the desktop, like
-the Windows Magnifier lens.
+A floating see-through window for Windows. Drag it over anything on your desktop and the
+content underneath appears inside it with **NVIDIA DLSS Neural Rendering** applied, live. The
+mouse passes straight through the viewport, so you can keep using whatever is beneath it, much
+like the Windows Magnifier lens.
 
-No renderer, no DLSS integration and no injection into the target app are required. If it can
-be drawn on the desktop, it can be neural-rendered.
+The point of it is that Neural Rendering normally exists only inside a game that integrates
+DLSS. This puts it on anything that can be drawn on your screen: a browser, a video, an
+emulator, a photo, a remote desktop session. Nothing is injected into the target application,
+and the target does not need to know anything about DLSS.
 
-It also does **multiple neural passes**, adjustable live with plus and minus in the title bar.
+It can also apply **several neural passes**, adjustable while it runs with plus and minus in
+the title bar.
+
+## Before you start, the honest prerequisite
+
+**This project is the window, not the neural rendering.** It drives an existing mpv install
+that already has a working DLSS Neural Rendering setup, and it does nothing without one.
+
+That setup is an experimental community stack, and assembling it is genuinely the hard part.
+None of it is included here, none of it is redistributed here, and this README cannot walk you
+through it. You need an mpv install that already contains:
+
+| component | what it does | comes from |
+|---|---|---|
+| ReShade, installed as its Vulkan layer | hosts the two add-ons below | reshade.me |
+| `dlss5-feed.addon64` | synthesises the inputs DLSS expects, such as depth and motion vectors, for content that has none of its own | its own project |
+| `renodx-dlss5.addon64` | performs the neural rendering pass | its own project |
+| `nvngx_dlss.dll` | NVIDIA's DLSS runtime | NVIDIA |
+| `nvngx_dlssnr.dll` | NVIDIA's Neural Rendering model | NVIDIA |
+
+The test is simple: if you can open a video in that mpv and see Neural Rendering applied to it,
+you have everything you need. If you cannot, fix that first.
+
+You also need:
+
+- Windows 11. The capture path uses Windows.Graphics.Capture. Developed on 25H2.
+- An NVIDIA RTX GPU with a driver new enough for DLSS Neural Rendering.
+- Python 3 with `numpy` and `windows-capture`.
+
+## Install
+
+1. Put this folder anywhere you like. It runs in place.
+2. `pip install numpy windows-capture`
+3. Tell it where your mpv install is, whichever way suits you:
+   - `Launch-LensNR.cmd --mpv-dir "D:\path\to\mpv"`
+   - `set NEURAL_LENS_MPV_DIR=D:\path\to\mpv`
+   - copy `neural-lens.ini.example` to `neural-lens.ini` and set `mpv_dir`
+   - or put an `mpv` folder beside `neural_lens.py`
+4. Run `Launch-LensNR.cmd`.
+
+Window position, pass count and archived logs live in `%LOCALAPPDATA%\NeuralLens`. Redirect
+that with `data_dir` in the ini, or the `NEURAL_LENS_DATA` variable.
+
+## Using it
+
+- **Move it** by dragging the title bar. The viewport is click-through, so clicking inside it
+  reaches whatever is underneath rather than the lens.
+- **Add or remove a pass** with plus and minus in the title bar, while it runs.
+- **Close it** with the X. Because the viewport can never take keyboard focus, mpv's usual `q`
+  will not reach it, which is why the X is there.
+- The **menu** at the left opens the ReShade overlay in place so you can adjust Neural
+  Rendering settings live, and also holds the pass controls, a Neural Rendering on and off
+  toggle, and a screenshot key.
 
 ## How it works
 
+The obstacle this works around is that you cannot simply capture the screen area underneath a
+window. Windows does not draw the desktop behind an opaque window, so ordinary screen capture
+of that region comes back empty.
+
 ```
-Magnification API host window, UNDER the lens on the same rect,
-  with every one of the lens's own windows on its EXCLUDE filter list
-      -> asks DWM to render the true desktop content for that rect (what Magnifier does)
-Windows.Graphics.Capture captures that host window BY HWND
-      -> reads the window's own DWM buffer, so the lens sitting on top is irrelevant
-raw BGRA frames straight into mpv's stdin (--demuxer=rawvideo)   no ffmpeg, no codec
-      -> mpv's ReShade stack (dlss5-feed + renodx-dlss5) performs Neural Rendering
-mpv drawn on top: click-through, always-on-top, no window dragging
+A Magnification API host window sits UNDER the lens, on the same rectangle, with all of the
+lens's own windows on its exclude list
+      -> Windows renders the true desktop content for that rectangle, the same mechanism the
+         built-in Magnifier uses. This is a render request, not a screen capture.
+Windows.Graphics.Capture captures that host window by its handle
+      -> window capture reads a window's own buffer, so the lens sitting on top of it and
+         hiding it makes no difference
+raw BGRA frames go straight into mpv's standard input
+      -> no encoder, no codec, no intermediate file
+mpv's ReShade stack applies Neural Rendering, and mpv is drawn on top: click-through,
+always on top, and never moved by clicks
 ```
 
-Moving the lens only moves the windows and re-aims the magnifier. Nothing restarts, so it
-stays smooth.
+Moving the lens only repositions those windows and re-aims the magnifier. Nothing restarts.
 
 ### Multiple passes
 
-The add-on that works in mpv has no pass count of its own, so extra passes are made by running
-the whole pipeline again. Stage N captures stage N-1's mpv window with WGC and neural-renders
-it a second time. Every stage stacks on the lens rect and only the last one is visible.
+Neural Rendering here is applied by a ReShade add-on, and that add-on offers no setting for
+running its pass more than once. So extra passes are produced by running the whole pipeline
+again: a second stage captures the first stage's mpv window and neural renders that already
+neural rendered image, and so on. The stages stack on the same rectangle, and only the last one
+is visible.
 
-Passes accumulate cleanly. Cumulative change from the raw source, measured as mean absolute
-difference out of 255:
+The passes genuinely accumulate rather than merely looking different. Cumulative change from
+the untouched source, as mean absolute difference out of 255:
 
 | passes | cumulative | added by that pass |
 |---|---|---|
@@ -41,94 +103,58 @@ difference out of 255:
 | 2 | 14.05 | 6.34 |
 | 3 | 19.45 | 5.40 |
 
-With Neural Rendering disabled the same chain costs only 0.24, so the round trip is nearly
-lossless and what accumulates really is neural work. The ceiling is 4, adjustable with
-`max_passes` in the ini.
+Running the same chain with Neural Rendering switched off changes the image by only 0.24, so
+the round trip through capture and mpv is very nearly lossless, and what accumulates really is
+neural work. The maximum is 4, changeable with `max_passes` in the ini.
 
 Two passes is usually the sweet spot. Three is visibly heavy on most content.
 
 ### Frame rate
 
-At 1400x1000 on an RTX 5090, one pass runs at the display cadence and each extra pass costs
-roughly 4 to 5 fps:
+At 1400x1000 on an RTX 5090 driving a 120 Hz display, one pass runs at about **111 fps**, near
+the panel's refresh rate.
 
-| passes | fps |
-|---|---|
-| 1 | 58 |
-| 2 | 50 |
-| 3 | 44 |
+Adding passes costs GPU time: roughly 32 percent utilisation at one pass, 57 at two, 80 at
+three. Be aware that the fps figure in the title bar counts frames arriving from capture into
+the first stage, not frames presented by the last one, so at higher pass counts it reports the
+input side rather than what you are looking at. Measured that way two and three passes both
+land around 85 to 90, and the difference between them is inside the noise.
 
-None of this is GPU bound; the GPU sits near 30 percent. Two things set the rate, and both are
-already dealt with. Repaints are driven by a precisely paced thread rather than tkinter's
-`after()`, whose granularity capped the lens at 47 to 52 fps. And the 5.6 MB write into mpv's
-stdin happens on its own thread, because doing it inline blocked the thread WGC delivers on
-and cost about 8 fps. Capture alone measures 58.7 fps, so one pass is now at that ceiling.
-
-## Requirements
-
-None of the neural stack is included here or redistributed. Get each piece from its own source.
-
-- Windows 11 (for Windows.Graphics.Capture; developed on 25H2) and an RTX GPU with a
-  DLSS 5 capable driver
-- Python 3 with `numpy` and `windows-capture`
-- An **mpv** install carrying a working DLSS 5 Neural Rendering stack: ReShade as the Vulkan
-  layer, plus `dlss5-feed.addon64`, `renodx-dlss5.addon64`, `nvngx_dlss.dll` and NVIDIA's
-  `nvngx_dlssnr.dll`
-
-## Install
-
-1. Put this folder anywhere you like.
-2. `pip install numpy windows-capture`
-3. Tell the lens where your mpv install is, using whichever you prefer:
-   - `Launch-LensNR.cmd --mpv-dir "D:\path\to\mpv"`
-   - `set NEURAL_LENS_MPV_DIR=D:\path\to\mpv`
-   - copy `neural-lens.ini.example` to `neural-lens.ini` and set `mpv_dir`
-   - or simply put an `mpv` folder beside `neural_lens.py`
-4. Run `Launch-LensNR.cmd`.
-
-Window position, pass count and archived logs are kept in `%LOCALAPPDATA%\NeuralLens`, which
-you can redirect with `data_dir` in the ini or `NEURAL_LENS_DATA`.
-
-## Using it
-
-- **Move it** by dragging the title bar. The viewport itself is click-through, so clicking
-  inside it reaches whatever is underneath.
-- **Add or remove a pass** with the plus and minus in the title bar. This is safe to do while
-  running, because adding a stage never resizes anything.
-- **Close it** with the X. The viewport can never hold keyboard focus, so mpv's `q` will not
-  work; that is why the X is there.
-- The **menu** on the left has `Tweak NR settings`, which makes the viewport interactive and
-  opens the ReShade overlay in place so you can adjust Neural Rendering live, and
-  `Done tweaking` to put it back. It also has the pass controls, a one-shot NR toggle (F6,
-  applied to every pass in turn) and a screenshot key (F5).
+The single biggest factor here was a library default rather than anything expensive: the
+capture binding's `minimum_update_interval` throttles delivery to about 60 fps unless it is set
+to 0. See [docs/NOTES.md](docs/NOTES.md).
 
 ## Limits
 
-- **The size is fixed for the duration of a run.** Resizing recreates mpv's swapchain, which
-  makes the NR add-on release the DLSS feature and crash with `0xC0000005`. Pass count is not
-  affected by this and can be changed freely. To change size, close the lens, edit the first
-  line of `%LOCALAPPDATA%\NeuralLens\lens-state.txt` (`width height x y passes`), and relaunch.
-- The Magnification API cannot see exclusive-fullscreen games. Borderless is fine, and such
-  games can usually take Neural Rendering directly through the add-on anyway.
-- Never add `--untimed` to mpv. It presents the same frame many times over, and Neural
-  Rendering then iterates on its own output until the picture collapses.
+- **The size is fixed while it runs.** Resizing recreates mpv's swapchain, which makes the
+  Neural Rendering add-on release its DLSS feature and crash. Pass count is unaffected and can
+  be changed freely. To resize, close the lens, edit the first line of
+  `%LOCALAPPDATA%\NeuralLens\lens-state.txt` (`width height x y passes`) and start it again.
+- **Exclusive fullscreen games are invisible to it**, because the Magnification API cannot see
+  them. Borderless windowed works. Games with real DLSS support can usually take Neural
+  Rendering directly through the add-on anyway, without this.
+- **Never add `--untimed` to mpv.** It makes mpv present the same frame repeatedly, and Neural
+  Rendering then processes its own output over and over until the picture collapses.
 
 ## Troubleshooting
 
-Neural Rendering's visible strength depends heavily on content. It scales with local detail:
-measured 4.5x stronger on the most detailed tenth of an image than on the flattest half. On a
-rendered character it is obvious, on flat UI it can be hard to see even while fully active.
+**Neural Rendering looks like it is doing nothing.** Its strength depends heavily on the
+content. It scales with local detail, measured about 4.5 times stronger on the most detailed
+tenth of an image than on the flattest half. On a rendered character it is obvious; on flat
+interface elements it can be hard to see even while fully active. Use the menu's Neural
+Rendering toggle to compare, since with it live the image changes clearly.
 
-To check whether it is working, use the dropdown's **Toggle NR on/off (F6)**. With NR live the
-image changes clearly, measured at 12.7/255 on plain text.
+**Something went wrong and you want to know why.** Every launch copies the previous session's
+`ReShade.log` and `dlss5-feed.log` into `%LOCALAPPDATA%\NeuralLens\logs`, keeping the 40 most
+recent, so evidence from a failed run survives restarting. In an archived `ReShade.log`, look
+for `feature=18 (DLSSNR` and `evaluation succeeded (count=` to confirm Neural Rendering was
+really running.
 
-Every launch copies the previous session's `ReShade.log` and `dlss5-feed.log` into
-`%LOCALAPPDATA%\NeuralLens\logs` (the 40 most recent are kept), so a failed run stays
-diagnosable after you relaunch. In an archived `ReShade.log`, look for `feature=18 (DLSSNR`
-and `evaluation succeeded (count=`.
+Bug reports are welcome as GitHub issues. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Notes
 
-[docs/NOTES.md](docs/NOTES.md) records the approaches that were tried and rejected, each with
-the measurement that killed it, plus the Win32 details that are easy to get wrong. Worth
-reading before changing the capture path or the pass chain.
+[docs/NOTES.md](docs/NOTES.md) is the engineering record: approaches that were tried and
+abandoned, each with the measurement that ruled it out, and the Windows API details that are
+easy to get wrong. Worth reading before changing how capture or the pass chain works, because
+several of the discarded approaches look perfectly reasonable until measured.

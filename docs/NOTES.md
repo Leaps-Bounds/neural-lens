@@ -110,8 +110,10 @@ The F6 toggle is unambiguous instead, measuring 12.7/255 on plain text.
   it should be captured by `window_hwnd` rather than by name.
 - `windows_capture` dispatches handlers by function `__name__`. They must literally be called
   `on_frame_arrived` and `on_closed`, or it raises ValueError.
-- `frame.frame_buffer` is row padded and non contiguous (stride 2304 for width 560). Slice
-  `[:h, :w, :]` and pass it through `np.ascontiguousarray(...).tobytes()`.
+- `frame.frame_buffer` is row padded and non contiguous (stride 2304 for width 560), so it
+  cannot go straight down a pipe. Slice `[:h, :w, :]`, `np.copyto` it into a reused buffer
+  and write that buffer's memoryview. Do not write from the capture callback itself; see
+  the frame rate section below.
 - Passing `HWND_TOPMOST` as Python `-1` through ctypes silently fails on x64, because a 32 bit
   int goes into a pointer parameter. Use `ctypes.c_void_p(-1)`. mpv resets its own z order
   anyway, so give it `--ontop` rather than forcing the z order from outside.
@@ -139,3 +141,36 @@ Several wrong conclusions during development came from bad measurement rather th
 - Neural Rendering's strength scales with local detail, about 4.5x stronger on the most
   detailed tenth of an image than on the flattest half. Flat content changing very little is
   expected, not a fault.
+
+## Where the frame rate actually goes
+
+Nothing here is GPU bound; the GPU sits near 30 percent at any pass count. The rate is set by
+two things in the lens itself, and finding them took several wrong turns worth recording.
+
+```
+WGC on an ordinary animating window                    59.0 fps
+magnifier host, paced at 120 Hz, 1400x1000             59.0 fps
+magnifier host, paced at 120 Hz, 350x250               59.0 fps   (size is irrelevant)
+lens driven by tkinter after(16)                       47.1 fps
+lens, paced pump thread, write still inline            50.5 fps
+lens, paced pump thread, capture only (no pipe write)  58.7 fps
+lens, paced pump thread + writer thread                58.4 fps
+```
+
+1. **tkinter's `after()` is too coarse to pace repaints.** An `after(16)` tick lands nearer
+   20 ms, which capped the lens around 50. A thread pacing `InvalidateRect` at 120 Hz fixes it.
+   `InvalidateRect` from another thread only posts `WM_PAINT`; tkinter's mainloop dispatches it,
+   since the host window belongs to that thread.
+2. **The 5.6 MB `stdin.write` into mpv blocks the WGC delivery thread.** Removing the write
+   entirely measured 58.7 against 50.5 with it. A writer thread with a one slot handoff absorbs
+   the stall. The slot is overwritten rather than queued, because for a live view only the
+   newest frame matters.
+
+**The Magnification API is not the bottleneck.** An earlier measurement of 51.6 fps for it was
+an artifact: that harness paced its own pump loop with `time.sleep(0.02)`, which is 50 Hz. It
+measured my sleep interval, not the magnifier.
+
+Things that measured as pure noise and are not worth redoing: replacing the double per frame
+copy (2.93 ms to 0.18 ms), removing a redundant `MagSetWindowSource` from every tick, and
+raising the Windows timer resolution with `timeBeginPeriod(1)`. All three are kept because they
+are strictly cheaper, but none of them moved the frame rate.

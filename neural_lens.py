@@ -31,7 +31,7 @@ How it works. Every piece below was measured before it was built:
      magnifier renders it back into stage 1's input, which is a feedback loop
      that collapses the picture into a dark blob within seconds.
 
-  5. Moving the lens just moves the windows and re-aims the magnifier each tick,
+  5. Moving the lens just moves the windows and re-aims the magnifier,
      and adding or removing a pass only spawns or kills a stage. Nothing
      restarts and nothing resizes. RESIZING is the one thing that cannot be done
      live: it recreates mpv's swapchain, which forces the NR add-on to release
@@ -121,6 +121,10 @@ u = ctypes.windll.user32
 mag = ctypes.windll.magnification
 k32 = ctypes.windll.kernel32
 u.SetProcessDPIAware()
+try:
+    ctypes.windll.winmm.timeBeginPeriod(1)   # default granularity is 15.6 ms
+except Exception:
+    pass
 u.GetWindowLongPtrW.restype = ctypes.c_longlong
 u.SetWindowLongPtrW.restype = ctypes.c_longlong
 
@@ -260,7 +264,7 @@ class Lens:
             self.add_pass(save=False)
         self.update_info()
 
-        self.root.after(16, self.tick)
+        self.start_pump()
         self.root.after(1000, self.stats)
 
     # ---- stage plumbing
@@ -275,7 +279,7 @@ class Lens:
                "--hidpi-window-scale=no", "--no-border", "--no-osc",
                "--no-window-dragging", "--ontop", "--force-window=immediate",
                "--keep-open=yes", "--cache=no",
-               "--demuxer-max-bytes=%d" % (self.cw * self.ch * 4 * 3),
+               "--demuxer-max-bytes=%d" % (self.cw * self.ch * 4 * 8),
                "--title=%s" % title]
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL, cwd=MPV_DIR, env=env)
@@ -301,14 +305,51 @@ class Lens:
         """WGC on src_hwnd, frames written to dst_proc's stdin."""
         cap = WindowsCapture(cursor_capture=False, draw_border=False, window_hwnd=src_hwnd)
         lens = self
+        # WGC hands back a row padded, non contiguous view. Copying it with
+        # ascontiguousarray().tobytes() costs two full copies, measured at 2.93 ms
+        # per 1400x1000 frame. Copying into one reused buffer and writing its
+        # memoryview costs 0.18 ms, and this runs on the capture thread, which has
+        # to keep up with delivery.
+        # Two buffers and a one slot handoff. Writing 5.6 MB into mpv's stdin is
+        # synchronous and blocks whenever mpv has not drained the previous frame,
+        # which stalls the thread WGC delivers on: measured 58.7 fps with the write
+        # removed against 50.5 with it. The writer thread absorbs that, and a full
+        # slot is overwritten rather than queued, because for a live view the newest
+        # frame is the only one worth having.
+        bufs = [np.empty((self.ch, self.cw, 4), np.uint8) for _ in range(2)]
+        mvs = [memoryview(b).cast("B") for b in bufs]
+        slot = {"i": 0, "ready": None}
+        cv = threading.Condition()
+
+        def writer():
+            while not lens.closing:
+                with cv:
+                    while slot["ready"] is None and not lens.closing:
+                        cv.wait(0.2)
+                    idx = slot["ready"]
+                    slot["ready"] = None
+                if idx is None:
+                    continue
+                try:
+                    dst_proc.stdin.write(mvs[idx])
+                except (BrokenPipeError, OSError, ValueError):
+                    return
+
+        threading.Thread(target=writer, daemon=True).start()
 
         def on_frame_arrived(frame: Frame, control: InternalCaptureControl):
             if lens.closing:
                 control.stop()
                 return
             try:
-                b = frame.frame_buffer[:frame.height, :frame.width, :]
-                dst_proc.stdin.write(np.ascontiguousarray(b).tobytes())
+                if frame.height < lens.ch or frame.width < lens.cw:
+                    return
+                i = slot["i"]
+                np.copyto(bufs[i], frame.frame_buffer[:lens.ch, :lens.cw, :])
+                with cv:
+                    slot["ready"] = i
+                    cv.notify()
+                slot["i"] = 1 - i
                 if count:
                     if lens.t_first is None:
                         lens.t_first = time.perf_counter()
@@ -393,12 +434,30 @@ class Lens:
         for s in self.stages:
             u.SetWindowPos(s["hwnd"], 0, x, y, 0, 0, flags)
 
-    def tick(self):
-        if self.closing:
-            return
-        self.aim()
-        u.InvalidateRect(self.hmag, None, True)
-        self.root.after(16, self.tick)
+    def start_pump(self):
+        """Drive magnifier repaints from a precisely paced thread.
+
+        tkinter's after() has coarse granularity and event loop overhead, so an
+        after(16) tick actually lands nearer 20 ms, which capped the lens at
+        47 to 52 fps. A paced thread invalidating at 120 Hz reaches the display
+        cadence: the magnifier itself measures 59 fps at full lens size, the same
+        as capturing an ordinary window, so it was never the limit.
+
+        InvalidateRect from another thread just posts WM_PAINT; tkinter's mainloop
+        dispatches it, because the host window belongs to that thread.
+        """
+        def loop():
+            period = 1.0 / 120.0
+            nxt = time.perf_counter()
+            while not self.closing:
+                u.InvalidateRect(self.hmag, None, True)
+                nxt += period
+                d = nxt - time.perf_counter()
+                if d < -0.05:
+                    nxt = time.perf_counter()
+                elif d > 0:
+                    time.sleep(d)
+        threading.Thread(target=loop, daemon=True).start()
 
     def update_info(self):
         n = len(self.stages)
@@ -413,6 +472,7 @@ class Lens:
         if self.t_first and self.frames > 30 and not self.tweak:
             fps = self.frames / max(time.perf_counter() - self.t_first, 1e-6)
             self.info.config(text="%d x %d   %.0f fps" % (self.cw, self.ch, fps), fg=DIM)
+            print("FPS %.2f" % fps, flush=True)
         self.root.after(1000, self.stats)
 
     def save_state(self):
@@ -546,6 +606,10 @@ class Lens:
                 pass
         try:
             mag.MagUninitialize()
+        except Exception:
+            pass
+        try:
+            ctypes.windll.winmm.timeEndPeriod(1)
         except Exception:
             pass
         self.root.quit()

@@ -49,15 +49,33 @@ crashing with 0xC0000005. Moving the lens is safe because that only repositions 
 re-aims the magnifier, and changing pass count is safe because adding a stage never resizes an
 existing one.
 
-So the menu's resize writes the new geometry into the state file and re-executes the process.
-`quit()` terminates each stage and waits for it, and the handover then waits a further second
-before starting the replacement, because stage windows are found by **exact title match** and a
-lingering mpv window would let the new stage 1 bind to the old one. `os.execv` performs the
-handover, with a `subprocess.Popen` fallback.
+So the menu's resize writes the new geometry into the state file and starts a fresh copy of the
+process. `quit()` terminates each stage and waits for it, and the handover then waits a further
+second before starting the replacement, because stage windows are found by **exact title match**
+and a lingering mpv window would let the new stage 1 bind to the old one.
 
-Verified end to end by driving the real dialog: 1200x800 at (1800, 700) resized to 960x640 at
-(1860, 740) came back at exactly that size and position, with capture running again and the pass
-count carried across, and no orphaned mpv process left behind.
+### The handover must not use `os.execv`
+
+On Windows `os.execv` goes through the CRT, which does **not** quote arguments containing
+spaces. This project's own path has one in `DLSS 5`, so the replacement process was handed
+`C:\...\Coding\DLSS` as its script argument and died immediately with `can't open file`.
+
+What makes it vicious is that `execv` does not raise when this happens. It successfully starts
+something broken, and the original process is already gone, so a `try/except` around it with a
+`subprocess` fallback never fires. The lens simply vanished on confirming a resize, with no
+console output and no log entry. The first version of the resize feature shipped exactly that
+bug, and it survived testing because the test harness ran from a relative path with no space in
+it, so the only condition that triggers it was absent.
+
+`subprocess.Popen` quotes correctly through `list2cmdline`. The replacement's own output goes to
+`logs/restart.log`, because the console it was launched from may close along with the outgoing
+process, and a restart that dies should leave evidence rather than disappearing.
+
+Verified by driving the real dialog: 1200x800 at (1800, 700) resized to 960x640 at (1860, 740)
+came back at exactly that size and position, with capture running again, the pass count carried
+across, and no orphaned mpv process left behind. The space case is verified separately, by
+running the same flow from a batch file inside a directory whose name contains a space, which is
+the condition `os.execv` failed.
 
 ## Dead ends
 

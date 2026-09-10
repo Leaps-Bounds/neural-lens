@@ -157,6 +157,12 @@ and compare them. For scale, over a desktop of flat interface the average differ
 1.3 out of 255 while Neural Rendering was fully live, and almost all of that change sat in the
 detailed areas of the image.
 
+**The lens disappeared after you confirmed a resize.** Resizing relaunches the lens, so a
+relaunch that fails looks exactly like the app closing on its own. Nothing is lost: the size you
+chose was saved before the restart, so starting it again with the launcher brings it back at
+that size. If it happens repeatedly, `%LOCALAPPDATA%\NeuralLens\logs\restart.log` holds whatever
+the replacement printed before it gave up.
+
 **Something went wrong and you want to know why.** Every launch copies the previous session's
 `ReShade.log` and `dlss5-feed.log` into `%LOCALAPPDATA%\NeuralLens\logs`, keeping the 40 most
 recent, so evidence from a failed run survives restarting. In an archived `ReShade.log`, the

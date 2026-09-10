@@ -31,11 +31,14 @@ How it works. Every piece below was measured before it was built:
      magnifier renders it back into stage 1's input, which is a feedback loop
      that collapses the picture into a dark blob within seconds.
 
-  5. Moving the lens just moves the windows and re-aims the magnifier,
-     and adding or removing a pass only spawns or kills a stage. Nothing
-     restarts and nothing resizes. RESIZING is the one thing that cannot be done
-     live: it recreates mpv's swapchain, which forces the NR add-on to release
-     the DLSS feature and crash with 0xC0000005.
+  5. Moving the lens just moves the windows and re-aims the magnifier, and
+     adding or removing a pass only spawns or kills a stage. Neither of those
+     restarts anything. RESIZING is the one thing that cannot be done live: it
+     recreates mpv's swapchain, which forces the NR add-on to release the DLSS
+     feature and crash with 0xC0000005. So the menu's resize saves the new
+     geometry and relaunches the process at that size instead. That handover
+     must not use os.execv: on Windows it does not quote arguments containing
+     spaces, and this project's own path has one in "DLSS 5".
 
 Configuration: see neural-lens.ini.example. State and logs live in
 %LOCALAPPDATA%/NeuralLens by default.
@@ -1007,15 +1010,43 @@ def main():
     if lens.restart:
         # Resizing has to go through a restart, so hand the process over to a
         # fresh copy of itself once every mpv child is really gone.
+        #
+        # Not os.execv. On Windows that goes through the CRT, which does not quote
+        # arguments containing spaces, so a script path such as
+        # "...\\Coding\\DLSS 5\\neural-lens\\neural_lens.py" reaches the replacement
+        # process split at the space. It does not raise either: it starts something
+        # broken while this process is already gone, so the lens never comes back
+        # and nothing is reported. subprocess quotes correctly through list2cmdline.
         try:
             root.destroy()
         except Exception:
             pass
         time.sleep(1.0)
+        cmd = [sys.executable, os.path.abspath(sys.argv[0])] + sys.argv[1:]
+        note = os.path.join(LOGDIR, "restart.log")
         try:
-            os.execv(sys.executable, [sys.executable] + sys.argv)
+            # the new size lives in the state file; lens.cw and lens.ch are the old one
+            v = [int(n) for n in open(STATE).read().split()]
+            print("restarting at %d x %d" % (v[0], v[1]), flush=True)
         except Exception:
-            subprocess.Popen([sys.executable] + sys.argv, cwd=_script_dir())
+            print("restarting", flush=True)
+        try:
+            os.makedirs(LOGDIR, exist_ok=True)
+            # The console this was started from may go away with this process, so
+            # give the replacement its own destination for anything it prints.
+            out = open(note, "w", encoding="utf-8", errors="replace")
+            child = subprocess.Popen(cmd, cwd=_script_dir(),
+                                     stdout=out, stderr=subprocess.STDOUT)
+        except Exception as exc:
+            print("could not restart: %s" % exc, flush=True)
+            print("start it again yourself, the new size is already saved", flush=True)
+            return
+        # A restart that fails should say so rather than vanishing without a word.
+        time.sleep(3.0)
+        if child.poll() is not None:
+            print("the restart exited straight away (code %s)" % child.poll(), flush=True)
+            print("what it printed is in %s" % note, flush=True)
+            print("start it again yourself, the new size is already saved", flush=True)
 
 
 if __name__ == "__main__":

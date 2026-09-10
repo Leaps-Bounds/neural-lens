@@ -21,12 +21,13 @@ mpv_dir = C:\Games\_mpv
 # Frame pacing. Both default to the display's own refresh rate, so a 240 Hz
 # monitor is paced at 240. Only set these to force something else.
 #
-# fps is a ceiling, not the rate mpv is actually given. It is divided by the
-# number of neural passes, because every pass is another capture and present
-# stage and the chain delivers fewer frames per second. On a 120 Hz display that
-# works out as 120 at one pass, 60 at two, 40 at three and 30 at four. Raising it
-# above what the chain can really deliver makes mpv present frames that have not
-# arrived, and the picture then crushes toward black and recovers, repeatedly.
+# fps is a ceiling, not the rate mpv is actually given. Five sixths of it is
+# divided by the number of neural passes, because every pass is another capture
+# and present stage and the chain delivers fewer frames per second. On a 120 Hz
+# display that works out as 100 at one pass, 50 at two, 33 at three and 25 at
+# four. The margin is deliberate: declaring even exactly what arrives makes mpv
+# present frames that are not there yet, and the picture shimmers. Declaring far
+# more than arrives makes it crush toward black and recover, repeatedly.
 # fps = 120
 # pump_hz = 120
 

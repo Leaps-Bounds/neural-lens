@@ -238,7 +238,7 @@ def main():
     lens = Lens(root, h, x, y, cw, ch)
     lens.place_mpv()
     lens.reaim()
-    print("lens ready %dx%d at (%d,%d) - drag the title bar" % (cw, ch, x, y))
+    print("lens ready %dx%d at (%d,%d). Drag the title bar" % (cw, ch, x, y))
 
     def watch():
         while u.IsWindow(h):

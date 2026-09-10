@@ -172,7 +172,7 @@ def main():
     lens = Lens(root, x, y, cw, ch)
     lens.place_mpv()
     lens.reaim()
-    print("lens ready: %dx%d at (%d,%d) - drag the border" % (cw, ch, x, y))
+    print("lens ready: %dx%d at (%d,%d). Drag the border" % (cw, ch, x, y))
 
     def watch():
         while u.IsWindow(h):

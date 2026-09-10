@@ -44,12 +44,14 @@ import ctypes
 import ctypes.wintypes as w
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import threading
 import time
 import tkinter as tk
-from tkinter import messagebox
+import zlib
+from tkinter import filedialog, messagebox
 
 import numpy as np
 from windows_capture import WindowsCapture, Frame, InternalCaptureControl
@@ -106,6 +108,8 @@ DATA_DIR = (os.environ.get("NEURAL_LENS_DATA") or _INI.get("data_dir")
             or os.path.join(os.environ.get("LOCALAPPDATA") or _script_dir(), "NeuralLens"))
 STATE = os.path.join(DATA_DIR, "lens-state.txt")
 LOGDIR = os.path.join(DATA_DIR, "logs")
+SHOT_DIR = (os.environ.get("NEURAL_LENS_SHOTS") or _INI.get("screenshot_dir")
+            or os.path.join(DATA_DIR, "screenshots"))
 
 try:
     MAX_PASSES = max(1, min(8, int(_INI.get("max_passes", 4))))
@@ -184,6 +188,50 @@ MW_FILTERMODE_EXCLUDE = 0
 LWA_ALPHA = 0x2
 
 
+def _write_png(path, rgb):
+    """Minimal PNG encoder, so the only dependencies stay numpy and
+    windows-capture. rgb is an HxWx3 uint8 array."""
+    h, wd = rgb.shape[:2]
+    raw = np.empty((h, wd * 3 + 1), np.uint8)
+    raw[:, 0] = 0                                  # per row filter: none
+    raw[:, 1:] = rgb.reshape(h, wd * 3)
+
+    def chunk(tag, data):
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff))
+
+    with open(path, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n")
+        f.write(chunk(b"IHDR", struct.pack(">IIBBBBB", wd, h, 8, 2, 0, 0, 0)))
+        f.write(chunk(b"IDAT", zlib.compress(raw.tobytes(), 6)))
+        f.write(chunk(b"IEND", b""))
+
+
+def _bgra_to_rgb(a):
+    return np.ascontiguousarray(a[:, :, 2::-1])
+
+
+def _save_ini(key, value):
+    """Write one key into neural-lens.ini beside the script, keeping the rest."""
+    path = os.path.join(_script_dir(), "neural-lens.ini")
+    lines, done = [], False
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                bare = line.strip()
+                if bare and bare[0] not in "#;[" and "=" in bare \
+                        and bare.split("=", 1)[0].strip().lower() == key:
+                    lines.append("%s = %s\n" % (key, value)); done = True
+                else:
+                    lines.append(line)
+    except OSError:
+        pass
+    if not done:
+        lines.append("%s = %s\n" % (key, value))
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.writelines(lines)
+
+
 def archive_logs():
     """Keep the PREVIOUS session's logs before mpv overwrites them. Without this,
     launching again destroys the only evidence of a failure."""
@@ -231,6 +279,11 @@ class Lens:
         self.tweak = False          # True while the viewport is interactive
         self.frames = 0
         self.t_first = None
+        self.restart = False        # set by the resize flow, read by main()
+        self.shot_want = False      # ask the capture thread for one source frame
+        self.shot_ready = False
+        self.shot_busy = False
+        self.shot_buf = np.empty((ch, cw, 4), np.uint8)
         self.stages = []            # [{title, proc, hwnd, ctl}], last one is visible
 
         # ---- chrome (tk): title bar + subtle border + transparent hole
@@ -404,6 +457,16 @@ class Lens:
                     cv.notify()
                 slot["i"] = 1 - i
                 if count:
+                    if lens.shot_want:
+                        # copy here rather than holding a reference: the two
+                        # buffers rotate every frame, so a reference would race
+                        try:
+                            np.copyto(lens.shot_buf,
+                                      frame.frame_buffer[:lens.ch, :lens.cw, :])
+                            lens.shot_ready = True
+                        except Exception:
+                            pass
+                        lens.shot_want = False
                     if lens.t_first is None:
                         lens.t_first = time.perf_counter()
                     lens.frames += 1
@@ -492,9 +555,9 @@ class Lens:
 
         tkinter's after() has coarse granularity and event loop overhead, so an
         after(16) tick actually lands nearer 20 ms, which capped the lens at
-        47 to 52 fps. A paced thread invalidating at 120 Hz reaches the display
-        cadence: the magnifier itself measures 59 fps at full lens size, the same
-        as capturing an ordinary window, so it was never the limit.
+        47 to 52 fps. This paces at PUMP_HZ, which comes from the display's own
+        refresh rate. The magnifier was never the limit: it matches an ordinary
+        window and is indifferent to how large the magnified region is.
 
         InvalidateRect from another thread just posts WM_PAINT; tkinter's mainloop
         dispatches it, because the host window belongs to that thread.
@@ -525,7 +588,6 @@ class Lens:
         if self.t_first and self.frames > 30 and not self.tweak:
             fps = self.frames / max(time.perf_counter() - self.t_first, 1e-6)
             self.info.config(text="%d x %d   %.0f fps" % (self.cw, self.ch, fps), fg=DIM)
-            print("FPS %.2f" % fps, flush=True)
         self.root.after(1000, self.stats)
 
     def save_state(self):
@@ -568,12 +630,18 @@ class Lens:
                       command=self.toggle_tweak)
         m.add_command(label="Toggle NR on/off   (F6, all passes)",
                       command=lambda: self.send_key(0x75))
-        m.add_command(label="NR screenshot        (F5)", command=lambda: self.send_key(0x74))
         m.add_separator()
         m.add_command(label="Add a pass      (+)", command=self.add_pass)
         m.add_command(label="Remove a pass   (\u2212)", command=self.drop_pass)
         m.add_separator()
-        m.add_command(label="Why can't I resize?", command=self.resize_hint)
+        m.add_command(label="Save before and after      (both images, plus a join)",
+                      command=self.take_screenshot)
+        m.add_command(label="Save the result only       (F5, ReShade's own)",
+                      command=lambda: self.send_key(0x74))
+        m.add_command(label="Open screenshot folder", command=self.open_shots)
+        m.add_separator()
+        m.add_command(label="Resize the lens...", command=self.resize_dialog)
+        m.add_command(label="Settings...", command=self.settings_dialog)
         m.add_separator()
         m.add_command(label="Close", command=self.quit)
         m.tk_popup(self.t.winfo_x() + 6, self.t.winfo_y() + BAR)
@@ -631,18 +699,242 @@ class Lens:
         self.root.after(420, lambda: self.set_interactive(h, False))
         self.root.after(540, lambda: self.send_key(vk, idx + 1))
 
-    def resize_hint(self):
-        messagebox.showinfo(
-            "Resize",
-            "The lens cannot resize while running. A resize recreates mpv's "
-            "swapchain, which forces the NR add-on to release the DLSS feature "
-            "and crash (0xC0000005). Passes can be changed live because adding "
-            "one never resizes anything.\n\nTo resize: close the lens, edit the "
-            "width and height on the first line of:\n%s\nand relaunch." % STATE)
-
-    def quit(self):
+    # ---- resize
+    # The lens cannot resize in place: that recreates mpv's swapchain, which makes
+    # the NR add-on release its DLSS feature and crash. So drag a ghost to the size
+    # you want, confirm, and the lens restarts itself at that size.
+    def resize_dialog(self):
         if self.closing:
             return
+        x, y = self.inner()
+        t = tk.Toplevel(self.root)
+        t.title("Resize the lens: drag the edges, then let go")
+        t.geometry("%dx%d+%d+%d" % (self.cw, self.ch, x, y))
+        t.attributes("-topmost", True)
+        t.attributes("-alpha", 0.55)
+        t.configure(bg="#101820")
+        c = tk.Canvas(t, highlightthickness=0, bg="#101820")
+        c.pack(fill="both", expand=True)
+        st = {"after": None, "done": False, "start": (self.cw, self.ch)}
+
+        def draw():
+            wd, ht = t.winfo_width(), t.winfo_height()
+            c.delete("all")
+            c.create_rectangle(3, 3, wd - 3, ht - 3, outline=ACCENT, width=6)
+            c.create_text(wd // 2, ht // 2 - 26, text="%d x %d" % (wd, ht),
+                          fill=ACCENT, font=("Consolas", 34, "bold"))
+            c.create_text(wd // 2, ht // 2 + 24,
+                          text=("drag any edge, then let go"
+                                if (wd, ht) == st["start"] else "let go to confirm"),
+                          fill=FG, font=("Segoe UI", 14))
+            c.create_text(wd // 2, ht // 2 + 54, text="Esc to cancel",
+                          fill=DIM, font=("Segoe UI", 11))
+
+        def settled():
+            if st["done"]:
+                return
+            wd, ht = t.winfo_width(), t.winfo_height()
+            if (wd, ht) == st["start"]:
+                return
+            st["done"] = True
+            # rootx/rooty, not x/y: save_state stores the viewport origin
+            nx, ny = t.winfo_rootx(), t.winfo_rooty()
+            t.attributes("-topmost", False)
+            t.withdraw()
+            if messagebox.askyesno(
+                    "Resize the lens",
+                    "Resize to %d x %d ?\n\n"
+                    "The lens has to restart. Resizing in place recreates mpv's "
+                    "swapchain, which makes the Neural Rendering add-on release "
+                    "its DLSS feature and crash, so restarting is the safe way.\n\n"
+                    "It reopens at the new size with the same number of passes."
+                    % (wd, ht)):
+                try:
+                    with open(STATE, "w") as f:
+                        f.write("%d %d %d %d %d\n" % (wd - wd % 2, ht - ht % 2,
+                                                      nx, ny, len(self.stages)))
+                except OSError:
+                    pass
+                t.destroy()
+                self.quit(restart=True)
+            else:
+                t.destroy()
+
+        def on_conf(e):
+            if st["done"] or e.widget is not t:
+                return
+            draw()
+            if st["after"]:
+                self.root.after_cancel(st["after"])
+            st["after"] = self.root.after(450, settled)
+
+        def align():
+            # geometry() places the decorated frame, but the client area is the
+            # part that has to sit on the viewport. The decoration thickness is
+            # only knowable once the window manager has mapped the window, so
+            # this runs after that rather than immediately.
+            try:
+                dx = t.winfo_rootx() - t.winfo_x()
+                dy = t.winfo_rooty() - t.winfo_y()
+            except tk.TclError:
+                return
+            if (dx, dy) != (0, 0):
+                t.geometry("%dx%d+%d+%d" % (self.cw, self.ch, x - dx, y - dy))
+            st["start"] = (t.winfo_width(), t.winfo_height())
+
+        t.after(150, align)
+        t.bind("<Configure>", on_conf)
+        t.bind("<Escape>", lambda e: t.destroy())
+        draw()
+
+    # ---- screenshots
+    # ReShade's own key can only give the processed image. The lens holds the exact
+    # frame it handed to mpv, so it can save a genuinely aligned before and after
+    # from the same moment, plus a composite, which is the shot worth posting.
+    def _capture_once(self, hwnd, timeout=2.0):
+        out = {"a": None}
+
+        def on_frame_arrived(frame: Frame, control: InternalCaptureControl):
+            if out["a"] is None:
+                try:
+                    out["a"] = np.array(
+                        frame.frame_buffer[:frame.height, :frame.width, :], copy=True)
+                except Exception:
+                    out["a"] = False
+            control.stop()
+
+        def on_closed():
+            pass
+
+        cap = WindowsCapture(cursor_capture=False, draw_border=False,
+                             minimum_update_interval=0, window_hwnd=hwnd)
+        cap.event(on_frame_arrived)
+        cap.event(on_closed)
+        try:
+            ctl = cap.start_free_threaded()
+        except Exception:
+            return None
+        t0 = time.perf_counter()
+        while out["a"] is None and time.perf_counter() - t0 < timeout:
+            time.sleep(0.01)
+        try:
+            ctl.stop()
+        except Exception:
+            pass
+        return out["a"] if isinstance(out["a"], np.ndarray) else None
+
+    def take_screenshot(self):
+        if self.closing or self.shot_busy:
+            return
+        self.shot_busy = True
+        self.info.config(text="saving screenshot ...", fg=WARN)
+        # This has to run off the mainloop. The mainloop is what dispatches
+        # WM_PAINT for the magnifier host, so blocking it here would stop the
+        # source repainting, window capture would stop delivering, and the frame
+        # being waited for would never arrive.
+        threading.Thread(target=self._shot_worker, daemon=True).start()
+
+    def _shot_worker(self):
+        text, colour = "screenshot captured nothing", WARN
+        try:
+            self.shot_ready = False
+            self.shot_want = True
+            t0 = time.perf_counter()
+            while not self.shot_ready and time.perf_counter() - t0 < 2.0:
+                time.sleep(0.005)
+            before = self.shot_buf.copy() if self.shot_ready else None
+            after = self._capture_once(self.visible())
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            saved = []
+            os.makedirs(SHOT_DIR, exist_ok=True)
+            base = os.path.join(SHOT_DIR, "lens-%s-%dpass" % (stamp, len(self.stages)))
+            if before is not None:
+                _write_png(base + "-before.png", _bgra_to_rgb(before))
+                saved.append("before")
+            if after is not None:
+                _write_png(base + "-after.png", _bgra_to_rgb(after))
+                saved.append("after")
+            if before is not None and after is not None:
+                hh = min(before.shape[0], after.shape[0])
+                ww = min(before.shape[1], after.shape[1])
+                _write_png(base + "-side-by-side.png",
+                           np.hstack([_bgra_to_rgb(before[:hh, :ww]),
+                                      np.full((hh, 8, 3), 90, np.uint8),
+                                      _bgra_to_rgb(after[:hh, :ww])]))
+                saved.append("side by side")
+            if saved:
+                text, colour = "saved " + ", ".join(saved), ACCENT
+        except Exception as exc:
+            text, colour = "screenshot failed: %s" % exc, WARN
+        finally:
+            self.shot_want = False
+            self.shot_busy = False
+        try:
+            self.root.after(0, lambda: self._shot_done(text, colour))
+        except Exception:
+            pass
+
+    def _shot_done(self, text, colour):
+        if self.closing:
+            return
+        self.info.config(text=text, fg=colour)
+        self.root.after(4000, lambda: self.info.config(fg=DIM))
+
+    def open_shots(self):
+        try:
+            os.makedirs(SHOT_DIR, exist_ok=True)
+            os.startfile(SHOT_DIR)
+        except Exception:
+            messagebox.showinfo("Screenshots", "Screenshots are saved to:\n%s" % SHOT_DIR)
+
+    # ---- settings
+    def settings_dialog(self):
+        t = tk.Toplevel(self.root)
+        t.title("Neural Lens settings")
+        t.attributes("-topmost", True)
+        t.configure(bg=BG)
+        t.resizable(False, False)
+        tk.Label(t, text="Where to save screenshots", bg=BG, fg=FG,
+                 font=("Segoe UI", 10, "bold")).grid(row=0, column=0, columnspan=3,
+                                                     sticky="w", padx=12, pady=(12, 4))
+        var = tk.StringVar(value=SHOT_DIR)
+        tk.Entry(t, textvariable=var, width=58, bg="#0b1220", fg=FG,
+                 insertbackground=FG, relief="flat").grid(row=1, column=0, columnspan=2,
+                                                          padx=(12, 6), pady=4, sticky="we")
+
+        def browse():
+            d = filedialog.askdirectory(initialdir=var.get() or DATA_DIR,
+                                        title="Where should screenshots go?")
+            if d:
+                var.set(os.path.normpath(d))
+
+        tk.Button(t, text="Browse", command=browse, relief="flat",
+                  bg="#334155", fg=FG).grid(row=1, column=2, padx=(0, 12), pady=4)
+        tk.Label(t, text="Display %d Hz, so frames are paced at %d and mpv is told %d.\n"
+                         "Override with fps and pump_hz in neural-lens.ini."
+                         % (DISPLAY_HZ, PUMP_HZ, FPS),
+                 bg=BG, fg=DIM, justify="left",
+                 font=("Segoe UI", 9)).grid(row=2, column=0, columnspan=3,
+                                            sticky="w", padx=12, pady=(10, 4))
+
+        def save():
+            global SHOT_DIR
+            d = var.get().strip()
+            if d:
+                SHOT_DIR = d
+                _save_ini("screenshot_dir", d)
+            t.destroy()
+
+        tk.Button(t, text="Save", command=save, relief="flat", bg=ACCENT,
+                  fg="#0b1220").grid(row=3, column=1, sticky="e", pady=(6, 12))
+        tk.Button(t, text="Cancel", command=t.destroy, relief="flat",
+                  bg="#334155", fg=FG).grid(row=3, column=2, sticky="w",
+                                            padx=(6, 12), pady=(6, 12))
+
+    def quit(self, restart=False):
+        if self.closing:
+            return
+        self.restart = restart
         self.closing = True
         for s in reversed(self.stages):
             for step in (lambda s=s: s["ctl"].stop(),
@@ -712,5 +1004,19 @@ def main():
     threading.Thread(target=watch, daemon=True).start()
     root.mainloop()
 
+    if lens.restart:
+        # Resizing has to go through a restart, so hand the process over to a
+        # fresh copy of itself once every mpv child is really gone.
+        try:
+            root.destroy()
+        except Exception:
+            pass
+        time.sleep(1.0)
+        try:
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        except Exception:
+            subprocess.Popen([sys.executable] + sys.argv, cwd=_script_dir())
 
-main()
+
+if __name__ == "__main__":
+    main()

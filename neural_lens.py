@@ -194,11 +194,33 @@ def _fps_for(stages):
          60 fps                   2 stages 0/14    3 stages 0/14   4 stages 4/14
          30 fps                   2 stages 0/14
 
-    Dividing by the stage count gives 120, 60, 40, 30, each at or below every
-    clean measurement. It is deliberately conservative at three stages, where 60
-    is known to work, because a cliff is worse than a few lost frames.
+    Dividing by the stage count is necessary but not sufficient. Declaring exactly
+    what the chain delivers is already broken, because ordinary jitter then lands
+    some presents with no new frame to draw. That does not collapse the picture,
+    it shimmers: measured as frame to frame change on a static source, where the
+    floor is 0.146 out of 255:
+
+        one stage, with about 119 frames a second arriving
+            120 declared   1.637       0 percent headroom
+            110 declared   0.220       5 percent
+            100 declared   0.150      16 percent
+             90 declared   0.148      24 percent
+
+    So the rate is also held to five sixths of the ceiling, giving 100, 50, 33 and
+    25 on a 120 Hz display.
+
+    Stages after the first are fed by the stage before them, which presents at
+    this same rate, so they sit at parity by construction and dividing cannot fix
+    that. What makes parity safe is a longer frame interval, which is why two
+    stages at 60 measured 0.225 while three at 40 and four at 30 measured at the
+    floor: 16.7 ms leaves room for jitter to slip past a present, 25 ms and 33 ms
+    do not.
+
+    Known limit: this assumes the chain delivers close to the display rate, which
+    holds at 120 Hz but is untested on a faster panel. On hardware that cannot
+    keep up, the declared rate would still be too high.
     """
-    return max(24, BASE_FPS // max(1, stages))
+    return max(24, (BASE_FPS * 5 // 6) // max(1, stages))
 
 u = ctypes.windll.user32
 mag = ctypes.windll.magnification

@@ -26,5 +26,7 @@ Known limits:
 - Exclusive fullscreen applications are invisible to the Magnification API. Borderless
   windowed works.
 - Resizing relaunches the lens, and changing the pass count respawns every stage.
-- The frame rate declared to mpv is the display rate divided by the number of passes, so more
-  passes means a lower presented rate. See `docs/NOTES.md` for the measurements behind this.
+- The frame rate declared to mpv is five sixths of the display rate, divided by the number of
+  passes, so more passes means a lower presented rate: 100, 50, 33 and 25 on a 120 Hz display.
+  The margin is not waste. Declaring the full rate makes the picture shimmer, measured at 1.637
+  frame to frame change against a floor of 0.146 on a static source. See `docs/NOTES.md`.

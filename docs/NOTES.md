@@ -215,6 +215,18 @@ instead, measuring 12.7/255 on plain text.
   most detailed tenth against 0.654 on the flattest half, a ratio of 9.5x. Round trip loss with
   NR off is 0.24 spread evenly, so no such ratio can come from the capture path. Ratios of 4.8x
   and 5.6x have been measured on other content.
+- **The detail ratio is itself content dependent, so calling it content independent above is
+  only half true.** It works where the image has genuinely flat areas to contrast against. Dense
+  photographic content has none: a still frame of film footage measured 2.24x, 2.51x and 2.67x
+  across three captures of a bit for bit identical source, with the flattest half of the image
+  still carrying a gradient of 3.0 and only 0.1 to 1.0 percent of pixels unchanged. There is no
+  flat half, so the ratio compresses while Neural Rendering works normally. Gate the assertion
+  on the flattest half actually being flat, and where it is not, assert only that the effect
+  sits far above the 0.24 round trip floor.
+- **Check that the source held still before trusting any before and after pair.** Saving two
+  captures and comparing them costs nothing and settles it: a suspected moving source turned out
+  to be byte identical, same sha256 across 28 minutes, which killed a plausible explanation
+  before it was acted on.
 - **Drive the real application rather than a mock.** `neural_lens.py` guards its entry point with
   `if __name__ == "__main__"`, so a harness can import it, wrap `Lens.__init__` to obtain the
   running instance, and schedule real menu actions on the real mainloop.
@@ -275,10 +287,30 @@ and present. Samples out of 14 that collapsed, at 1314x1332 on a 120 Hz display:
  30 fps                  0/14
 ```
 
-`_fps_for` therefore declares `BASE_FPS // stages`, which gives 120, 60, 40 and 30. Each sits at
-or below a measured clean value. It is deliberately conservative at three stages, where 60 is
-known to work, because a cliff is worse than a few lost frames. With that rule every pass count
-measures 0/14.
+Dividing alone is not enough. Declaring exactly what the chain delivers is already broken,
+because ordinary jitter then lands some presents with no new frame. That does not collapse the
+picture, it shimmers, which is why it survived the collapse testing above. Measured as frame to
+frame change on a static source, where the floor is 0.146 out of 255:
+
+```
+one stage, about 119 frames a second arriving
+    120 declared   1.637       0 percent headroom
+    110 declared   0.220       5 percent
+    100 declared   0.150      16 percent
+     90 declared   0.148      24 percent
+```
+
+So `_fps_for` declares `(BASE_FPS * 5 // 6) // stages`, giving 100, 50, 33 and 25 on a 120 Hz
+display. Verified at every pass count: 0.150, 0.139, 0.135 and 0.133, against 1.637 at one stage
+and 0.225 at two under the previous rule.
+
+Stages after the first are fed by the stage before them, which presents at this same rate, so
+they sit at parity by construction and dividing cannot change that. What makes parity safe is a
+longer frame interval, which is why two stages at 60 measured 0.225 while three at 40 and four
+at 30 sat at the floor: 16.7 ms leaves room for jitter to slip past a present, 25 ms does not.
+
+This assumes the chain delivers close to the display rate. That holds at 120 Hz and is untested
+on a faster panel, where the ceiling itself would be too high.
 
 Two consequences:
 

@@ -122,26 +122,28 @@ the round trip through capture and mpv is very nearly lossless, and what accumul
 neural work. The maximum is 4, changeable with `max_passes` in the ini.
 
 **Each pass lowers the frame rate on purpose.** Every pass is another full capture and present
-stage, so the chain delivers fewer frames per second. mpv is therefore told the stream runs at
-the display rate divided by the number of passes: 120, 60, 40 and 30 on a 120 Hz panel. Telling
-it anything faster than the chain can really deliver makes it present frames that have not
-arrived yet, and Neural Rendering then re-runs over its own output until the picture crushes
-toward black, recovers, and does it again. Because that rate is fixed when mpv starts, changing
-the pass count restarts every stage.
+stage, so the chain delivers fewer frames per second. mpv is told a rate below what it can
+actually receive: on a 120 Hz panel that works out as 100 at one pass, then 50, 33 and 25.
+
+Telling it anything faster makes it present frames that have not arrived yet, and Neural
+Rendering then re-runs over its own output. A large mismatch crushes the picture toward black
+and recovers, over and over. A small one, even declaring exactly what arrives, makes it shimmer
+instead, which is why the margin exists rather than a plain division. Because that rate is fixed
+when mpv starts, changing the pass count restarts every stage.
 
 Two passes is usually the sweet spot. Three is visibly heavy on most content.
 
 ### Frame rate
 
-At 1400x1000 on an RTX 5090 driving a 120 Hz display, one pass runs at about **111 fps**, near
-the panel's refresh rate.
+On an RTX 5090 driving a 120 Hz display, capture into the first stage runs at about **117 fps**.
+What you actually watch is the presented rate, which is deliberately held below that: **100** at
+one pass, then 50, 33 and 25 as passes are added. See Multiple passes for why the gap is
+necessary rather than wasteful.
 
-Adding passes costs GPU time: roughly 32 percent utilisation at one pass, 57 at two, 80 at
-three. It also lowers the presented rate deliberately, as described under Multiple passes, so
-on a 120 Hz panel two passes present at 60 and three at 40. Be aware that the fps figure in the
-title bar counts frames arriving from capture into the first stage rather than frames presented
-by the last one, so at higher pass counts it reports the input side rather than what you are
-looking at.
+Adding passes also costs GPU time: roughly 32 percent utilisation at one pass, 57 at two, 80 at
+three. Be aware that the fps figure in the title bar counts frames arriving from capture into
+the first stage rather than frames presented by the last one, so it reports the input side
+rather than what you are looking at.
 
 The single biggest factor here was a library default rather than anything expensive: the
 capture binding's `minimum_update_interval` throttles delivery to about 60 fps unless it is set

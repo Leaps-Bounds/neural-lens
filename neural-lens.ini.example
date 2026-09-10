@@ -13,3 +13,15 @@ mpv_dir = C:\Games\_mpv
 # Where the lens keeps its window position and its archived logs.
 # Defaults to %LOCALAPPDATA%\NeuralLens
 # data_dir = D:\NeuralLens
+
+# Where the before and after screenshots go.
+# Defaults to %LOCALAPPDATA%\NeuralLens\screenshots
+# screenshot_dir = D:\Screenshots\NeuralLens
+
+# Frame pacing. Both default to the display's own refresh rate, so a 240 Hz
+# monitor is paced at 240. Only set these to force something else.
+# fps = 120
+# pump_hz = 120
+
+# Highest number of neural passes the plus button will go to.
+# max_passes = 4

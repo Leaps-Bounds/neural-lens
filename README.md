@@ -50,8 +50,9 @@ You also need:
    - or put an `mpv` folder beside `neural_lens.py`
 4. Run `Launch-LensNR.cmd`.
 
-Window position, pass count and archived logs live in `%LOCALAPPDATA%\NeuralLens`. Redirect
-that with `data_dir` in the ini, or the `NEURAL_LENS_DATA` variable.
+Window position, pass count, screenshots and archived logs live in `%LOCALAPPDATA%\NeuralLens`.
+Redirect all of it with `data_dir` in the ini, or the `NEURAL_LENS_DATA` variable. Screenshots
+can also be pointed somewhere else on their own, from the menu's Settings.
 
 ## Using it
 
@@ -61,8 +62,16 @@ that with `data_dir` in the ini, or the `NEURAL_LENS_DATA` variable.
 - **Close it** with the X. Because the viewport can never take keyboard focus, mpv's usual `q`
   will not reach it, which is why the X is there.
 - The **menu** at the left opens the ReShade overlay in place so you can adjust Neural
-  Rendering settings live, and also holds the pass controls, a Neural Rendering on and off
-  toggle, and a screenshot key.
+  Rendering settings live, and also holds the pass controls and a Neural Rendering on and off
+  toggle.
+- **Save a before and after screenshot** from the menu. It writes three PNGs: the untouched
+  content the lens captured, the neural rendered result, and the two joined side by side. Both
+  halves come from the same moment and the same pixels, so it is a fair comparison rather than
+  two shots taken seconds apart.
+- **Resize it** from the menu. A translucent outline appears over the lens showing its live
+  size. Drag any edge, let go, and confirm. See [Limits](#limits) for why this restarts.
+- **Settings** in the menu chooses where screenshots are saved, and remembers the choice in
+  `neural-lens.ini`.
 
 ## How it works
 
@@ -126,10 +135,11 @@ to 0. See [docs/NOTES.md](docs/NOTES.md).
 
 ## Limits
 
-- **The size is fixed while it runs.** Resizing recreates mpv's swapchain, which makes the
-  Neural Rendering add-on release its DLSS feature and crash. Pass count is unaffected and can
-  be changed freely. To resize, close the lens, edit the first line of
-  `%LOCALAPPDATA%\NeuralLens\lens-state.txt` (`width height x y passes`) and start it again.
+- **Resizing restarts the lens.** It cannot resize in place, because that recreates mpv's
+  swapchain, which makes the Neural Rendering add-on release its DLSS feature and crash. The
+  menu's resize therefore takes the size you drag out, saves it, and relaunches at that size and
+  position with the same number of passes. It takes a second or two. Pass count is unaffected by
+  any of this and still changes live.
 - **Exclusive fullscreen games are invisible to it**, because the Magnification API cannot see
   them. Borderless windowed works. Games with real DLSS support can usually take Neural
   Rendering directly through the add-on anyway, without this.
@@ -141,14 +151,19 @@ to 0. See [docs/NOTES.md](docs/NOTES.md).
 **Neural Rendering looks like it is doing nothing.** Its strength depends heavily on the
 content. It scales with local detail, measured about 4.5 times stronger on the most detailed
 tenth of an image than on the flattest half. On a rendered character it is obvious; on flat
-interface elements it can be hard to see even while fully active. Use the menu's Neural
-Rendering toggle to compare, since with it live the image changes clearly.
+interface elements it can be hard to see even while fully active. The menu's before and after
+screenshot is the easiest way to settle it: put the lens over something detailed, save the pair,
+and compare them. For scale, over a desktop of flat interface the average difference measured
+1.3 out of 255 while Neural Rendering was fully live, and almost all of that change sat in the
+detailed areas of the image.
 
 **Something went wrong and you want to know why.** Every launch copies the previous session's
 `ReShade.log` and `dlss5-feed.log` into `%LOCALAPPDATA%\NeuralLens\logs`, keeping the 40 most
-recent, so evidence from a failed run survives restarting. In an archived `ReShade.log`, look
-for `feature=18 (DLSSNR` and `evaluation succeeded (count=` to confirm Neural Rendering was
-really running.
+recent, so evidence from a failed run survives restarting. In an archived `ReShade.log`, the
+line that confirms Neural Rendering was really running is `feature=18 (DLSSNR`, which means the
+feature was created. Do not judge it by counting `evaluation succeeded (count=` lines: that is a
+milestone message, emitted at the first evaluation and the sixtieth and then not again, so a
+healthy session that ran for several minutes still shows only two of them.
 
 Bug reports are welcome as GitHub issues. See [CONTRIBUTING.md](CONTRIBUTING.md).
 

@@ -41,6 +41,24 @@ with stages 2 and 3 missing     7.70 / 62.52 / 61.23   (dark blob, ghosted text,
 `refresh_filter()` rebuilds the whole list after every add or remove for exactly this reason.
 The call has to happen inside the process that owns the magnifier.
 
+## Resize is a restart, on purpose
+
+Live resize is unavailable for the same reason the pass chain exists at all: a resize recreates
+mpv's swapchain, and the Neural Rendering add-on responds by releasing its DLSS feature and
+crashing with 0xC0000005. Moving the lens is safe because that only repositions windows and
+re-aims the magnifier, and changing pass count is safe because adding a stage never resizes an
+existing one.
+
+So the menu's resize writes the new geometry into the state file and re-executes the process.
+`quit()` terminates each stage and waits for it, and the handover then waits a further second
+before starting the replacement, because stage windows are found by **exact title match** and a
+lingering mpv window would let the new stage 1 bind to the old one. `os.execv` performs the
+handover, with a `subprocess.Popen` fallback.
+
+Verified end to end by driving the real dialog: 1200x800 at (1800, 700) resized to 960x640 at
+(1860, 740) came back at exactly that size and position, with capture running again and the pass
+count carried across, and no orphaned mpv process left behind.
+
 ## Dead ends
 
 ### Desktop Duplication (ddagrab) under the lens
@@ -127,6 +145,21 @@ The F6 toggle is unambiguous instead, measuring 12.7/255 on plain text.
 - `RegisterHotKey` posts `WM_HOTKEY` to the registering thread's message queue. It has to be
   registered on the same thread that pumps messages, not on a thread whose queue belongs to
   something else such as a tkinter mainloop.
+- **The tkinter mainloop is what dispatches `WM_PAINT` for the magnifier host.** Blocking it
+  stops the source repainting, and window capture then stops delivering frames, because capture
+  delivers on recomposition. So anything that waits for a frame, the screenshot included, has to
+  run on a worker thread and marshal widget updates back with `after(0, ...)`. Waiting for a
+  frame on the mainloop deadlocks against itself: the frame being waited for can only arrive if
+  the wait returns first.
+- On a decorated toplevel, `winfo_x`/`winfo_y` give the **frame** origin while
+  `winfo_rootx`/`winfo_rooty` give the **client area**, and `geometry()` positions the frame.
+  The decoration thickness is not knowable until the window manager has mapped the window, so
+  measuring it straight after `update_idletasks()` reads zero and any correction based on it
+  silently does nothing. Measure it from an `after()` callback instead. Here that was a 9 by 38
+  pixel offset between the resize outline and the viewport it is supposed to sit on.
+- `evaluation succeeded (count=` in `ReShade.log` is a **milestone line**, emitted at count 1
+  and count 60 and then not again. The number of occurrences is not a measure of how much
+  Neural Rendering ran, and finding only two of them does not mean only two evaluations.
 
 ## How to measure this thing without fooling yourself
 
@@ -141,6 +174,18 @@ Several wrong conclusions during development came from bad measurement rather th
 - Neural Rendering's strength scales with local detail, about 4.5x stronger on the most
   detailed tenth of an image than on the flattest half. Flat content changing very little is
   expected, not a fault.
+- **Never assert an absolute difference for Neural Rendering.** Its strength depends on what
+  happens to be under the lens, so a threshold calibrated on detailed video fails on a desktop
+  full of flat interface, and it fails by looking exactly like a broken feature. Assert the
+  shape instead, because the shape is content independent: the change concentrates in detailed
+  areas. One screenshot pair over flat interface measured 1.29 overall, which looks like nothing
+  against the 7.71 reference, and yet 6.21 on the most detailed tenth against 0.654 on the
+  flattest half, a ratio of 9.5x. Round trip loss with Neural Rendering off is 0.24 spread
+  evenly, so no ratio like that can come from the capture path.
+- **Drive the real application, not a mock.** `neural_lens.py` guards its entry point with
+  `if __name__ == "__main__"`, so a harness can import it, wrap `Lens.__init__` to get a handle
+  on the running instance, and then schedule real menu actions on the real mainloop. Every
+  synthetic rig tried before that measured its own scaffolding instead of the lens.
 
 ## Where the frame rate actually goes
 

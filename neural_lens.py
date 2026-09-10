@@ -112,6 +112,7 @@ def _find_mpv_dir():
 MPV_DIR = _find_mpv_dir()
 MPV = os.path.join(MPV_DIR, "mpv.exe") if MPV_DIR else None
 TITLE = "LensNR"
+__version__ = "0.1.0"        # beta; see CHANGELOG.md
 
 DATA_DIR = (os.environ.get("NEURAL_LENS_DATA") or _INI.get("data_dir")
             or os.path.join(os.environ.get("LOCALAPPDATA") or _script_dir(), "NeuralLens"))
@@ -290,6 +291,30 @@ def archive_logs():
         pass
 
 
+def _own_windows():
+    """Every visible top-level window owned by this process.
+
+    The magnifier must not see any of them. Listing them by name cannot work,
+    because the popup menu, the resize outline, the settings dialog and any
+    message box are created and destroyed on demand. Anything missed is rendered
+    into stage 1's input and neural rendered along with the desktop.
+    """
+    pid = k32.GetCurrentProcessId()
+    hits = []
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, w.HWND, w.LPARAM)
+    def cb(h, l):
+        if u.IsWindowVisible(h):
+            p = w.DWORD()
+            u.GetWindowThreadProcessId(h, ctypes.byref(p))
+            if p.value == pid:
+                hits.append(h)
+        return True
+
+    u.EnumWindows(cb, 0)
+    return hits
+
+
 def find_mpv(title):
     """Exact title match. Stage titles share a prefix, so substring matching
     would return the wrong window."""
@@ -409,6 +434,7 @@ class Lens:
 
         self.start_pump()
         self.root.after(1000, self.stats)
+        self.root.after(200, self.watch_filter)
 
     # ---- stage plumbing
     def spawn_mpv(self, title, x, y):
@@ -529,11 +555,34 @@ class Lens:
         return cap.start_free_threaded()
 
     def refresh_filter(self):
-        """The magnifier must never see any of our windows. Missing even one
-        stage creates a feedback loop that collapses the image to a dark blob."""
-        hs = [self.host, self.chrome] + [s["hwnd"] for s in self.stages]
+        """The magnifier must never see any of our own windows.
+
+        Missing a stage creates a feedback loop that collapses the image to a dark
+        blob. Missing a transient window, such as the popup menu, is quieter but
+        just as wrong: it gets neural rendered into the lens content and turns up
+        in saved screenshots. The stages are separate processes, so they are added
+        explicitly; everything else is found by enumeration.
+        """
+        hs = list(dict.fromkeys(_own_windows() + [self.host, self.chrome]
+                                + [s["hwnd"] for s in self.stages]))
         arr = (w.HWND * len(hs))(*hs)
         mag.MagSetWindowFilterList(self.hmag, MW_FILTERMODE_EXCLUDE, len(hs), arr)
+
+    def watch_filter(self):
+        """Re-apply the exclude list on a timer.
+
+        A popup menu or a dialog appears and vanishes with no hook to refresh
+        from, so the list is rebuilt periodically instead. This runs on the
+        mainloop because the Mag call has to happen on the thread that owns the
+        magnifier.
+        """
+        if self.closing:
+            return
+        try:
+            self.refresh_filter()
+        except Exception:
+            pass
+        self.root.after(200, self.watch_filter)
 
     def raise_chrome(self):
         u.SetWindowPos(self.chrome, HWND_TOPMOST, 0, 0, 0, 0,
@@ -720,6 +769,10 @@ class Lens:
     # visible stage, while F6 and F5 are sent to every stage in turn.
     def menu(self, e):
         m = tk.Menu(self.t, tearoff=0)
+        # a bug report is much easier to act on when the reporter can read the
+        # version off the app rather than having to work out which build they have
+        m.add_command(label="Neural Lens %s  (beta)" % __version__, state="disabled")
+        m.add_separator()
         m.add_command(label=("Done tweaking  (back to click-through)" if self.tweak
                              else "Tweak NR settings  (ReShade overlay, Home)"),
                       command=self.toggle_tweak)
@@ -956,6 +1009,11 @@ class Lens:
     def _shot_worker(self):
         text, colour = "screenshot captured nothing", WARN
         try:
+            # The menu that started this has closed, but frames containing it are
+            # still moving through the chain, and the visible stage lags the source
+            # by the pipeline latency. Let both settle, or the saved pair shows the
+            # menu that was on screen a moment ago.
+            time.sleep(0.25 + 0.15 * len(self.stages))
             self.shot_ready = False
             self.shot_want = True
             t0 = time.perf_counter()
@@ -1112,6 +1170,7 @@ def main():
     root = tk.Tk()
     root.withdraw()
     lens = Lens(root, x, y, cw, ch, passes)
+    print("Neural Lens %s (beta)" % __version__, flush=True)
     print("lens ready %dx%d at (%d,%d), %d pass%s"
           % (cw, ch, x, y, len(lens.stages), "" if len(lens.stages) == 1 else "es"),
           flush=True)

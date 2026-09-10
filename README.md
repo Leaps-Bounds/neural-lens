@@ -1,5 +1,8 @@
 # DLSS 5 Neural Lens
 
+**Beta, version 0.1.0.** See [CHANGELOG.md](CHANGELOG.md). While the version starts with 0,
+settings, the state file format and behaviour may change between releases.
+
 A floating see-through window for Windows. Drag it over anything on your desktop and the
 content underneath appears inside it with **NVIDIA DLSS Neural Rendering** applied, live. The
 mouse passes straight through the viewport, so you can keep using whatever is beneath it, much
@@ -68,8 +71,8 @@ can also be pointed somewhere else on their own, from the menu's Settings.
   toggle.
 - **Save a before and after screenshot** from the menu. It writes three PNGs: the untouched
   content the lens captured, the neural rendered result, and the two joined side by side. Both
-  halves come from the same moment and the same pixels, so it is a fair comparison rather than
-  two shots taken seconds apart.
+  halves come from the same live pipeline a fraction of a second apart, so on still content they
+  line up pixel for pixel. It pauses briefly first, so the menu you just used is not in the shot.
 - **Resize it** from the menu. A translucent outline appears over the lens showing its live
   size. Drag any edge, let go, and confirm. See [Limits](#limits) for why this restarts.
 - **Settings** in the menu chooses where screenshots are saved, and remembers the choice in

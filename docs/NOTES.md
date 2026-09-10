@@ -1,8 +1,9 @@
 # Engineering notes
 
-What was tried and rejected, each with the measurement that killed it, plus the Win32 details
-that are easy to get wrong. Worth reading before changing the capture path, because most of
-these look reasonable on paper and fail only when measured.
+Measurements, constraints and Win32 details behind the implementation. Most of the rejected
+approaches below look reasonable on paper and fail only when measured, so each one is kept
+alongside the number that ruled it out. Read this before changing the capture path or the pass
+chain.
 
 ## The multi-pass chain
 
@@ -11,11 +12,11 @@ settings is `EnableHooks, NRAutoMask, NRColorStrength, NRDepthMode, NREnableUpsc
 NRIntensity, NRLocalStructure, NRLocalTone, NRMVecScaleX, NRMVecScaleY, NRPaperWhiteScale,
 NRPreset, NRScreenshotKey, NRSkinStructure, NRStyle, NRToggleKey, NRTransferStrength,
 NRUICorrection, NeuralUplift`. The newer `renodx-dlss` add-on does have
-`DirectNeuralRenderingPassCount`, but it will not inject into mpv at all (see below), so it is
-not an option here.
+`DirectNeuralRenderingPassCount`, but it will not inject into mpv at all (see Dead ends), so it
+is not an option here.
 
-So passes are made by chaining: stage N captures stage N-1's mpv window with WGC and renders
-it again. Measured cumulative change from the raw source:
+Passes are therefore made by chaining: stage N captures stage N-1's mpv window with WGC and
+renders it again. Cumulative change from the raw source, as mean absolute difference out of 255:
 
 ```
                         stacked      side by side control
@@ -25,31 +26,39 @@ it again. Measured cumulative change from the raw source:
 same chain, NR disabled   0.24  (round trip is nearly lossless)
 ```
 
-The stacked and separated numbers agreeing is the proof that stacking is sound.
+The stacked and separated columns agreeing is what establishes that stacking is sound rather
+than merely different.
 
-### The trap: every stage must be on the magnifier's exclude list
+### Every stage must be on the magnifier's exclude list
 
 `MagSetWindowFilterList` starts out excluding the host, the chrome and stage 1's mpv. Stack
-stages 2 and 3 on the same rect **without adding them**, and the magnifier renders them back
-into stage 1's input. That is a feedback loop, and it is fast and total:
+stages 2 and 3 on the same rect **without adding them** and the magnifier renders them back into
+stage 1's input, which is a fast and total feedback loop:
 
 ```
 with the stages excluded        7.71 / 14.05 / 19.45
 with stages 2 and 3 missing     7.70 / 62.52 / 61.23   (dark blob, ghosted text, saturated)
 ```
 
-`refresh_filter()` rebuilds the whole list after every add or remove for exactly this reason.
-The call has to happen inside the process that owns the magnifier.
+`refresh_filter()` rebuilds the whole list after every add or remove for this reason. The call
+must happen inside the process that owns the magnifier.
 
-## Resize is a restart, on purpose
+The list must also cover **transient** windows of the same process: the popup menu, the resize
+outline, the settings dialog and any message box. Listing windows by name cannot cover these,
+because they are created and destroyed on demand, and anything missed is rendered into stage 1's
+input, neural rendered along with the desktop, and saved into screenshots. `refresh_filter()`
+therefore enumerates every visible top-level window owned by the process, and a 200 ms timer
+re-applies the list, since a popup menu offers no hook to refresh from. Screenshots additionally
+wait for the chain to flush, because frames containing a window that has just closed are still
+in flight, and the visible stage lags the source by the pipeline latency.
 
-Live resize is unavailable for the same reason the pass chain exists at all: a resize recreates
-mpv's swapchain, and the Neural Rendering add-on responds by releasing its DLSS feature and
-crashing with 0xC0000005. Moving the lens is safe because that only repositions windows and
-re-aims the magnifier, and changing pass count is safe because adding a stage never resizes an
-existing one.
+## Resize restarts the process
 
-So the menu's resize writes the new geometry into the state file and starts a fresh copy of the
+Live resize is unavailable because a resize recreates mpv's swapchain, and the Neural Rendering
+add-on responds by releasing its DLSS feature and crashing with 0xC0000005. Moving the lens is
+safe, because that only repositions windows and re-aims the magnifier.
+
+The menu's resize writes the new geometry into the state file and starts a fresh copy of the
 process. `quit()` terminates each stage and waits for it, and the handover then waits a further
 second before starting the replacement, because stage windows are found by **exact title match**
 and a lingering mpv window would let the new stage 1 bind to the old one.
@@ -57,32 +66,30 @@ and a lingering mpv window would let the new stage 1 bind to the old one.
 ### The handover must not use `os.execv`
 
 On Windows `os.execv` goes through the CRT, which does **not** quote arguments containing
-spaces. This project's own path has one in `DLSS 5`, so the replacement process was handed
-`C:\...\Coding\DLSS` as its script argument and died immediately with `can't open file`.
+spaces. A script path such as `C:\...\Coding\DLSS 5\neural-lens\neural_lens.py` therefore
+reaches the replacement process split at the space, and it exits immediately with
+`can't open file`.
 
-What makes it vicious is that `execv` does not raise when this happens. It successfully starts
-something broken, and the original process is already gone, so a `try/except` around it with a
-`subprocess` fallback never fires. The lens simply vanished on confirming a resize, with no
-console output and no log entry. The first version of the resize feature shipped exactly that
-bug, and it survived testing because the test harness ran from a relative path with no space in
-it, so the only condition that triggers it was absent.
+`execv` does not raise in this case. It starts a broken process successfully while the original
+is already gone, so a `try`/`except` around it with a `subprocess` fallback never fires and the
+failure is silent: no window, no console output, no log entry.
 
-`subprocess.Popen` quotes correctly through `list2cmdline`. The replacement's own output goes to
-`logs/restart.log`, because the console it was launched from may close along with the outgoing
-process, and a restart that dies should leave evidence rather than disappearing.
+`subprocess.Popen` quotes correctly through `list2cmdline`. The replacement's own output is
+redirected to `logs/restart.log`, because the console it was launched from can close along with
+the outgoing process.
 
-Verified by driving the real dialog: 1200x800 at (1800, 700) resized to 960x640 at (1860, 740)
-came back at exactly that size and position, with capture running again, the pass count carried
-across, and no orphaned mpv process left behind. The space case is verified separately, by
-running the same flow from a batch file inside a directory whose name contains a space, which is
-the condition `os.execv` failed.
+The failure only occurs when the script path contains a space, so any test of this path must run
+from such a path. Verified two ways: 1200x800 at (1800, 700) resized to 960x640 at (1860, 740)
+returning at exactly that size and position with capture running, the pass count carried across
+and no orphaned mpv; and the same flow driven from a batch file inside a directory whose name
+contains a space.
 
 ## Dead ends
 
 ### Desktop Duplication (ddagrab) under the lens
 
-It cannot see beneath an occluding window, whether or not that window is excluded from
-capture, and not even when something is actively repainting underneath it.
+It cannot see beneath an occluding window, whether or not that window is excluded from capture,
+and not even when something is actively repainting underneath it.
 
 ```
 capture a region away from the lens          YAVG 45.7    real content
@@ -92,137 +99,133 @@ magnifier repainting that rect, no lens      YAVG 45.96
 same, with an excluded lens on top           YAVG 20.04   black again
 ```
 
-`WDA_EXCLUDEFROMCAPTURE` removes a window from the capture, but it does not make Windows
-render the desktop behind it. Nothing composites an occluded region, so the duplication buffer
-stays empty there and only transient dirty rects ever land in it. The symptom is a black
-viewport that gradually accumulates mouse trails and window drag smears, and that carries
-stale content along when the lens is moved.
+`WDA_EXCLUDEFROMCAPTURE` removes a window from the capture, but it does not make Windows render
+the desktop behind it. Nothing composites an occluded region, so the duplication buffer stays
+empty there and only transient dirty rects land in it. The symptom is a black viewport that
+accumulates mouse trails and window drag smears, and that carries stale content when the lens
+moves.
 
-One earlier test seemed to disprove this and was misleading: a static window over another
-static window captures correctly, because DWM still holds both buffers. A Vulkan swapchain
-presenting sixty times a second means the region beneath it is never redrawn. Also sample
-YAVG rather than chroma; a chroma only check gave a false pass.
+Two caveats when testing this. A static window over another static window does capture
+correctly, because DWM still holds both buffers, so that case does not generalise: a Vulkan
+swapchain presenting sixty times a second means the region beneath it is never redrawn. And
+sample YAVG rather than chroma, because a chroma only check gives a false pass.
 
 ### gdigrab or BitBlt of the magnifier window
 
-Blank whether occluded or not. The magnifier composites through DWM, and BitBlt only sees the
+Blank whether occluded or not. The magnifier composites through DWM, and BitBlt sees only the
 window's own GDI surface, which is empty.
 
 ### MagSetImageScalingCallback
 
 Deprecated. It is accepted and returns TRUE, and then the next Mag call deadlocks when driven
-from ctypes, most likely because the callback takes structures by value. Made unnecessary by
-capturing the host window with WGC instead.
+from ctypes, most likely because the callback takes structures by value. Unnecessary anyway,
+since WGC can capture the host window directly.
 
 ### The newer renodx-dlss add-on (the one with PassCount)
 
 Will not inject into mpv on either `--gpu-api=vulkan` or `d3d11`. Zero
 `DLSS-NR direct: EvaluateFeature` in both cases, both stopping at
 `WARN NVNGX parameter module is not loaded yet: nvngx.dll`, and the Vulkan attempt segfaulted
-mpv. It needs `nvngx.dll` loaded by a real DLSS integration, which mpv cannot provide.
+mpv. It requires `nvngx.dll` loaded by a real DLSS integration, which mpv cannot provide.
 
 ### UDP transport
 
-Resyncs badly after a restart: 353 buffering events, with frames arriving every few seconds.
-Moot now that nothing restarts. A pipe and TCP both measured 60 fps.
+Resyncs badly after a restart: 353 buffering events, with frames arriving every few seconds. A
+pipe and TCP both measured 60 fps, and nothing restarts mid session, so it buys nothing.
 
 ### `--untimed`
 
-The original runaway neural blob. Presents outnumbered frame arrivals, so Neural Rendering
-reprocessed its own output roughly sixty times per source frame until the picture collapsed.
-Never add it.
+Makes mpv present as fast as it can rather than on the stream's timing. Presents then outnumber
+frame arrivals by roughly sixty to one, so Neural Rendering reprocesses its own output until the
+picture collapses. Never add it. See also the rate section below, which is the same failure
+reached through a declared frame rate that is too high.
 
 ### An in-app NR health indicator
 
-Comparing the frame sent to mpv against the frame actually displayed separated NR on from NR
-off by only 1.4x (0.58 off, 0.82 on, and 1.7 on in a different scene, so the scene mattered
-more than the setting). Whole frame averaging at 1/8 stride washes out exactly the local
-detail that Neural Rendering changes. It would have raised false alarms, so it was removed.
-The F6 toggle is unambiguous instead, measuring 12.7/255 on plain text.
+Comparing the frame sent to mpv against the frame actually displayed separates NR on from NR off
+by only 1.4x: 0.58 off, 0.82 on, and 1.7 on in a different scene, so the scene matters more than
+the setting. Whole frame averaging at 1/8 stride washes out exactly the local detail that Neural
+Rendering changes, so such an indicator raises false alarms. The F6 toggle is unambiguous
+instead, measuring 12.7/255 on plain text.
 
 ## Gotchas
 
-- WGC cannot find a `WS_EX_TOOLWINDOW` window. The magnifier host must be a plain popup, and
-  it should be captured by `window_hwnd` rather than by name.
+- WGC cannot find a `WS_EX_TOOLWINDOW` window. The magnifier host must be a plain popup, and it
+  should be captured by `window_hwnd` rather than by name.
 - `windows_capture` dispatches handlers by function `__name__`. They must literally be called
   `on_frame_arrived` and `on_closed`, or it raises ValueError.
 - `frame.frame_buffer` is row padded and non contiguous (stride 2304 for width 560), so it
-  cannot go straight down a pipe. Slice `[:h, :w, :]`, `np.copyto` it into a reused buffer
-  and write that buffer's memoryview. Do not write from the capture callback itself; see
-  the frame rate section below.
+  cannot go straight down a pipe. Slice `[:h, :w, :]`, `np.copyto` it into a reused buffer and
+  write that buffer's memoryview. Do not write from the capture callback itself; see the frame
+  rate section.
+- The opening frame of a freshly started capture session is sometimes handed over uninitialised
+  and comes back black, measured at roughly one sample in 14. Skip the first frames and reject
+  an all zero buffer. This affects saved screenshots as well as measurement.
 - Passing `HWND_TOPMOST` as Python `-1` through ctypes silently fails on x64, because a 32 bit
   int goes into a pointer parameter. Use `ctypes.c_void_p(-1)`. mpv resets its own z order
   anyway, so give it `--ontop` rather than forcing the z order from outside.
-- Stage windows share a title prefix, so find them by **exact** title match. Substring
-  matching returns the wrong stage.
-- `MagSetWindowTransform` is optional, and it deadlocks if called after the scaling callback
-  has been set. Skip it; the identity transform is the default.
+- Stage windows share a title prefix, so find them by **exact** title match. Substring matching
+  returns the wrong stage.
+- `MagSetWindowTransform` is optional, and it deadlocks if called after the scaling callback has
+  been set. Skip it; the identity transform is the default.
 - The lens is deliberately **not** excluded from capture, which is what makes its output
-  measurable with ddagrab. That is how see-through was verified: the lens output correlated
-  0.997 with ground truth of the region behind it.
-- `RegisterHotKey` posts `WM_HOTKEY` to the registering thread's message queue. It has to be
+  measurable with ddagrab. See-through was verified that way: the lens output correlated 0.997
+  with ground truth of the region behind it.
+- `RegisterHotKey` posts `WM_HOTKEY` to the registering thread's message queue. It must be
   registered on the same thread that pumps messages, not on a thread whose queue belongs to
   something else such as a tkinter mainloop.
-- **The tkinter mainloop is what dispatches `WM_PAINT` for the magnifier host.** Blocking it
-  stops the source repainting, and window capture then stops delivering frames, because capture
-  delivers on recomposition. So anything that waits for a frame, the screenshot included, has to
-  run on a worker thread and marshal widget updates back with `after(0, ...)`. Waiting for a
-  frame on the mainloop deadlocks against itself: the frame being waited for can only arrive if
-  the wait returns first.
+- **The tkinter mainloop dispatches `WM_PAINT` for the magnifier host.** Blocking it stops the
+  source repainting, and window capture then stops delivering frames, because capture delivers
+  on recomposition. Anything that waits for a frame, the screenshot included, must run on a
+  worker thread and marshal widget updates back with `after(0, ...)`. Waiting for a frame on the
+  mainloop cannot succeed: the frame can only arrive if the wait returns first.
 - On a decorated toplevel, `winfo_x`/`winfo_y` give the **frame** origin while
-  `winfo_rootx`/`winfo_rooty` give the **client area**, and `geometry()` positions the frame.
-  The decoration thickness is not knowable until the window manager has mapped the window, so
-  measuring it straight after `update_idletasks()` reads zero and any correction based on it
-  silently does nothing. Measure it from an `after()` callback instead. Here that was a 9 by 38
-  pixel offset between the resize outline and the viewport it is supposed to sit on.
-- `evaluation succeeded (count=` in `ReShade.log` is a **milestone line**, emitted at count 1
-  and count 60 and then not again. The number of occurrences is not a measure of how much
-  Neural Rendering ran, and finding only two of them does not mean only two evaluations.
-- **ReShade rotates its log.** A second instance in the same folder cannot open `ReShade.log`,
-  so it writes `ReShade.log1`, and a third writes `ReShade.log2`. Every multi-pass run therefore
-  leaves one log per stage, and `feature=18` appears once per *file* rather than once per run.
-  Counting it in a single file and concluding that only one stage created the feature is wrong.
-  `archive_logs` originally copied only `ReShade.log`, which silently threw away every stage but
-  one on every multi-pass run; it now copies anything starting `ReShade.log`.
-- `GetAsyncKeyState` is the way to tell whether a mouse button is still held during a window
-  manager resize. Tk sees no button events for the whole drag, because the window manager holds
-  the mouse capture, so a settle timer alone cannot distinguish a pause mid drag from the end of
-  one. Verified with a real injected press rather than only a stubbed key state.
+  `winfo_rootx`/`winfo_rooty` give the **client area**, and `geometry()` positions the frame. The
+  decoration thickness is unknown until the window manager has mapped the window, so measuring it
+  straight after `update_idletasks()` reads zero and any correction based on it does nothing.
+  Measure it from an `after()` callback. Here the offset was 9 by 38 pixels.
+- `GetAsyncKeyState` is the only reliable way to tell whether a mouse button is still held during
+  a window manager resize. Tk sees no button events for the whole drag, because the window
+  manager holds the mouse capture, so a settle timer alone cannot distinguish a pause mid drag
+  from the end of one.
+- `evaluation succeeded (count=` in `ReShade.log` is a **milestone line**, emitted at count 1 and
+  count 60 and then not again. The number of occurrences is not a measure of how much Neural
+  Rendering ran.
+- **ReShade rotates its log.** A second instance in the same folder cannot open `ReShade.log`, so
+  it writes `ReShade.log1`, and a third writes `ReShade.log2`. A multi-pass run therefore leaves
+  one log per stage, and `feature=18` appears once per *file* rather than once per run. Anything
+  that archives or inspects logs must cover all of them.
 
-## How to measure this thing without fooling yourself
+## Measurement pitfalls
 
-Several wrong conclusions during development came from bad measurement rather than bad code.
-
-- **Never measure with a moving source.** An early A/B read 16.1% changed pixels, but an
-  animated avatar was in frame. The static half of the same image showed the real figure.
-- **Establish a noise floor** by capturing the same state twice before trusting any difference.
-- **Do not infer NR state from the F6 toggle log.** The focus dance sometimes fails to register
-  a press, which inverts the inference. Measure absolutely instead: capture the region with the
+- **Never measure with a moving source.** A reading of 16.1% changed pixels came from an animated
+  element being in frame; the static half of the same image gave the real figure. Check that the
+  source is unchanged across samples before trusting any difference in the output.
+- **Establish a noise floor** by capturing the same state twice before trusting a difference.
+- **Do not infer NR state from the F6 toggle log.** The focus dance sometimes fails to register a
+  press, which inverts the inference. Measure absolutely instead: capture the region with the
   lens absent, then with the lens over it. Passthrough means off, a large difference means on.
-- Neural Rendering's strength scales with local detail, about 4.5x stronger on the most
-  detailed tenth of an image than on the flattest half. Flat content changing very little is
-  expected, not a fault.
-- **Never assert an absolute difference for Neural Rendering.** Its strength depends on what
-  happens to be under the lens, so a threshold calibrated on detailed video fails on a desktop
-  full of flat interface, and it fails by looking exactly like a broken feature. Assert the
-  shape instead, because the shape is content independent: the change concentrates in detailed
-  areas. One screenshot pair over flat interface measured 1.29 overall, which looks like nothing
-  against the 7.71 reference, and yet 6.21 on the most detailed tenth against 0.654 on the
-  flattest half, a ratio of 9.5x. Round trip loss with Neural Rendering off is 0.24 spread
-  evenly, so no ratio like that can come from the capture path.
-- **Drive the real application, not a mock.** `neural_lens.py` guards its entry point with
-  `if __name__ == "__main__"`, so a harness can import it, wrap `Lens.__init__` to get a handle
-  on the running instance, and then schedule real menu actions on the real mainloop. Every
-  synthetic rig tried before that measured its own scaffolding instead of the lens.
+- Neural Rendering's strength scales with local detail, about 4.5x stronger on the most detailed
+  tenth of an image than on the flattest half. Flat content changing very little is expected.
+- **Never assert an absolute difference for Neural Rendering.** The strength depends on what is
+  under the lens, so a threshold calibrated on detailed video fails on flat interface content,
+  and it fails by looking exactly like a broken feature. Assert the shape instead, which is
+  content independent: the change concentrates in detailed areas. One pair over flat interface
+  measured 1.29 overall, which looks like nothing against the 7.71 reference, yet 6.21 on the
+  most detailed tenth against 0.654 on the flattest half, a ratio of 9.5x. Round trip loss with
+  NR off is 0.24 spread evenly, so no such ratio can come from the capture path. Ratios of 4.8x
+  and 5.6x have been measured on other content.
+- **Drive the real application rather than a mock.** `neural_lens.py` guards its entry point with
+  `if __name__ == "__main__"`, so a harness can import it, wrap `Lens.__init__` to obtain the
+  running instance, and schedule real menu actions on the real mainloop.
 
-## Where the frame rate actually goes
+## Where the frame rate goes
 
 Nothing here is GPU bound; the GPU sits near 30 percent at any pass count.
 
-**The single biggest factor was a library default.** `windows_capture`'s
-`WindowsCapture(...)` takes a `minimum_update_interval` parameter, and its default throttles
-frame delivery to roughly 60 per second. Setting it to `0` more than doubles delivery on an
-identical source:
+The largest single factor is a library default. `windows_capture`'s `WindowsCapture(...)` takes
+a `minimum_update_interval` parameter whose default throttles delivery to roughly 60 frames per
+second. Setting it to `0` more than doubles delivery on an identical source:
 
 ```
 window capture, defaults                    59.4 fps
@@ -239,31 +242,30 @@ End to end in the lens at 1400x1000, before and after removing the throttle:
 3 passes      44.3    89.9        80%
 ```
 
-The fps counter increments in stage 1's capture callback, so at multi-pass it reports
-capture rate rather than what the final stage presents, which is why three passes can
-appear faster than two. Treat the multi-pass figures as input side only.
+The fps counter increments in stage 1's capture callback, so at multi-pass it reports capture
+rate rather than what the final stage presents, which is why three passes can appear faster than
+two. Treat the multi-pass figures as input side only.
 
-Two other things mattered, both in how the lens drives itself:
+Two further factors, both in how the lens drives itself:
 
-1. **tkinter's `after()` is too coarse to pace repaints.** An `after(16)` tick lands nearer
-   20 ms, which capped the lens at 47 to 52 fps. A thread pacing `InvalidateRect` fixes it.
-   Calling `InvalidateRect` from another thread only posts `WM_PAINT`; tkinter's mainloop
-   dispatches it, because the host window belongs to that thread.
+1. **tkinter's `after()` is too coarse to pace repaints.** An `after(16)` tick lands nearer 20 ms,
+   which caps the lens at 47 to 52 fps. A thread pacing `InvalidateRect` fixes it. Calling
+   `InvalidateRect` from another thread only posts `WM_PAINT`; tkinter's mainloop dispatches it,
+   because the host window belongs to that thread.
 2. **The multi-megabyte `stdin.write` into mpv blocks the WGC delivery thread.** Removing the
-   write entirely measured 58.7 fps against 50.5 with it inline. A writer thread with a one
-   slot handoff absorbs the stall. The slot is overwritten rather than queued, because for a
-   live view only the newest frame is worth having.
+   write entirely measures 58.7 fps against 50.5 with it inline. A writer thread with a one slot
+   handoff absorbs the stall. The slot is overwritten rather than queued, because for a live view
+   only the newest frame is worth having.
 
-### The rate declared to mpv must never exceed what actually arrives
+### The rate declared to mpv must never exceed what arrives
 
-`--demuxer-rawvideo-fps` tells mpv how fast the stream is, and mpv presents at that rate.
-Declare more than the chain delivers and mpv presents without a new frame to draw, so Neural
-Rendering re-runs over its own previous output. The picture crushes toward black over a few
-seconds, something forces a fresh frame, it recovers, and it does it again. This is the
-`--untimed` runaway reached by a slower route.
+`--demuxer-rawvideo-fps` tells mpv how fast the stream is, and mpv presents at that rate. Declare
+more than the chain delivers and mpv presents without a new frame to draw, so Neural Rendering
+re-runs over its own previous output. The picture crushes toward black over a few seconds, a
+fresh frame eventually forces a reset, and it repeats. This is the same failure as `--untimed`.
 
 Throughput divides roughly by the number of stages, because every pass is another full capture
-and present. Samples out of 14 that collapsed, measured at 1314x1332 on a 120 Hz display:
+and present. Samples out of 14 that collapsed, at 1314x1332 on a 120 Hz display:
 
 ```
             1 stage   2 stages   3 stages   4 stages
@@ -273,55 +275,47 @@ and present. Samples out of 14 that collapsed, measured at 1314x1332 on a 120 Hz
  30 fps                  0/14
 ```
 
-So `_fps_for` declares `BASE_FPS // stages`, which gives 120, 60, 40 and 30. Each sits at or
-below a measured clean value. It is deliberately conservative at three stages, where 60 is known
-to work, because a cliff is far worse than a few lost frames.
+`_fps_for` therefore declares `BASE_FPS // stages`, which gives 120, 60, 40 and 30. Each sits at
+or below a measured clean value. It is deliberately conservative at three stages, where 60 is
+known to work, because a cliff is worse than a few lost frames. With that rule every pass count
+measures 0/14.
 
-Two consequences that are easy to miss:
+Two consequences:
 
-- **The rate is fixed when mpv spawns.** Changing the pass count therefore has to respawn every
-  stage rather than append one on the end. Leaving stage 1 running at its old rate is exactly
-  what made two and three passes collapse, so `set_passes` rebuilds the whole chain.
-- **Rebuilding needs a per stage stop flag.** The writer thread only ever exited on
-  `lens.closing` or a failed write, so tearing a stage down while the lens stayed open stranded
-  a thread waiting on a condition that nothing would signal again.
+- **The rate is fixed when mpv spawns.** Changing the pass count must respawn every stage rather
+  than append one on the end, since leaving an existing stage at its old rate reproduces the
+  collapse. `set_passes` rebuilds the whole chain.
+- **Rebuilding needs a per stage stop flag.** The writer thread exits only on `lens.closing` or a
+  failed write, so tearing a stage down while the lens stays open would strand it on a condition
+  nothing will signal again.
 
-This was a regression. `FPS` was a fixed 60 when multiple passes were built, and 60 is clean at
-two and three stages, so nothing looked wrong until it became the display rate. Note also that
-four stages at 60 collapses, which means four passes was broken from the day it was offered and
-simply never exercised: the cumulative table at the top of this file only ever went to three.
+Note that four stages at 60 fps collapses, so a fixed rate that works at two and three stages is
+not sufficient at four.
 
-### Four wrong explanations for the same number, and why
+### What does not cause the 60 fps ceiling
 
-The 60 fps ceiling was blamed on the Magnification API, then the compositor, then treated as a
-fixed display cadence, before turning out to be the parameter above. Each wrong answer came
-from explaining a measurement instead of questioning the setup that produced it. What actually
-falsified them:
+Each of these was measured and ruled out, so they are not worth re-investigating:
 
-- **"The magnifier is the limit."** It is not. Paced properly it delivers the same rate as an
-  ordinary window, and the magnified region's size makes no difference at all (1.4 Mpx and
-  0.1 Mpx both measured 59.0). An earlier reading of 51.6 fps for it was an artifact: that
-  harness paced its own pump loop with `time.sleep(0.02)`, which is 50 Hz. It measured the
-  sleep, not the magnifier.
-- **"The compositor is the limit."** It is not. `DwmFlush` returns about 148 times a second on
-  this machine, and the display runs at 120 Hz, so composition was never the constraint.
-- **"The test source is the limit."** Also no. The tkinter source issues about 924 redraws a
-  second.
+- **The Magnification API.** Paced properly it delivers the same rate as an ordinary window, and
+  the magnified region's size makes no difference (1.4 Mpx and 0.1 Mpx both measure 59.0). A
+  reading of 51.6 fps for it is an artifact of a harness pacing its own pump loop with
+  `time.sleep(0.02)`, which is 50 Hz.
+- **The compositor.** `DwmFlush` returns about 148 times a second on this machine against a
+  120 Hz display, so composition is not the constraint.
+- **The test source.** A tkinter source issues about 924 redraws a second.
+- **Invalidation frequency.** Locking invalidation to composition with `DwmFlush` and free
+  running at 240 Hz both produce 59, because the throttle is downstream of invalidation.
 
-Invalidating more often does not help either: locking invalidation to composition with
-`DwmFlush` and free running at 240 Hz both produced 59, because the throttle was downstream of
-invalidation entirely.
+Measured as noise and not worth redoing: replacing a double per frame copy (2.93 ms to 0.18 ms),
+removing a redundant `MagSetWindowSource` from every tick, and raising Windows timer resolution
+with `timeBeginPeriod(1)`. All three are kept because they are strictly cheaper, but none moved
+the frame rate.
 
-Things that measured as pure noise and are not worth redoing: replacing a double per frame copy
-(2.93 ms to 0.18 ms), removing a redundant `MagSetWindowSource` from every tick, and raising
-Windows timer resolution with `timeBeginPeriod(1)`. All three are kept because they are strictly
-cheaper, but none of them moved the frame rate.
-
-### Harness traps that cost several failed benchmarks
+### Benchmark harness requirements
 
 - A magnifier host needs a **real Win32 message pump on its owning thread**, or `WM_PAINT` is
-  never processed, the magnifier never redraws, and capture delivers almost nothing. A synthetic
-  rig that just calls `time.sleep()` in the main thread measures zero. Either run a proper
-  `PeekMessage` and `DispatchMessage` loop, or instrument the real lens.
+  never processed, the magnifier never redraws, and capture delivers almost nothing. A rig that
+  only calls `time.sleep()` in the main thread measures zero. Run a proper `PeekMessage` and
+  `DispatchMessage` loop, or instrument the real lens.
 - Window capture delivers frames when a window is **recomposited**, so a static source with no
   forced invalidation produces almost no frames. That is not a failure of the capture path.

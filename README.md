@@ -23,8 +23,8 @@ raw BGRA frames straight into mpv's stdin (--demuxer=rawvideo)   no ffmpeg, no c
 mpv drawn on top: click-through, always-on-top, no window dragging
 ```
 
-Moving the lens only moves the windows and re-aims the magnifier every 16 ms. Nothing
-restarts, so it stays smooth.
+Moving the lens only moves the windows and re-aims the magnifier. Nothing restarts, so it
+stays smooth.
 
 ### Multiple passes
 
@@ -42,11 +42,27 @@ difference out of 255:
 | 3 | 19.45 | 5.40 |
 
 With Neural Rendering disabled the same chain costs only 0.24, so the round trip is nearly
-lossless and what accumulates really is neural work. Each pass is another mpv and another NGX
-session: three passes measured about 46 fps against about 52 for one, at 1200x900. The ceiling
-is 4, adjustable with `max_passes` in the ini.
+lossless and what accumulates really is neural work. The ceiling is 4, adjustable with
+`max_passes` in the ini.
 
 Two passes is usually the sweet spot. Three is visibly heavy on most content.
+
+### Frame rate
+
+At 1400x1000 on an RTX 5090, one pass runs at the display cadence and each extra pass costs
+roughly 4 to 5 fps:
+
+| passes | fps |
+|---|---|
+| 1 | 58 |
+| 2 | 50 |
+| 3 | 44 |
+
+None of this is GPU bound; the GPU sits near 30 percent. Two things set the rate, and both are
+already dealt with. Repaints are driven by a precisely paced thread rather than tkinter's
+`after()`, whose granularity capped the lens at 47 to 52 fps. And the 5.6 MB write into mpv's
+stdin happens on its own thread, because doing it inline blocked the thread WGC delivers on
+and cost about 8 fps. Capture alone measures 58.7 fps, so one pass is now at that ceiling.
 
 ## Requirements
 

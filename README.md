@@ -52,8 +52,10 @@ restarts, so it stays smooth.
 - **Size is fixed per run.** Resizing recreates mpv's swapchain, which makes the NR add-on
   release the DLSS feature and crash (`0xC0000005`). Edit the first line of
   `C:\Games\_screennr-lens-state.txt` (`W H X Y`) and relaunch.
-- The viewport can never hold keyboard focus (it is click-through), so `q` cannot quit mpv.
-  Use the X.
+- The viewport is click-through, so it never holds keyboard focus and `q` cannot quit mpv.
+  Use the X. To reach the ReShade overlay, use the dropdown's **Tweak NR settings**: it makes
+  the viewport interactive, focuses it and presses Home; **Done tweaking** reverses it. The
+  dropdown also has one-shot NR toggle (F6) and screenshot (F5).
 - The Magnification API does not see exclusive-fullscreen games; borderless is fine.
 - Never add `--untimed` to mpv: it re-presents the same frame many times and NR then iterates
   on its own output until the image collapses.

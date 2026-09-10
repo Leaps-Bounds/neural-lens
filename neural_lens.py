@@ -115,7 +115,52 @@ except ValueError:
 BAR, EDGE = 34, 2
 KEY, BG, FG, ACCENT = "#010203", "#1b2430", "#cbd5e1", "#4ade80"
 DIM, WARN = "#64748b", "#fbbf24"
-FPS = 60                     # declared to mpv; WGC delivers ~52, mpv presents on arrival
+def _display_hz():
+    """Refresh rate of the primary display, so nothing is hardcoded to 60 or 120.
+
+    mpv presents according to the frame rate it is told the stream has, so
+    declaring 60 caps what you actually see at 60 no matter how fast frames
+    arrive. The repaint pump is paced to the same rate: there is no point
+    producing frames faster than the display can show them.
+    """
+    class DEVMODEW(ctypes.Structure):
+        _fields_ = [("dmDeviceName", ctypes.c_wchar * 32), ("dmSpecVersion", ctypes.c_ushort),
+                    ("dmDriverVersion", ctypes.c_ushort), ("dmSize", ctypes.c_ushort),
+                    ("dmDriverExtra", ctypes.c_ushort), ("dmFields", ctypes.c_ulong),
+                    ("dmPositionX", ctypes.c_long), ("dmPositionY", ctypes.c_long),
+                    ("dmDisplayOrientation", ctypes.c_ulong), ("dmDisplayFixedOutput", ctypes.c_ulong),
+                    ("dmColor", ctypes.c_short), ("dmDuplex", ctypes.c_short),
+                    ("dmYResolution", ctypes.c_short), ("dmTTOption", ctypes.c_short),
+                    ("dmCollate", ctypes.c_short), ("dmFormName", ctypes.c_wchar * 32),
+                    ("dmLogPixels", ctypes.c_ushort), ("dmBitsPerPel", ctypes.c_ulong),
+                    ("dmPelsWidth", ctypes.c_ulong), ("dmPelsHeight", ctypes.c_ulong),
+                    ("dmDisplayFlags", ctypes.c_ulong), ("dmDisplayFrequency", ctypes.c_ulong),
+                    ("dmICMMethod", ctypes.c_ulong), ("dmICMIntent", ctypes.c_ulong),
+                    ("dmMediaType", ctypes.c_ulong), ("dmDitherType", ctypes.c_ulong),
+                    ("dmReserved1", ctypes.c_ulong), ("dmReserved2", ctypes.c_ulong),
+                    ("dmPanningWidth", ctypes.c_ulong), ("dmPanningHeight", ctypes.c_ulong)]
+    try:
+        dm = DEVMODEW(); dm.dmSize = ctypes.sizeof(DEVMODEW)
+        if ctypes.windll.user32.EnumDisplaySettingsW(None, -1, ctypes.byref(dm)):
+            hz = int(dm.dmDisplayFrequency)
+            if 24 <= hz <= 1000:
+                return hz
+    except Exception:
+        pass
+    return 60
+
+
+def _rate(key, default):
+    try:
+        v = int(_INI.get(key, default))
+        return v if 24 <= v <= 1000 else default
+    except (TypeError, ValueError):
+        return default
+
+
+DISPLAY_HZ = _display_hz()
+FPS = _rate("fps", DISPLAY_HZ)          # declared to mpv, so it presents at this rate
+PUMP_HZ = _rate("pump_hz", DISPLAY_HZ)  # magnifier repaint pacing
 
 u = ctypes.windll.user32
 mag = ctypes.windll.magnification
@@ -235,12 +280,17 @@ class Lens:
                 wdg.bind("<ButtonRelease-1>", self.up)
         t.update()
         self.chrome = u.GetParent(t.winfo_id()) or t.winfo_id()
+        # never take foreground: the lens is a tool window floating over whatever
+        # you are actually using, and stealing focus costs the user their next click
+        _ex = u.GetWindowLongPtrW(self.chrome, GWL_EXSTYLE)
+        u.SetWindowLongPtrW(self.chrome, GWL_EXSTYLE, _ex | WS_EX_NOACTIVATE)
 
         # ---- magnifier host UNDER the lens (same rect). Must NOT be a tool
         #      window, or WGC cannot find it. Not topmost: it lives below mpv.
         hInst = k32.GetModuleHandleW(None)
         self.host = u.CreateWindowExW(
-            WS_EX_LAYERED | WS_EX_NOACTIVATE, "Static", "LensMagHost", WS_POPUP,
+            WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
+            "Static", "LensMagHost", WS_POPUP,
             x, y, cw, ch, None, None, hInst, None)
         u.SetLayeredWindowAttributes(self.host, 0, 255, LWA_ALPHA)
         u.ShowWindow(self.host, 8)                       # SW_SHOWNA
@@ -450,7 +500,7 @@ class Lens:
         dispatches it, because the host window belongs to that thread.
         """
         def loop():
-            period = 1.0 / 120.0
+            period = 1.0 / PUMP_HZ
             nxt = time.perf_counter()
             while not self.closing:
                 u.InvalidateRect(self.hmag, None, True)

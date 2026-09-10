@@ -67,7 +67,7 @@ set "MPVARGS=--geometry=!OW!x!OH!+!OPX!+!OPY! --hidpi-window-scale=no --no-borde
 echo.
 echo   source : !SW!x!SH! at (!OX!,!OY!)   [scrcpy]
 echo   output : !OW!x!OH! at (!OPX!,!OPY!)
-echo   Ctrl+Alt+R to resize   -   q in the NR window to stop
+echo   Ctrl+Alt+R to resize. Press q in the NR window to stop.
 echo.
 
 rem --- helper: locks the window against live resize, serves Ctrl+Alt+R ---

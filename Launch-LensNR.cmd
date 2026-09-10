@@ -1,7 +1,7 @@
 @echo off
 setlocal
 rem ---------------------------------------------------------------
-rem  DLSS 5 Neural Lens (v3) - floating see-through NR window.
+rem  DLSS 5 Neural Lens (v3): a floating see-through NR window.
 rem
 rem  Drag it by the title bar. Whatever is behind it gets neural-
 rem  rendered inside it. The viewport is click-through: the mouse
@@ -11,7 +11,7 @@ rem
 rem  Pipeline (each stage was measured before it was built):
 rem    Magnification API host window under the lens, with our own
 rem    windows on its EXCLUDE list  ->  Windows.Graphics.Capture of
-rem    that host by HWND (works while occluded - Desktop Duplication
+rem    that host by HWND (works while occluded; Desktop Duplication
 rem    does not)  ->  raw BGRA into mpv's stdin (no ffmpeg at all)
 rem    ->  ReShade + dlss5-feed + renodx-dlss5 = NR, drawn on top.
 rem
@@ -28,7 +28,7 @@ set "STATE=C:\Games\_screennr-lens-state.txt"
 
 echo.
 echo   DLSS 5 Neural Lens
-echo   drag the title bar to move it - the X closes it
+echo   drag the title bar to move it. The X closes it.
 echo.
 
 python "C:\Games\_screennr-lens3.py" "%STATE%"

@@ -64,7 +64,7 @@ set "MPVARGS=--geometry=!OW!x!OH!+!OPX!+!OPY! --hidpi-window-scale=no --no-borde
 echo.
 echo   source : %SRC% at (%OX%,%OY%)   [top-left of the panel]
 echo   output : !OW!x!OH! at (!OPX!,!OPY!)
-echo   Ctrl+Alt+R to resize   -   q in the NR window to stop
+echo   Ctrl+Alt+R to resize. Press q in the NR window to stop.
 echo.
 
 start "" /b python "C:\Games\_screennr-resize.py" ScreenNR "%STATE%"

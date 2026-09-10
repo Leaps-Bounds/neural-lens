@@ -1,0 +1,105 @@
+name: Bug report
+description: Something in the Neural Lens does not work
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting.
+
+        **Before you attach anything:** screenshots of the lens show whatever was behind
+        it, which is your desktop. Crop tightly, and check for window titles, notifications,
+        file paths and account names before uploading. Logs are usually more useful than
+        screenshots anyway.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What did you see, and what did you expect instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce it
+      description: The steps you took, in order. Say whether it happens every time.
+      placeholder: |
+        1. Launched the lens
+        2. Dragged it over ...
+        3. ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: passes
+    attributes:
+      label: How many passes
+      options: ["1", "2", "3", "4"]
+    validations:
+      required: true
+
+  - type: input
+    id: behind
+    attributes:
+      label: What was behind the lens
+      description: The kind of window, for example a browser, a game in borderless mode, a still image, a video.
+      placeholder: Firefox playing a video
+    validations:
+      required: true
+
+  - type: input
+    id: size
+    attributes:
+      label: Lens size and display
+      description: The first line of %LOCALAPPDATA%\NeuralLens\lens-state.txt, plus your display resolution.
+      placeholder: 1400 1000 500 400 2, on a 3840x2160 display
+    validations:
+      required: true
+
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      description: Run winver and give the version and build.
+      placeholder: 24H2, build 26100
+    validations:
+      required: true
+
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU and driver version
+      placeholder: RTX 4080, driver 580.10
+    validations:
+      required: true
+
+  - type: textarea
+    id: stack
+    attributes:
+      label: Neural Rendering stack
+      description: Versions of ReShade, dlss5-feed, renodx-dlss5 and nvngx_dlssnr.dll.
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: ReShade.log from the failing run
+      description: |
+        Every launch archives the previous session's logs to
+        `%LOCALAPPDATA%\NeuralLens\logs`. So launch once more after the problem, then attach
+        the newest archived `ReShade.log`. The useful lines mention `feature=18 (DLSSNR`
+        and `evaluation succeeded (count=`.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Things worth checking first
+      options:
+        - label: I tried the menu's Toggle NR on/off (F6). With NR live the picture changes clearly.
+        - label: I checked the archived ReShade.log for `feature=18 (DLSSNR`.
+        - label: I read the Limits section of the README, in case this is a known constraint.
+        - label: My screenshots, if any, do not show anything I mind being public.

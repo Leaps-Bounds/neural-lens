@@ -93,6 +93,7 @@ class Lens:
         self.root, self.cw, self.ch = root, cw, ch
         self.drag = None
         self.closing = False
+        self.tweak = False          # True while the viewport is interactive for the ReShade overlay
         self.frames = 0
         self.t_first = None
 
@@ -211,7 +212,7 @@ class Lens:
     def stats(self):
         if self.closing:
             return
-        if self.t_first and self.frames > 30:
+        if self.t_first and self.frames > 30 and not self.tweak:
             fps = self.frames / max(time.perf_counter() - self.t_first, 1e-6)
             self.info.config(text="%d x %d   %.0f fps" % (self.cw, self.ch, fps))
         self.root.after(1000, self.stats)
@@ -251,13 +252,70 @@ class Lens:
             with open(STATE, "w") as f:
                 f.write("%d %d %d %d\n" % (self.cw, self.ch, x, y))
 
-    # ---- menu / quit
+    # ---- menu / tweak mode
+    # The ReShade overlay lives INSIDE mpv's swapchain, so it cannot be moved to a
+    # separate window. Tweak mode makes the viewport interactive (drops
+    # WS_EX_TRANSPARENT / WS_EX_NOACTIVATE), focuses it and presses Home so the
+    # overlay opens in place; leaving tweak mode presses Home again and restores
+    # click-through. Single keys (F6 NR toggle, F5 screenshot) do the same dance
+    # for a fraction of a second. mpv's input.conf has "HOME ignore", so the key
+    # reaches ReShade, not mpv.
     def menu(self, e):
         m = tk.Menu(self.t, tearoff=0)
+        m.add_command(label=("Done tweaking  (back to click-through)" if self.tweak
+                             else "Tweak NR settings  (ReShade overlay, Home)"),
+                      command=self.toggle_tweak)
+        m.add_command(label="Toggle NR on/off   (F6)", command=lambda: self.send_key(0x75))
+        m.add_command(label="NR screenshot        (F5)", command=lambda: self.send_key(0x74))
+        m.add_separator()
         m.add_command(label="Why can't I resize?", command=self.resize_hint)
         m.add_separator()
         m.add_command(label="Close", command=self.quit)
         m.tk_popup(self.t.winfo_x() + 6, self.t.winfo_y() + BAR)
+
+    def set_interactive(self, on):
+        h = self.mpv_hwnd
+        ex = u.GetWindowLongPtrW(h, GWL_EXSTYLE)
+        ex = (ex & ~(WS_EX_TRANSPARENT | WS_EX_NOACTIVATE)) if on             else (ex | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE)
+        u.SetWindowLongPtrW(h, GWL_EXSTYLE, ex)
+        u.SetWindowPos(h, 0, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | 0x0020)
+
+    def focus_mpv(self):
+        me = k32.GetCurrentThreadId()
+        tid = u.GetWindowThreadProcessId(self.mpv_hwnd, None)
+        u.AttachThreadInput(me, tid, True)
+        u.SetForegroundWindow(self.mpv_hwnd)
+        u.SetFocus(self.mpv_hwnd)
+        u.AttachThreadInput(me, tid, False)
+
+    @staticmethod
+    def press(vk):
+        u.keybd_event(vk, 0, 0, 0)
+        time.sleep(0.03)
+        u.keybd_event(vk, 0, 2, 0)
+
+    def toggle_tweak(self):
+        self.tweak = not self.tweak
+        if self.tweak:
+            self.set_interactive(True)
+            self.info.config(text="TWEAK MODE  -  Home hides/shows the ReShade menu", fg="#fbbf24")
+            self.root.after(150, self.focus_mpv)
+            self.root.after(320, lambda: self.press(0x24))
+        else:
+            self.focus_mpv()
+            self.press(0x24)
+            self.root.after(250, lambda: self.set_interactive(False))
+            self.info.config(text="%d x %d" % (self.cw, self.ch), fg="#64748b")
+
+    def send_key(self, vk):
+        if self.tweak:
+            self.focus_mpv()
+            self.press(vk)
+            return
+        self.set_interactive(True)
+        self.root.after(150, self.focus_mpv)
+        self.root.after(320, lambda: self.press(vk))
+        self.root.after(600, lambda: self.set_interactive(False))
 
     def resize_hint(self):
         messagebox.showinfo(

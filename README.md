@@ -58,7 +58,9 @@ can also be pointed somewhere else on their own, from the menu's Settings.
 
 - **Move it** by dragging the title bar. The viewport is click-through, so clicking inside it
   reaches whatever is underneath rather than the lens.
-- **Add or remove a pass** with plus and minus in the title bar, while it runs.
+- **Add or remove a pass** with plus and minus in the title bar, while it runs. There is a
+  brief pause while it does, because every stage restarts: the frame rate each one is given
+  depends on how many stages there are.
 - **Close it** with the X. Because the viewport can never take keyboard focus, mpv's usual `q`
   will not reach it, which is why the X is there.
 - The **menu** at the left opens the ReShade overlay in place so you can adjust Neural
@@ -116,6 +118,14 @@ Running the same chain with Neural Rendering switched off changes the image by o
 the round trip through capture and mpv is very nearly lossless, and what accumulates really is
 neural work. The maximum is 4, changeable with `max_passes` in the ini.
 
+**Each pass lowers the frame rate on purpose.** Every pass is another full capture and present
+stage, so the chain delivers fewer frames per second. mpv is therefore told the stream runs at
+the display rate divided by the number of passes: 120, 60, 40 and 30 on a 120 Hz panel. Telling
+it anything faster than the chain can really deliver makes it present frames that have not
+arrived yet, and Neural Rendering then re-runs over its own output until the picture crushes
+toward black, recovers, and does it again. Because that rate is fixed when mpv starts, changing
+the pass count restarts every stage.
+
 Two passes is usually the sweet spot. Three is visibly heavy on most content.
 
 ### Frame rate
@@ -124,10 +134,11 @@ At 1400x1000 on an RTX 5090 driving a 120 Hz display, one pass runs at about **1
 the panel's refresh rate.
 
 Adding passes costs GPU time: roughly 32 percent utilisation at one pass, 57 at two, 80 at
-three. Be aware that the fps figure in the title bar counts frames arriving from capture into
-the first stage, not frames presented by the last one, so at higher pass counts it reports the
-input side rather than what you are looking at. Measured that way two and three passes both
-land around 85 to 90, and the difference between them is inside the noise.
+three. It also lowers the presented rate deliberately, as described under Multiple passes, so
+on a 120 Hz panel two passes present at 60 and three at 40. Be aware that the fps figure in the
+title bar counts frames arriving from capture into the first stage rather than frames presented
+by the last one, so at higher pass counts it reports the input side rather than what you are
+looking at.
 
 The single biggest factor here was a library default rather than anything expensive: the
 capture binding's `minimum_update_interval` throttles delivery to about 60 fps unless it is set

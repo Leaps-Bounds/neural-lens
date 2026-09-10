@@ -851,6 +851,61 @@ class Lens:
     # The lens cannot resize in place: that recreates mpv's swapchain, which makes
     # the NR add-on release its DLSS feature and crash. So drag a ghost to the size
     # you want, confirm, and the lens restarts itself at that size.
+    def confirm(self, title, text):
+        """A yes or no dialog that stays above the lens.
+
+        tkinter's messagebox is not topmost and every stage window is, so the
+        stock dialog is drawn underneath the lens and half the question cannot be
+        read. This also places itself clear of the lens rather than over it.
+        """
+        t = tk.Toplevel(self.root)
+        t.title(title)
+        t.configure(bg=BG)
+        t.resizable(False, False)
+        t.attributes("-topmost", True)
+        out = {"v": False}
+        tk.Label(t, text=text, bg=BG, fg=FG, justify="left", wraplength=430,
+                 font=("Segoe UI", 10)).pack(padx=18, pady=(16, 12))
+        row = tk.Frame(t, bg=BG)
+        row.pack(padx=18, pady=(0, 14), anchor="e")
+
+        def done(v):
+            out["v"] = v
+            try:
+                t.grab_release()
+            except Exception:
+                pass
+            t.destroy()
+
+        tk.Button(row, text="Yes", width=10, relief="flat", bg=ACCENT,
+                  fg="#0b1220", command=lambda: done(True)).pack(side="left",
+                                                                 padx=(0, 10))
+        tk.Button(row, text="No", width=10, relief="flat", bg="#334155", fg=FG,
+                  command=lambda: done(False)).pack(side="left")
+        t.bind("<Escape>", lambda e: done(False))
+        t.bind("<Return>", lambda e: done(True))
+        t.protocol("WM_DELETE_WINDOW", lambda: done(False))
+        t.update_idletasks()
+
+        # Sit below the lens if there is room, otherwise above it, otherwise in
+        # the middle of the screen. Anywhere but underneath the thing it is
+        # asking about.
+        dw, dh = t.winfo_width(), t.winfo_height()
+        lx, ly = self.inner()
+        sw, sh = t.winfo_screenwidth(), t.winfo_screenheight()
+        x = min(max(0, lx + (self.cw - dw) // 2), max(0, sw - dw))
+        if ly + self.ch + 12 + dh <= sh:
+            y = ly + self.ch + 12
+        elif ly - 12 - dh >= 0:
+            y = ly - 12 - dh
+        else:
+            x, y = max(0, (sw - dw) // 2), max(0, (sh - dh) // 2)
+        t.geometry("+%d+%d" % (x, y))
+        t.grab_set()
+        t.focus_force()
+        self.root.wait_window(t)
+        return out["v"]
+
     def resize_dialog(self):
         if self.closing:
             return
@@ -896,7 +951,7 @@ class Lens:
             nx, ny = t.winfo_rootx(), t.winfo_rooty()
             t.attributes("-topmost", False)
             t.withdraw()
-            if messagebox.askyesno(
+            if self.confirm(
                     "Resize the lens",
                     "Resize to %d x %d ?\n\n"
                     "The lens has to restart. Resizing in place recreates mpv's "

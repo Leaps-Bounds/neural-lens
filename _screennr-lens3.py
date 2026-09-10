@@ -32,6 +32,7 @@ How it works. Every piece below was measured before it was built:
 import ctypes
 import ctypes.wintypes as w
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -46,6 +47,7 @@ STATE = sys.argv[1] if len(sys.argv) > 1 else r"C:\Games\_screennr-lens-state.tx
 MPV = r"C:\Games\_mpv\mpv.exe"
 MPV_DIR = r"C:\Games\_mpv"
 TITLE = "LensNR"
+LOGDIR = r"C:\Games\_lens-logs"
 
 BAR, EDGE = 34, 2
 KEY, BG, FG, ACCENT = "#010203", "#1b2430", "#cbd5e1", "#4ade80"
@@ -66,6 +68,23 @@ HWND_TOPMOST, HWND_NOTOPMOST = ctypes.c_void_p(-1), ctypes.c_void_p(-2)   # poin
 SWP_NOSIZE, SWP_NOMOVE, SWP_NOZORDER, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0004, 0x0010
 MW_FILTERMODE_EXCLUDE = 0
 LWA_ALPHA = 0x2
+
+
+def archive_logs():
+    """Keep the PREVIOUS session's logs before mpv overwrites them. Without this,
+    launching again destroys the only evidence of a failure."""
+    try:
+        os.makedirs(LOGDIR, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        for name in ("ReShade.log", "dlss5-feed.log"):
+            src = os.path.join(MPV_DIR, name)
+            if os.path.exists(src) and os.path.getsize(src) > 0:
+                shutil.copy2(src, os.path.join(LOGDIR, "%s-%s" % (stamp, name)))
+        files = sorted(os.listdir(LOGDIR))
+        while len(files) > 40:
+            os.remove(os.path.join(LOGDIR, files.pop(0)))
+    except Exception:
+        pass
 
 
 def find_mpv():
@@ -354,6 +373,7 @@ def main():
             pass
     cw -= cw % 2
     ch -= ch % 2
+    archive_logs()
     root = tk.Tk()
     root.withdraw()
     lens = Lens(root, x, y, cw, ch)

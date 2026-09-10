@@ -66,7 +66,7 @@ class Outline:
         self.start = (wd, ht)
         t = tk.Toplevel(root)
         self.t = t
-        t.title("Resize NR output - drag the edges, let go to confirm")
+        t.title("Resize NR output: drag the edges, let go to confirm")
         t.geometry("%dx%d+%d+%d" % (wd, ht, x, y))
         t.attributes("-topmost", True)
         t.attributes("-alpha", 0.45)
@@ -111,7 +111,7 @@ class Outline:
         if messagebox.askyesno(
                 "Restart at new size?",
                 "Resize the NR output to %d x %d ?\n\n"
-                "The window cannot resize while running - it has to restart.\n"
+                "The window cannot resize while running; it has to restart.\n"
                 "Your phone/scrcpy session is not affected." % (wd, ht)):
             x, y = self.t.winfo_x(), self.t.winfo_y()
             with open(STATE, "w") as f:

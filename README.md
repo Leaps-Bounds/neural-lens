@@ -1,17 +1,14 @@
 # DLSS 5 Neural Lens
 
-A floating see-through window for Windows that applies **DLSS 5 Neural Rendering** to
-whatever is behind it. Drag it over any window on the desktop; the content underneath is
-neural-rendered live inside it, and the mouse passes straight through to the desktop, like the
-Windows Magnifier lens. Also included: a fixed-region screen demo and a phone (scrcpy) variant.
+A floating see-through window for Windows that applies **DLSS 5 Neural Rendering** to whatever
+is behind it. Drag it over any window on the desktop and the content underneath is
+neural-rendered live inside it, while the mouse passes straight through to the desktop, like
+the Windows Magnifier lens.
 
-No renderer, no DLSS integration and no injection into the target app are required. If it
-can be drawn on the desktop, it can be neural-rendered.
+No renderer, no DLSS integration and no injection into the target app are required. If it can
+be drawn on the desktop, it can be neural-rendered.
 
 ## How it works
-
-Every stage below was measured before it was built; the dead ends are listed further down so
-nobody repeats them.
 
 ```
 Magnification API host window, UNDER the lens on the same rect,
@@ -27,72 +24,66 @@ mpv drawn on top: click-through, always-on-top, no window dragging
 Moving the lens only moves three windows and re-aims the magnifier every 16 ms. Nothing
 restarts, so it stays smooth.
 
-## Requirements (not included, not redistributed)
+## Requirements
 
-- Windows 11 (Windows.Graphics.Capture; tested on 25H2) and an RTX GPU with a DLSS 5 driver
-- Python 3.12 with `numpy` and `windows-capture` (`pip install windows-capture`)
-- An **mpv** install at `C:\Games\_mpv` with a working DLSS 5 Neural Rendering stack:
-  ReShade (as the Vulkan layer), `dlss5-feed.addon64`, `renodx-dlss5.addon64`,
-  `nvngx_dlss.dll`, and NVIDIA's `nvngx_dlssnr.dll`. Get each from its own source.
-- For `Launch-PhoneNR.cmd`: scrcpy running first
+None of the neural stack is included here or redistributed. Get each piece from its own source.
 
-## Files
+- Windows 11 (for Windows.Graphics.Capture; developed on 25H2) and an RTX GPU with a
+  DLSS 5 capable driver
+- Python 3 with `numpy` and `windows-capture`
+- An **mpv** install carrying a working DLSS 5 Neural Rendering stack: ReShade as the Vulkan
+  layer, plus `dlss5-feed.addon64`, `renodx-dlss5.addon64`, `nvngx_dlss.dll` and NVIDIA's
+  `nvngx_dlssnr.dll`
 
-| file | what |
-|---|---|
-| `Launch-LensNR.cmd` + `_screennr-lens3.py` | the see-through lens |
-| `Launch-ScreenNR-Demo.cmd` | fixed screen region -> NR window beside it (2x magnify or 1:1) |
-| `Launch-PhoneNR.cmd` + `_screennr-findwin.py` | scrcpy window -> NR window beside it |
-| `_screennr-resize.py` | Ctrl+Alt+R outline-drag-confirm resize (restart-based) for the two demos |
-| `deploy.cmd` | copies the files to `C:\Games`, where the launchers expect them |
-| `legacy/` | earlier lens designs kept for reference; they do not work (see below) |
+## Install
 
-## Troubleshooting
+1. Put this folder anywhere you like.
+2. `pip install numpy windows-capture`
+3. Tell the lens where your mpv install is, using whichever you prefer:
+   - `Launch-LensNR.cmd --mpv-dir "D:\path\to\mpv"`
+   - `set NEURAL_LENS_MPV_DIR=D:\path\to\mpv`
+   - copy `neural-lens.ini.example` to `neural-lens.ini` and set `mpv_dir`
+   - or simply put an `mpv` folder beside `neural_lens.py`
+4. Run `Launch-LensNR.cmd`.
 
-NR occasionally fails to engage: the window opens and drags normally but the image is a
-passthrough. Toggling NR with the dropdown's **Toggle NR on/off (F6)** is the quickest check;
-with NR live the picture changes obviously (measured at 12.7/255 mean absolute difference on
-plain text). Relaunching has cleared it so far.
+Window position and archived logs are kept in `%LOCALAPPDATA%\NeuralLens`, which you can
+redirect with `data_dir` in the ini or `NEURAL_LENS_DATA`.
 
-Each launch copies the previous session's `ReShade.log` and `dlss5-feed.log` into
-`C:\Games\_lens-logs` (40 files kept), so the evidence from a failed run survives the next
-launch. Check the archived `ReShade.log` for `feature=18 (DLSSNR` and
-`evaluation succeeded (count=`.
+## Using it
+
+- **Move it** by dragging the title bar. The viewport itself is click-through, so clicking
+  inside it reaches whatever is underneath.
+- **Close it** with the X. The viewport can never hold keyboard focus, so mpv's `q` will not
+  work; that is why the X is there.
+- The **menu** on the left has `Tweak NR settings`, which makes the viewport interactive and
+  opens the ReShade overlay in place so you can adjust Neural Rendering live. `Done tweaking`
+  puts it back. There are also one-shot NR toggle (F6) and screenshot (F5) items.
 
 ## Limits
 
-- **Size is fixed per run.** Resizing recreates mpv's swapchain, which makes the NR add-on
-  release the DLSS feature and crash (`0xC0000005`). Edit the first line of
-  `C:\Games\_screennr-lens-state.txt` (`W H X Y`) and relaunch.
-- The viewport is click-through, so it never holds keyboard focus and `q` cannot quit mpv.
-  Use the X. To reach the ReShade overlay, use the dropdown's **Tweak NR settings**: it makes
-  the viewport interactive, focuses it and presses Home; **Done tweaking** reverses it. The
-  dropdown also has one-shot NR toggle (F6) and screenshot (F5).
-- The Magnification API does not see exclusive-fullscreen games; borderless is fine.
-- Never add `--untimed` to mpv: it re-presents the same frame many times and NR then iterates
-  on its own output until the image collapses.
+- **The size is fixed for the duration of a run.** Resizing recreates mpv's swapchain, which
+  makes the NR add-on release the DLSS feature and crash with `0xC0000005`. To change size,
+  close the lens, edit the first line of `%LOCALAPPDATA%\NeuralLens\lens-state.txt`
+  (`width height x y`), and relaunch.
+- The Magnification API cannot see exclusive-fullscreen games. Borderless is fine, and such
+  games can usually take Neural Rendering directly through the add-on anyway.
+- Never add `--untimed` to mpv. It presents the same frame many times over, and Neural
+  Rendering then iterates on its own output until the picture collapses.
 
-## Dead ends, with the measurement that killed each
+## Troubleshooting
 
-- **Desktop Duplication (`ddagrab`) under the lens**: it cannot see beneath an occluding
-  window, excluded-from-capture or not, even with a magnifier repainting underneath.
-  Region under the lens: YAVG 18 (black is 16) vs 46 elsewhere. Only transient dirty rects land
-  in it, which produced mouse trails and window-drag smears.
-- **`gdigrab`/BitBlt of the magnifier window**: blank even unoccluded; the magnifier
-  composites via DWM and BitBlt only sees the empty GDI surface.
-- **`MagSetImageScalingCallback`**: deprecated, accepted, deadlocks on the next call from
-  ctypes. Replaced entirely by WGC on the host window.
-- **UDP transport**: resyncs badly after a restart (353 buffering events, frames every few
-  seconds). Moot now that nothing restarts; TCP and a pipe both measured 60 fps.
-- **`--untimed`**: the original "runaway neural blob". Presents outnumbered frame arrivals.
+Occasionally NR fails to engage: the window opens and drags normally, but the picture is a
+plain passthrough. The quickest check is the dropdown's **Toggle NR on/off (F6)**. With NR
+live the image changes obviously; measured at 12.7/255 mean absolute difference on plain text.
+Relaunching has cleared it every time so far.
 
-## Gotchas
+Every launch copies the previous session's `ReShade.log` and `dlss5-feed.log` into
+`%LOCALAPPDATA%\NeuralLens\logs` (the 40 most recent are kept), so a failed run stays
+diagnosable after you relaunch. In an archived `ReShade.log`, look for `feature=18 (DLSSNR`
+and `evaluation succeeded (count=`.
 
-- WGC cannot find a `WS_EX_TOOLWINDOW` window; the magnifier host must be a plain popup.
-  Capture by `window_hwnd`, not by name.
-- `windows_capture` dispatches handlers by function `__name__`: they must be called
-  `on_frame_arrived` / `on_closed`.
-- `frame.frame_buffer` is row-padded and non-contiguous: slice `[:h, :w, :]` and use
-  `np.ascontiguousarray(...).tobytes()`.
-- Passing `HWND_TOPMOST` as Python `-1` through ctypes silently fails on x64
-  (use `c_void_p(-1)`), and mpv resets its z-order anyway: use `--ontop`.
+## Notes
+
+[docs/NOTES.md](docs/NOTES.md) records the approaches that were tried and rejected, each with
+the measurement that killed it, plus the Win32 details that are easy to get wrong. Worth
+reading before changing the capture path.

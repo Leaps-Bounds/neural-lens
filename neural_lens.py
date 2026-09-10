@@ -27,7 +27,8 @@ How it works. Every piece below was measured before it was built:
      feature -> 0xC0000005. So the size is fixed per run; change it in the
      state file and relaunch.
 
-  argv[1] state file   (W H X Y of the viewport)
+Configuration: see neural-lens.ini.example. State and logs live in
+%LOCALAPPDATA%/NeuralLens by default.
 """
 import ctypes
 import ctypes.wintypes as w
@@ -43,11 +44,57 @@ from tkinter import messagebox
 import numpy as np
 from windows_capture import WindowsCapture, Frame, InternalCaptureControl
 
-STATE = sys.argv[1] if len(sys.argv) > 1 else r"C:\Games\_screennr-lens-state.txt"
-MPV = r"C:\Games\_mpv\mpv.exe"
-MPV_DIR = r"C:\Games\_mpv"
+def _script_dir():
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _read_ini():
+    """Optional neural-lens.ini beside this script. Plain key = value lines."""
+    cfg = {}
+    try:
+        with open(os.path.join(_script_dir(), "neural-lens.ini"), encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line[0] in "#;[":
+                    continue
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    cfg[k.strip().lower()] = v.strip().strip('"')
+    except OSError:
+        pass
+    return cfg
+
+
+_INI = _read_ini()
+
+
+def _find_mpv_dir():
+    """Locate the mpv install carrying the DLSS 5 Neural Rendering stack.
+
+    Checked in order: --mpv-dir on the command line, the NEURAL_LENS_MPV_DIR
+    environment variable, mpv_dir in neural-lens.ini, an "mpv" folder beside
+    this script, and finally C:/Games/_mpv.
+    """
+    cands = []
+    for i, a in enumerate(sys.argv):
+        if a == "--mpv-dir" and i + 1 < len(sys.argv):
+            cands.append(sys.argv[i + 1])
+    cands += [os.environ.get("NEURAL_LENS_MPV_DIR"), _INI.get("mpv_dir"),
+              os.path.join(_script_dir(), "mpv"), r"C:\Games\_mpv"]
+    for d in cands:
+        if d and os.path.isfile(os.path.join(d, "mpv.exe")):
+            return os.path.abspath(d)
+    return None
+
+
+MPV_DIR = _find_mpv_dir()
+MPV = os.path.join(MPV_DIR, "mpv.exe") if MPV_DIR else None
 TITLE = "LensNR"
-LOGDIR = r"C:\Games\_lens-logs"
+
+DATA_DIR = (os.environ.get("NEURAL_LENS_DATA") or _INI.get("data_dir")
+            or os.path.join(os.environ.get("LOCALAPPDATA") or _script_dir(), "NeuralLens"))
+STATE = os.path.join(DATA_DIR, "lens-state.txt")
+LOGDIR = os.path.join(DATA_DIR, "logs")
 
 BAR, EDGE = 34, 2
 KEY, BG, FG, ACCENT = "#010203", "#1b2430", "#cbd5e1", "#4ade80"
@@ -356,7 +403,14 @@ class Lens:
             self.mpv.stdin.close()
         except Exception:
             pass
-        os.system("taskkill /F /IM mpv.exe /T >nul 2>&1")
+        try:
+            self.mpv.terminate()
+            self.mpv.wait(timeout=3)
+        except Exception:
+            try:
+                self.mpv.kill()
+            except Exception:
+                pass
         try:
             mag.MagUninitialize()
         except Exception:
@@ -365,6 +419,21 @@ class Lens:
 
 
 def main():
+    if not MPV_DIR:
+        print("\n".join([
+            "Could not find mpv.exe.",
+            "",
+            "Point the lens at your mpv install (the one carrying the DLSS 5",
+            "Neural Rendering stack) in any of these ways:",
+            "",
+            '  Launch-LensNR.cmd --mpv-dir "D:\\path\\to\\mpv"',
+            "  set NEURAL_LENS_MPV_DIR=D:\\path\\to\\mpv",
+            "  copy neural-lens.ini.example to neural-lens.ini and set mpv_dir",
+            "  or put an 'mpv' folder beside neural_lens.py",
+        ]))
+        input("\nPress Enter to close.")
+        return
+    os.makedirs(DATA_DIR, exist_ok=True)
     cw, ch, x, y = 1400, 1000, 500, 400
     if os.path.exists(STATE):
         try:

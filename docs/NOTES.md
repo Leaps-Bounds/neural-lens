@@ -504,14 +504,21 @@ the input's own range and is not caught; a crush toward white over a scene that 
 still is, and the presented shortfall test is unaffected. That is no worse than before, when the
 test fired constantly on motion and so was useless there.
 
-At four passes the governor still hunts over a detailed still, and the pinned measurement shows
-why it is not capacity: stage 1 pinned at 43, 60, 72 and 85, which is visible 25 to 49, left the
-picture intact at every one, brightness 48 in and 48 out, floor 0.19, with only a mild shortfall
-at the top. The runaway verdicts in the governed run all fired within seconds of a probe step. A
-speed change at four passes ripples through four stages and four buffers, and the brightness
-excursion it causes outlasts the 1.5 second settle window, so the governor reads a transition as
-a collapse and backs off to half. A settle window that grows with the pass count is the likely
-remedy and has not been tried.
+At four passes the governor used to hunt over a detailed still, for two separate reasons on two
+cards. On the 5090 the pinned measurement showed it was not capacity: stage 1 pinned at 43, 60,
+72 and 85, which is visible 25 to 49, left the picture intact at every one, brightness 48 in and
+48 out, floor 0.19, with only a mild shortfall at the top, while the runaway verdicts in the
+governed run all fired within seconds of a probe step. A speed change at four passes ripples
+through four stages and four buffers, and the brightness excursion it causes outlasted the 1.5
+second settle window, so the governor read a transition as a collapse and backed off to half.
+The settle window now grows with the pass count, half as long again per stage after the first,
+so 3.75 seconds at four passes. On the 4070 there were no runaways at all and the hunt was 35 and
+37 alternating every ten seconds: a retake of the remembered level failed by a hair, correctly
+lowered that level by one, and the next retake step of two overshot straight back to the level
+that had just failed. A retake now never goes past the level it is retaking. Measured on the
+4070 at four passes over the still: rate 35 to 39 over the last 90 seconds, a spread of 4, where
+it had been 32 to 37 on a ten second cycle. What moves is the recorded limit being re-tested on
+its doubling interval, a brief shortfall each time that falls straight back.
 
 Measurement traps that cost time here: F6 is persisted by the add-on as `NeuralUplift=0` in
 ReShade.ini, so one toggle turns Neural Rendering off for every later launch; a full frame

@@ -73,6 +73,9 @@ can also be pointed somewhere else on their own, from the menu's Settings.
   content the lens captured, the neural rendered result, and the two joined side by side. Both
   halves come from the same live pipeline a fraction of a second apart, so on still content they
   line up pixel for pixel. It pauses briefly first, so the menu you just used is not in the shot.
+- **Passes** are chosen with the plus and minus on the title bar and applied with **Set**, so
+  going from one pass to four is one rebuild rather than three. The number turns amber while
+  it differs from what is running. The menu's add and remove entries apply at once.
 - **Live A/B split** from the menu puts a draggable divider across the lens, with Neural
   Rendering on the left of it and the untouched source on the right, both live. It costs
   nothing: the lens is see-through, so the right side is simply the screen underneath. Works

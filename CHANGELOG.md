@@ -21,6 +21,11 @@ Features:
   writes `neural-lens.ini`; nothing needs editing by hand.
 - Per session log archiving into `%LOCALAPPDATA%\NeuralLens\logs`, so evidence from a failed
   run survives the next launch.
+- Plus and minus on the title bar choose a pass count and Set applies it, one rebuild for any
+  jump. The menu's add and remove entries still apply at once.
+- Keys for ReShade (Home, F6, F5) are posted straight to each stage's message queue instead
+  of focusing the stage and synthesising a global key press, which dropped presses and left
+  the overlay out of step with the Tweak entry.
 - A live A/B split from the menu: a draggable divider with Neural Rendering on its left and the
   raw source on its right. Every stage window is clipped to the left of the divider, so the
   right side is the screen itself.

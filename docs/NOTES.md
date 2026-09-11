@@ -196,6 +196,38 @@ instead, measuring 12.7/255 on plain text.
   one log per stage, and `feature=18` appears once per *file* rather than once per run. Anything
   that archives or inspects logs must cover all of them.
 
+### Fullscreen
+
+Two things bit when the lens first covered a whole monitor:
+
+- **A layered window larger than the screen comes up blank.** The windowed chrome is the
+  picture plus a title bar plus a border, so over a whole monitor it was 3844x2194 on a
+  3840x2160 display. It existed, was visible and topmost, and drew nothing. Fullscreen the
+  chrome is therefore just the bar, 3840x34, laid over the top edge of the picture.
+- **mpv climbs above the chrome.** With the chrome raised after the stages were spawned, the
+  stage still ended up above it a few seconds later, so the bar could not be seen or clicked.
+  The lens now walks the z-order above its chrome on the 200 ms filter timer and raises the
+  chrome again whenever a stage is found there. Menus and dialogs are not stages, so they
+  stay above.
+
+### The A/B divider
+
+The divider is a thin topmost window of this process, so the magnifier already excludes it,
+and every stage is clipped with `SetWindowRgn` to the left of it. Two things about dragging it:
+
+- **Tk ignores `geometry()` on a window while the mouse button is held on it.** The split
+  value followed the drag and the clip moved, but the line itself stayed where it was until
+  release, which reads as "the slider is locked". The divider is moved with `SetWindowPos`
+  instead, like the stages.
+- The drag follows the mouse from a thread polling the button and the cursor rather than Tk's
+  motion events, so it keeps working after the pointer leaves the fourteen pixel window. The
+  governor is told to ignore its counters for a few seconds around the toggle, because the
+  clip shows up as black in the visible stage's capture.
+
+The fullscreen chain keeps its pass count and settled rate in `lens-state-fullscreen.txt`,
+because the windowed state file is what the way back restores, and a rate that suits a
+1400x1000 lens is far too high for eight million pixels.
+
 ## Measurement pitfalls
 
 - **Never measure with a moving source.** A reading of 16.1% changed pixels came from an animated
@@ -323,6 +355,59 @@ Two consequences:
 
 Note that four stages at 60 fps collapses, so a fixed rate that works at two and three stages is
 not sufficient at four.
+
+### The fixed rule does not survive another GPU, and what replaced it
+
+The rule above was calibrated on an RTX 5090 at 1400x1000. Measured on an RTX 4070 SUPER with
+driver 616.56, capturing the visible stage and taking the mean absolute frame to frame change
+out of 255 on a still, dense source (floors: 0.03 with Neural Rendering off, about 0.65 with it
+on at one pass, about 0.36 at two or three passes). "Spikes" are frames above 1.0:
+
+```
+lens        passes  declared     presented   result
+1400x1000   1       100 (rule)   100         at floor, 17 spikes in 995 frames
+1400x1000   1       35 to 60     = declared  clean
+1400x1000   2        50 (rule)    40         shimmer, 55 spikes, brightness 112 to 116
+1400x1000   2        24 or 32    = declared  clean
+1400x1000   3        33 (rule)    29         shimmer, 24 spikes
+1400x1000   3        24           24         clean
+2000x1400   1       100 (rule)    27         collapse, mean 14, brightness 47 to 74
+2000x1400   1        24           24         clean
+3840x2126   1       100 (rule)    10         a slideshow, delivery into stage 1 fell to 61
+3840x2126   1        24           24         held, delivery into stage 1 only 30
+```
+
+Capture into stage 1 stays at 120 whenever the GPU is not overloaded, so stage 1's counter
+cannot see any of it. Capacity also moves at runtime: the same one pass lens went from holding
+100 to holding about 60 once a video was playing beside it. On driver 610.47 the one pass rule
+collapsed outright in 3 of 5 runs.
+
+So the rate is governed instead. Every stage is declared at the display rate and presents at a
+playback speed set over mpv's IPC pipe, which changes live. Each stage after the first runs at
+five sixths of the stage feeding it, because equal rates at two passes were clean at 35 and
+shimmered at 37. Once a second the governor reads:
+
+- the frames the visible stage presents, from a counting only capture of its window, against
+  the rate it was asked for. A shortfall drops the rate to two thirds of what was presented.
+- the mean brightness entering stage 1 against the mean brightness shown. Neural Rendering moves
+  it by two or three percent; a collapse moves it by half or more, and can do so while every
+  frame is presented on time (one pass at 90 presented 90 and showed 153 for 115). Two seconds
+  of that halves the rate.
+- while the source is still (its own sampled change under 0.5), the frame to frame change of
+  the output. Either more than 3 percent of frames jumping above three times the median, or a
+  median above 1.5, marks the level as failed. Just over the knee the shimmer is continuous
+  rather than spiky: one pass at 83 on a loaded 4070 changed by about 3 every frame.
+
+A failed level falls back to the last level a probe departed from, since a level near the knee
+can take fifteen seconds to show its shimmer and cannot be trusted sooner. Probes go halfway to
+the lowest failed level, only while the source is still, and stop when the step is under a
+twentieth of the rate. The settled rate is the sixth field of the state file.
+
+Measurement traps that cost time here: F6 is persisted by the add-on as `NeuralUplift=0` in
+ReShade.ini, so one toggle turns Neural Rendering off for every later launch; a full frame
+difference inside the capture callback costs 10 ms at 1400x1000 and caps the capture near 40,
+which looks exactly like a chain limit; the ReShade frametime overlay in the corner of the stage
+reports mpv's own present cadence and is an independent witness.
 
 ### What does not cause the 60 fps ceiling
 

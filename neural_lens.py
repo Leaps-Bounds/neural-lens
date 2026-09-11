@@ -49,8 +49,10 @@ How it works. Every piece below was measured before it was built:
 Configuration: see neural-lens.ini.example. State and logs live in
 %LOCALAPPDATA%/NeuralLens by default.
 """
+import collections
 import ctypes
 import ctypes.wintypes as w
+import json
 import os
 import shutil
 import struct
@@ -127,6 +129,7 @@ except ValueError:
     MAX_PASSES = 4
 
 BAR, EDGE = 34, 2
+DIVIDER = 14                 # grab width of the A/B divider; the line drawn is 4
 KEY, BG, FG, ACCENT = "#010203", "#1b2430", "#cbd5e1", "#4ade80"
 DIM, WARN = "#64748b", "#fbbf24"
 def _display_hz():
@@ -176,9 +179,31 @@ DISPLAY_HZ = _display_hz()
 BASE_FPS = _rate("fps", DISPLAY_HZ)     # ceiling, before dividing by stage count
 PUMP_HZ = _rate("pump_hz", DISPLAY_HZ)  # magnifier repaint pacing
 
+# The rate is adapted to what the chain measurably presents unless the ini says
+# adaptive = 0, in which case the fixed rule in _fps_for is declared and kept.
+ADAPTIVE = str(_INI.get("adaptive", "1")).strip().lower() not in ("0", "no", "off", "false")
+try:
+    MIN_FPS = max(5, min(60, int(_INI.get("min_fps", 12))))
+except (TypeError, ValueError):
+    MIN_FPS = 12
+
+# Fullscreen covers the whole monitor the lens is on. It is an ini flag rather
+# than a window state because the lens has to restart to change size, and the
+# windowed geometry in the state file must survive the round trip, so the
+# fullscreen chain keeps its pass count and settled rate in a file of its own.
+FULLSCREEN = str(_INI.get("fullscreen", "0")).strip().lower() in ("1", "yes", "on", "true")
+FULL_STATE = os.path.join(DATA_DIR, "lens-state-fullscreen.txt")
+
 
 def _fps_for(stages):
-    """The rate declared to mpv, which must never exceed what the chain delivers.
+    """The fixed rule: the rate for this many stages on this display.
+
+    With the adaptive rate (the default) this is only where the visible stage
+    starts, and the governor in Lens.start_governor takes it from there. With
+    adaptive = 0 it is declared to mpv and kept, and everything below applies
+    unchanged.
+
+    The rate must never exceed what the chain delivers.
 
     Every pass is another full capture and present stage, so throughput divides
     roughly by the number of stages. Declaring more than actually arrives makes
@@ -268,7 +293,11 @@ def _bgra_to_rgb(a):
 
 
 def _save_ini(key, value):
-    """Write one key into neural-lens.ini beside the script, keeping the rest."""
+    """Write one key into neural-lens.ini beside the script, keeping the rest.
+
+    A value of None removes the key, so a setting put back to its default
+    follows the default again rather than pinning today's value.
+    """
     path = os.path.join(_script_dir(), "neural-lens.ini")
     lines, done = [], False
     try:
@@ -277,12 +306,14 @@ def _save_ini(key, value):
                 bare = line.strip()
                 if bare and bare[0] not in "#;[" and "=" in bare \
                         and bare.split("=", 1)[0].strip().lower() == key:
-                    lines.append("%s = %s\n" % (key, value)); done = True
+                    if value is not None:
+                        lines.append("%s = %s\n" % (key, value))
+                    done = True
                 else:
                     lines.append(line)
     except OSError:
         pass
-    if not done:
+    if not done and value is not None:
         lines.append("%s = %s\n" % (key, value))
     with open(path, "w", encoding="utf-8") as fh:
         fh.writelines(lines)
@@ -359,14 +390,94 @@ def find_mpv(title):
     return hits[0] if hits else None
 
 
+def monitor_rect(x, y):
+    """The full rectangle of the monitor containing the point, in pixels."""
+    class MONITORINFO(ctypes.Structure):
+        _fields_ = [("cbSize", ctypes.c_ulong), ("rcMonitor", w.RECT),
+                    ("rcWork", w.RECT), ("dwFlags", ctypes.c_ulong)]
+    u.MonitorFromPoint.restype = ctypes.c_void_p
+    u.MonitorFromPoint.argtypes = [w.POINT, ctypes.c_ulong]
+    u.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.POINTER(MONITORINFO)]
+    h = u.MonitorFromPoint(w.POINT(int(x), int(y)), 2)     # MONITOR_DEFAULTTONEAREST
+    mi = MONITORINFO()
+    mi.cbSize = ctypes.sizeof(MONITORINFO)
+    if h and u.GetMonitorInfoW(h, ctypes.byref(mi)):
+        r = mi.rcMonitor
+        return r.left, r.top, r.right - r.left, r.bottom - r.top
+    return 0, 0, u.GetSystemMetrics(0), u.GetSystemMetrics(1)
+
+
+class MpvIPC:
+    """mpv's JSON IPC over a named pipe, just enough to set a property.
+
+    The pipe is opened on first use, because mpv creates it a moment after the
+    process starts. A dead mpv makes readline return nothing, which comes back
+    as None rather than an exception, so a stage that is being torn down cannot
+    take the caller with it.
+    """
+
+    def __init__(self, pipe):
+        self.pipe = pipe
+        self.f = None
+        self.lock = threading.Lock()
+        self.rid = 0
+
+    def command(self, *args):
+        with self.lock:
+            if self.f is None:
+                self.f = open(self.pipe, "r+b", buffering=0)
+            self.rid += 1
+            rid = self.rid
+            self.f.write((json.dumps({"command": list(args), "request_id": rid}) + "\n")
+                         .encode("utf-8"))
+            for _ in range(200):
+                line = self.f.readline()
+                if not line:
+                    return None
+                try:
+                    m = json.loads(line)
+                except ValueError:
+                    continue
+                if m.get("request_id") == rid:
+                    return m
+            return None
+
+    def set(self, prop, value):
+        return self.command("set_property", prop, value)
+
+    def close(self):
+        try:
+            if self.f is not None:
+                self.f.close()
+        except OSError:
+            pass
+        self.f = None
+
+
 class Lens:
-    def __init__(self, root, x, y, cw, ch, passes):
+    def __init__(self, root, x, y, cw, ch, passes, rate=None, fullscreen=False):
         self.root, self.cw, self.ch = root, cw, ch
+        self.fullscreen = fullscreen    # the title bar overlays the picture, no drag
+        self.split = None           # A/B divider as a fraction of the width, or off
+        self.divider = None         # the draggable divider window while split is on
+        self.settle_until = 0.0     # the governor ignores its counters until then
         self.drag = None
         self.closing = False
+        self.rebuilding = False     # True while set_passes is replacing the chain
         self.tweak = False          # True while the viewport is interactive
         self.frames = 0
         self.t_first = None
+        self.out_frames = 0         # frames the visible stage has presented
+        self.out_ctl = None
+        self.out_alive = None
+        self.in_lum = None          # mean luminance entering stage 1, sampled
+        self.out_lum = None         # mean luminance the visible stage shows
+        self.in_mad = None          # how much the source moves, sampled
+        self.out_mads = collections.deque(maxlen=1200)   # (t, change) per output frame
+        self._in_prev = None
+        self._out_prev = None
+        self.rate_note = ""         # last governor decision, for the title bar
+        self.saved_rate = rate      # settled rate from the state file, if any
         self.restart = False        # set by the resize flow, read by main()
         self.shot_want = False      # ask the capture thread for one source frame
         self.shot_ready = False
@@ -381,9 +492,17 @@ class Lens:
         t.attributes("-topmost", True)
         t.configure(bg=ACCENT)
         t.attributes("-transparentcolor", KEY)
-        t.geometry("%dx%d+%d+%d" % (cw + EDGE * 2, ch + BAR + EDGE, x - EDGE, y - BAR))
+        # windowed, the bar sits above the picture inside a frame that also draws
+        # the border. Fullscreen there is no room above the monitor, so the
+        # chrome is just the bar, laid over the top edge of the picture. It must
+        # not be larger than the screen: a layered window that is comes up
+        # blank, with nothing drawn at all.
+        if fullscreen:
+            t.geometry("%dx%d+%d+%d" % (cw, BAR, x, y))
+        else:
+            t.geometry("%dx%d+%d+%d" % (cw + EDGE * 2, ch + BAR + EDGE, x - EDGE, y - BAR))
         bar = tk.Frame(t, bg=BG, height=BAR)
-        bar.place(x=EDGE, y=0, width=cw, height=BAR)
+        bar.place(x=0 if fullscreen else EDGE, y=0, width=cw, height=BAR)
 
         self.menu_btn = tk.Label(bar, text=" \u2630 ", bg=BG, fg=FG, font=("Segoe UI", 12))
         self.menu_btn.pack(side="left", padx=(6, 0))
@@ -446,6 +565,11 @@ class Lens:
         # ---- stage 1: the magnifier host feeds the first mpv. The rate declared
         # to mpv depends on how many stages there will be, so it is settled first.
         self.fps = _fps_for(passes)
+        self.rate = self.start_rate(passes) if ADAPTIVE else self.fps
+        if ADAPTIVE and self.saved_rate:
+            # the state file remembers what this size and pass count settled at,
+            # so the chain does not have to shimmer its way down again
+            self.rate = max(MIN_FPS, min(self.rate, self.saved_rate))
         self._build_first(x, y)
         self.raise_chrome()
         self.aim()
@@ -453,19 +577,32 @@ class Lens:
         for _ in range(max(0, passes - 1)):
             self._append_stage()
         self.update_info()
+        self.start_counter()
 
         self.start_pump()
+        self.start_governor()
         self.root.after(1000, self.stats)
         self.root.after(200, self.watch_filter)
 
     # ---- stage plumbing
     def spawn_mpv(self, title, x, y):
-        """Start one mpv reading raw BGRA on stdin, and return (proc, hwnd)."""
+        """Start one mpv reading raw BGRA on stdin, and return (proc, hwnd, ipc).
+
+        The stream's frame rate is fixed for the life of the process, so with
+        the adaptive rate every stage is declared at the display rate and the
+        rate it actually presents is its playback speed, which the governor can
+        change at any time over IPC. In fixed mode the rule's rate is declared
+        outright and the speed is 1.
+        """
         env = dict(os.environ, DISABLE_DLSS5_VK_BRIDGE="1")
+        pipe = r"\\.\pipe\lensnr-%d-%s" % (os.getpid(), title)
+        declared = BASE_FPS if ADAPTIVE else self.fps
         cmd = [MPV, "-",
                "--demuxer=rawvideo", "--demuxer-rawvideo-w=%d" % self.cw,
                "--demuxer-rawvideo-h=%d" % self.ch, "--demuxer-rawvideo-mp-format=bgra",
-               "--demuxer-rawvideo-fps=%d" % self.fps,
+               "--demuxer-rawvideo-fps=%d" % declared,
+               "--speed=%.4f" % (self.rate / float(declared)),
+               "--input-ipc-server=%s" % pipe,
                "--geometry=%dx%d+%d+%d" % (self.cw, self.ch, x, y),
                "--hidpi-window-scale=no", "--no-border", "--no-osc",
                "--no-window-dragging", "--ontop", "--force-window=immediate",
@@ -490,7 +627,7 @@ class Lens:
         u.SetWindowLongPtrW(hwnd, GWL_STYLE, st & ~WS_THICKFRAME & ~WS_MAXIMIZEBOX)
         self.set_interactive(hwnd, False)
         u.SetWindowPos(hwnd, HWND_TOPMOST, x, y, self.cw, self.ch, SWP_NOACTIVATE)
-        return proc, hwnd
+        return proc, hwnd, MpvIPC(pipe)
 
     def start_capture(self, src_hwnd, dst_proc, count=False, alive=None):
         """WGC on src_hwnd, frames written to dst_proc's stdin.
@@ -566,6 +703,16 @@ class Lens:
                     if lens.t_first is None:
                         lens.t_first = time.perf_counter()
                     lens.frames += 1
+                    if lens.frames % 8 == 0:
+                        # one frame in eight, one pixel in sixteen: the governor
+                        # compares the luminance with what the visible stage
+                        # shows, and the change since the previous sample says
+                        # whether the source is still enough to judge shimmer
+                        sub = bufs[i][::4, ::4, :3].astype(np.int16)
+                        lens.in_lum = float(sub.mean())
+                        if lens._in_prev is not None and lens._in_prev.shape == sub.shape:
+                            lens.in_mad = float(np.abs(sub - lens._in_prev).mean())
+                        lens._in_prev = sub
             except (BrokenPipeError, OSError, ValueError):
                 control.stop()
 
@@ -602,13 +749,149 @@ class Lens:
             return
         try:
             self.refresh_filter()
+            self.keep_chrome_on_top()
         except Exception:
             pass
         self.root.after(200, self.watch_filter)
 
+    def keep_chrome_on_top(self):
+        """Raise the chrome again if a stage has climbed above it.
+
+        mpv re-asserts its own topmost position on some window events, and a
+        stage that covers the whole monitor ends up above the title bar, which
+        then cannot be seen or clicked. Only the stages count: menus and dialogs
+        are meant to be above the chrome.
+        """
+        stages = {s["hwnd"] for s in self.stages}
+        tops = [self.chrome]
+        if self.divider is not None:
+            try:
+                tops.append(u.GetParent(self.divider.winfo_id()) or self.divider.winfo_id())
+            except Exception:
+                pass
+        for top in tops:
+            h = u.GetWindow(top, 3)                  # GW_HWNDPREV, the window above
+            while h:
+                if h in stages:
+                    self.raise_chrome()
+                    return
+                h = u.GetWindow(h, 3)
+
     def raise_chrome(self):
         u.SetWindowPos(self.chrome, HWND_TOPMOST, 0, 0, 0, 0,
                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+        if self.divider is not None:
+            try:
+                h = u.GetParent(self.divider.winfo_id()) or self.divider.winfo_id()
+                u.SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0,
+                               SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+            except Exception:
+                pass
+
+    # ---- live A/B split
+    # The lens is see-through, so the raw source is already on screen under the
+    # stages. Clipping every stage window to the left of a divider reveals it on
+    # the right, live and pixel aligned, at no cost. Every stage has to be
+    # clipped, not just the visible one: the stages stack, so clipping only the
+    # last would reveal the stage below it rather than the desktop.
+    def toggle_split(self):
+        if self.closing:
+            return
+        if self.split is None:
+            self.split = 0.5
+            d = tk.Toplevel(self.root)
+            d.overrideredirect(True)
+            d.attributes("-topmost", True)
+            d.configure(bg=BG, cursor="sb_h_double_arrow")
+            # a wider grab area than the line itself, so it is easy to catch
+            tk.Frame(d, bg=ACCENT).place(x=DIVIDER // 2 - 2, y=0, width=4, relheight=1.0)
+            d.bind("<ButtonPress-1>", self._split_down)
+            x, y = self.inner()
+            d.geometry("%dx%d+%d+%d" % (DIVIDER, self.ch, x + self.cw // 2 - DIVIDER // 2, y))
+            self.divider = d
+            # idle tasks only: a full update() here runs the lens's own timers
+            # in the middle of building the window
+            d.update_idletasks()
+            h = u.GetParent(d.winfo_id()) or d.winfo_id()
+            u.SetWindowLongPtrW(h, GWL_EXSTYLE,
+                                u.GetWindowLongPtrW(h, GWL_EXSTYLE) | WS_EX_NOACTIVATE)
+        else:
+            self.split = None
+            try:
+                self.divider.destroy()
+            except Exception:
+                pass
+            self.divider = None
+        self.apply_split()
+        self.place_divider()
+        # clipping and unclipping are big frame to frame changes on the output
+        # capture; give the governor a fresh window rather than a false shimmer
+        self.out_mads.clear()
+        self.settle_until = time.perf_counter() + 3.0
+
+    def apply_split(self):
+        """Clip every stage to the left of the divider, or unclip them all."""
+        for s in list(self.stages):
+            try:
+                if self.split is None:
+                    u.SetWindowRgn(s["hwnd"], None, True)
+                else:
+                    px = max(0, min(self.cw, int(self.cw * self.split)))
+                    # the system owns the region once it is set
+                    u.SetWindowRgn(s["hwnd"], ctypes.windll.gdi32.CreateRectRgn(0, 0, px, self.ch),
+                                   True)
+            except Exception:
+                pass
+
+    def place_divider(self):
+        if self.divider is None or self.split is None:
+            return
+        x, y = self.inner()
+        px = int(self.cw * self.split)
+        # not tk's geometry(): while the mouse button is held on this window
+        # Tk ignores it, and the line the user is dragging never moves
+        try:
+            h = u.GetParent(self.divider.winfo_id()) or self.divider.winfo_id()
+            u.SetWindowPos(h, 0, x + px - DIVIDER // 2, y, DIVIDER, self.ch,
+                           SWP_NOZORDER | SWP_NOACTIVATE)
+        except Exception:
+            self.divider.geometry("%dx%d+%d+%d" % (DIVIDER, self.ch, x + px - DIVIDER // 2, y))
+        self.raise_chrome()
+
+    def _split_down(self, e):
+        """Follow the mouse until the button is released.
+
+        Not tk's motion events: the divider is a thin window under a click
+        through neighbour, and a drag that starts on it has to keep working
+        after the pointer has left it. A thread polls the button and the cursor
+        instead and hands each position to the mainloop.
+        """
+        self.drag = None            # never a lens drag while on the divider
+        if getattr(self, "_split_dragging", False):
+            return
+        self._split_dragging = True
+
+        def follow():
+            try:
+                while not self.closing and u.GetAsyncKeyState(0x01) & 0x8000:
+                    p = w.POINT()
+                    u.GetCursorPos(ctypes.byref(p))
+                    self.root.after(0, self.split_to, p.x)
+                    time.sleep(0.01)
+            finally:
+                self._split_dragging = False
+
+        threading.Thread(target=follow, daemon=True).start()
+
+    def split_to(self, x_root):
+        if self.split is None:
+            return
+        x, _ = self.inner()
+        split = max(0.0, min(1.0, (x_root - x) / float(self.cw)))
+        if split != self.split:
+            self.split = split
+            self.apply_split()
+            self.place_divider()
 
     def visible(self):
         return self.stages[-1]["hwnd"]
@@ -616,10 +899,10 @@ class Lens:
     def _build_first(self, x, y):
         """Stage 1, fed by the magnifier host rather than by another stage."""
         alive = {"ok": True}
-        proc, hwnd = self.spawn_mpv(TITLE, x, y)
+        proc, hwnd, ipc = self.spawn_mpv(TITLE, x, y)
         ctl = self.start_capture(self.host, proc, count=True, alive=alive)
         self.stages.append({"title": TITLE, "proc": proc, "hwnd": hwnd,
-                            "ctl": ctl, "alive": alive})
+                            "ctl": ctl, "alive": alive, "ipc": ipc})
         self.refresh_filter()
 
     def _append_stage(self):
@@ -628,15 +911,16 @@ class Lens:
         n = len(self.stages) + 1
         title = "%sp%d" % (TITLE, n)
         alive = {"ok": True}
-        proc, hwnd = self.spawn_mpv(title, x, y)
+        proc, hwnd, ipc = self.spawn_mpv(title, x, y)
         ctl = self.start_capture(self.stages[-1]["hwnd"], proc, alive=alive)
         self.stages.append({"title": title, "proc": proc, "hwnd": hwnd,
-                            "ctl": ctl, "alive": alive})
+                            "ctl": ctl, "alive": alive, "ipc": ipc})
         self.refresh_filter()
 
     def _kill_stage(self, s):
         s.get("alive", {})["ok"] = False
-        for step in (lambda: s["ctl"].stop(),
+        for step in (lambda: s["ipc"].close(),
+                     lambda: s["ctl"].stop(),
                      lambda: s["proc"].stdin.close(),
                      lambda: (s["proc"].terminate(), s["proc"].wait(timeout=3))):
             try:
@@ -652,10 +936,13 @@ class Lens:
     def set_passes(self, n, save=True):
         """Rebuild the whole chain at n passes.
 
-        Appending a single stage is not enough. The frame rate declared to mpv
-        depends on how many stages there are and is fixed when the process
-        spawns, so every stage has to be respawned at the new rate. Leaving the
-        earlier ones alone is what made two and three passes collapse.
+        Appending a single stage is not enough. In fixed mode the frame rate
+        declared to mpv depends on how many stages there are and is fixed when
+        the process spawns, so every stage has to be respawned at the new rate.
+        Leaving the earlier ones alone is what made two and three passes
+        collapse. The adaptive rate could change the speed in place, but the
+        rebuild is kept for both modes: the starting rate, the governor's search
+        and the output counter all belong to one chain.
         """
         n = max(1, min(MAX_PASSES, n))
         if self.closing or n == len(self.stages):
@@ -668,10 +955,14 @@ class Lens:
         # or the lens believes it is interactive while behaving otherwise. The
         # ReShade overlay itself dies with the mpv process that was hosting it.
         self.tweak = False
+        self.rebuilding = True
+        self.stop_counter()
         for s in reversed(self.stages):
             self._kill_stage(s)
         self.stages = []
         self.fps = _fps_for(n)
+        self.rate = self.start_rate(n) if ADAPTIVE else self.fps
+        self.rate_note = ""
         self.frames, self.t_first = 0, None
         x, y = self.inner()
         try:
@@ -680,6 +971,10 @@ class Lens:
                 self._append_stage()
         except SystemExit:
             self.info.config(text="a stage failed to start", fg=WARN)
+        if self.stages:
+            self.start_counter()
+            self.apply_split()
+        self.rebuilding = False
         if not self.stages:
             # nothing left to show. visible() is stages[-1], so carrying on would
             # raise on the next menu action rather than here, where it is clear.
@@ -702,6 +997,8 @@ class Lens:
 
     # ---- geometry
     def inner(self):
+        if self.fullscreen:
+            return self.t.winfo_x(), self.t.winfo_y()
         return self.t.winfo_x() + EDGE, self.t.winfo_y() + BAR
 
     def aim(self):
@@ -715,6 +1012,7 @@ class Lens:
         u.SetWindowPos(self.host, 0, x, y, 0, 0, flags)
         for s in self.stages:
             u.SetWindowPos(s["hwnd"], 0, x, y, 0, 0, flags)
+        self.place_divider()
 
     def start_pump(self):
         """Drive magnifier repaints from a precisely paced thread.
@@ -753,19 +1051,299 @@ class Lens:
             return
         if self.t_first and self.frames > 30 and not self.tweak:
             fps = self.frames / max(time.perf_counter() - self.t_first, 1e-6)
-            self.info.config(text="%d x %d   %.0f fps" % (self.cw, self.ch, fps), fg=DIM)
+            if ADAPTIVE:
+                txt = "%d x %d   %.0f in  %.0f out%s" % (self.cw, self.ch, fps,
+                                                          self.out_rate(), self.rate_note)
+            else:
+                txt = "%d x %d   %.0f fps" % (self.cw, self.ch, fps)
+            self.info.config(text=txt, fg=DIM)
         self.root.after(1000, self.stats)
+
+    # ---- adaptive rate
+    def start_counter(self):
+        """Count the frames the visible stage presents.
+
+        Stage 1's counter says how fast frames enter the chain, and that number
+        stays at the display rate while the output collapses, so it cannot be
+        the signal. What the viewer sees is the visible stage's window, and a
+        capture of it delivers exactly once per presented frame. The callback
+        only increments, so it never throttles anything.
+        """
+        self.stop_counter()
+        alive = {"ok": True}
+        self.out_alive = alive
+        self.out_frames = 0
+        self.out_mads.clear()
+        self._out_prev = None
+        lens = self
+        cap = WindowsCapture(cursor_capture=False, draw_border=False,
+                             minimum_update_interval=0, window_hwnd=self.visible())
+
+        def on_frame_arrived(frame: Frame, control: InternalCaptureControl):
+            if lens.closing or not alive["ok"]:
+                control.stop()
+                return
+            lens.out_frames += 1
+            try:
+                # one pixel in sixteen, every frame: the change from the previous
+                # frame is what shimmer and collapse look like, and it costs well
+                # under a millisecond at this size
+                sub = frame.frame_buffer[:frame.height:4, :frame.width:4, :3].astype(np.int16)
+                if lens._out_prev is not None and lens._out_prev.shape == sub.shape:
+                    lens.out_mads.append((time.perf_counter(),
+                                          float(np.abs(sub - lens._out_prev).mean())))
+                lens._out_prev = sub
+                if lens.out_frames % 8 == 0:
+                    lens.out_lum = float(sub.mean())
+            except Exception:
+                pass
+
+        def on_closed():
+            pass
+
+        cap.event(on_frame_arrived)
+        cap.event(on_closed)
+        try:
+            self.out_ctl = cap.start_free_threaded()
+        except Exception:
+            self.out_ctl = None
+
+    def stop_counter(self):
+        if self.out_alive is not None:
+            self.out_alive["ok"] = False
+        try:
+            if self.out_ctl is not None:
+                self.out_ctl.stop()
+        except Exception:
+            pass
+        self.out_ctl = None
+
+    @staticmethod
+    def stage_rate(rate, idx):
+        """What stage idx (0 based) presents when stage 1 presents at rate.
+
+        Each stage is fed by the one before it, and a stage that consumes exactly
+        what arrives shimmers: measured at two passes on the 4070, equal rates of
+        35 were clean and 37 were not, and on the 5090 two stages at 60 measured
+        0.225 against a floor of 0.146. So every stage after the first runs at
+        five sixths of the stage feeding it, the same headroom stage 1 keeps over
+        capture.
+        """
+        return rate * (5.0 / 6.0) ** idx
+
+    def out_rate(self):
+        """The rate the visible stage is asked to present."""
+        return self.stage_rate(self.rate, len(self.stages) - 1)
+
+    @staticmethod
+    def start_rate(passes):
+        """Stage 1's starting rate: the fixed rule's rate for this pass count,
+        arriving at the visible stage after each later stage's headroom."""
+        return min(_fps_for(1), int(round(_fps_for(passes) / (5.0 / 6.0) ** (passes - 1))))
+
+    def apply_rate(self, new, why):
+        """Set every stage's playback speed for a stage 1 rate of new fps."""
+        self.rate = new
+        for i, s in enumerate(list(self.stages)):
+            try:
+                s["ipc"].set("speed", self.stage_rate(new, i) / float(BASE_FPS))
+            except Exception:
+                pass
+        # the console gets the measurement, the title bar a word
+        word = ""
+        for key, short in (("shimmer", "shimmer"), ("runaway", "collapse"),
+                           ("presented", "short"), ("arriving", "input"), ("probing", "probing")):
+            if key in why:
+                word = short
+                break
+        self.rate_note = "  (%s)" % word if word else ""
+        print("rate %d fps, visible %.0f, %s" % (new, self.out_rate(), why or "start"),
+              flush=True)
+        self.root.after(0, self.save_state)
+
+    def start_governor(self):
+        """Keep the presented rate under what the chain can actually deliver.
+
+        The fixed rule in _fps_for was calibrated on one GPU at one size. On a
+        slower card, or a larger lens, or more passes, the chain cannot present
+        the rate it is asked for. mpv then presents frames that are not there yet,
+        Neural Rendering re-runs over its own output, and the picture shimmers,
+        then collapses. Measured on an RTX 4070 SUPER at 1400x1000, out of 255
+        frame to frame on a static source: two passes at the rule's 50 presented
+        40 with spikes to 3.3, three passes at 33 presented 29 with spikes, and a
+        2000x1400 lens at 100 presented 27 and collapsed to a mean of 14. Every
+        one of those was clean at 24.
+
+        So the rate is governed, once a second, from three measurements:
+
+        - the mean luminance entering stage 1 against the mean luminance the
+          visible stage shows. Neural Rendering moves it by two or three percent;
+          a collapse moves it by half or more, and it can do that while every
+          frame is still presented on time (measured: one pass at 90 presented 90
+          and sat at a mean of 250 out of 255). Two seconds of that and the rate
+          halves.
+        - what the visible stage presents. If that falls short of the rate by
+          more than measurement noise, the chain is over capacity: the rate drops
+          to two thirds of what was presented, and the next probe upward waits
+          twice as long. A level that failed is not tried again in this chain.
+        - what enters stage 1. The rate is also held to five sixths of that,
+          because declaring even exactly what arrives shimmers (0.220 at 5
+          percent headroom against a floor of 0.146 on the 5090).
+        - the frame to frame change of the output, while the source is still.
+          Short of collapse, a rate just over the knee presents every frame on
+          time and shimmers anyway: one pass at 78 on a loaded 4070 had 47
+          percent of frames jump by more than 1.5 out of 255, at 45 none did.
+          On a still source, more than 3 percent of frames jumping like that
+          marks the level as failed. On a moving source the change is motion,
+          so it is ignored, and the rate does not probe upward either, because
+          the result could not be checked.
+
+        When nothing has bitten for a while the rate probes upward, never above
+        the fixed rule's rate, which is the ceiling. A probe lands halfway
+        between the last rate that held and the lowest that failed, and a failed
+        probe falls straight back to the rate that held, so the search closes in
+        a few steps and stops once the two are within a couple of frames.
+        Changes take effect over IPC as mpv's playback speed, so the chain is
+        never rebuilt for a rate change, and the settled rate is saved with the
+        window state so the next launch starts there.
+        """
+        def loop():
+            hist = []
+            hold = 5.0
+            good = None                           # highest stage 1 rate seen to hold
+            bad = None                            # lowest stage 1 rate seen to fall short
+            chain = None                          # the search is per chain
+            dark = 0                              # consecutive seconds of runaway
+            settle = 1.5                          # seconds to ignore after a change
+            t0 = last = time.perf_counter()
+            while not self.closing:
+                time.sleep(1.0)
+                if self.closing or not ADAPTIVE or self.rebuilding or not self.stages:
+                    hist = []
+                    continue
+                if chain is not self.stages:
+                    chain, good, bad, hold, hist = self.stages, None, None, 5.0, []
+                    dark, settle = 0, 1.5
+                    last = time.perf_counter()
+                now = time.perf_counter()
+                if now < self.settle_until:
+                    hist = []
+                    continue
+                if now - last < settle:
+                    continue                      # the speed change is still settling
+                settle = 1.5
+                lin, lout = self.in_lum, self.out_lum
+                # with the A/B split on, the visible stage is clipped and its
+                # capture carries the clipped part as black, so neither the
+                # brightness nor the frame to frame change means anything
+                split = self.split is not None
+                runaway = (not split and lin is not None and lout is not None
+                           and abs(lout - lin) > max(12.0, 0.2 * lin))
+                dark = dark + 1 if runaway else 0
+                rate = self.rate
+                last_idx = len(self.stages) - 1
+                if dark >= 2:
+                    bad = rate if bad is None else min(bad, rate)
+                    if good is not None and good < rate:
+                        new = good
+                    else:
+                        good = None
+                        new = max(MIN_FPS, rate // 2)
+                    hold = min(hold * 2, 60.0)
+                    self.apply_rate(new, "t=%.0fs runaway, showing %.0f for %.0f"
+                                    % (now - t0, lout, lin))
+                    last = time.perf_counter()
+                    hist, dark = [], 0
+                    settle = 6.0                  # a collapse takes seconds to clear
+                    continue
+                hist.append((now, self.out_frames, self.frames))
+                hist = [h for h in hist if now - h[0] <= 3.2]
+                if len(hist) < 4:
+                    continue                      # three full seconds of samples
+                dt = now - hist[0][0]
+                presented = (self.out_frames - hist[0][1]) / dt
+                arriving = (self.frames - hist[0][2]) / dt
+                target = self.out_rate()
+                cap = _fps_for(1)
+                if arriving > 0:
+                    cap = min(cap, int(arriving * 5 // 6))
+                if bad is not None:
+                    cap = min(cap, bad - 1)
+                still = not split and self.in_mad is not None and self.in_mad < 0.5
+                spiky = False
+                if still:
+                    try:
+                        mads = [m for t, m in list(self.out_mads) if now - t <= dt]
+                    except Exception:
+                        mads = []
+                    if len(mads) >= 20:
+                        # two shapes of shimmer: a few frames jumping well above
+                        # the rest, or every frame changing when the source does
+                        # not. Clean floors on still content measured 0.15 to
+                        # 0.95 on this source set; a floor above 1.5 is shimmer.
+                        floor = float(np.median(mads))
+                        jumps = sum(1 for m in mads if m > max(1.5, 3.0 * floor))
+                        # at low rates a window holds few frames, and two odd
+                        # ones out of forty are noise, not shimmer
+                        spiky = (jumps >= 3 and jumps > 0.03 * len(mads)) or floor > 1.5
+                new, why = rate, ""
+                deficit = target - presented
+                if deficit > max(0.03 * target, 0.7) or spiky:
+                    bad = rate if bad is None else min(bad, rate)
+                    if good is not None and good < rate:
+                        new = good                # a probe that failed: back to what held
+                    elif spiky:
+                        good = None
+                        new = max(MIN_FPS, int(rate * 5 // 6))
+                    else:
+                        good = None               # what held no longer does
+                        # two thirds of what the visible stage managed, expressed
+                        # as a stage 1 rate
+                        new = int(presented * 2 / 3 / self.stage_rate(1.0, last_idx))
+                        new = max(MIN_FPS, min(new, rate - 1))
+                    hold = min(hold * 2, 60.0)
+                    why = ("shimmer, %d of %d frames jumped, floor %.2f"
+                           % (jumps, len(mads), floor) if spiky
+                           else "presented %.0f, asked %.0f" % (presented, target))
+                else:
+                    if rate > cap + 2:
+                        new = max(MIN_FPS, cap)
+                        why = "arriving %.0f" % arriving
+                    elif still and now - last >= hold and rate < cap - 1:
+                        step = (bad - rate) // 2 if bad is not None else max(2, rate // 8)
+                        step = min(step, max(2, rate // 4))   # a big jump can collapse
+                        if step >= max(1, rate // 20):
+                            # shimmer near the knee can take fifteen seconds to
+                            # show, so a level only counts as held once a whole
+                            # hold period has passed at it, which is now
+                            good = rate
+                            new = min(cap, rate + step)
+                            why = "probing"
+                if new != rate:
+                    self.apply_rate(new, "t=%.0fs %s" % (now - t0, why))
+                    last = time.perf_counter()
+                    hist = []
+
+        threading.Thread(target=loop, daemon=True).start()
 
     def save_state(self):
         x, y = self.inner()
         try:
+            if self.fullscreen:
+                # the windowed geometry stays untouched for the way back
+                with open(FULL_STATE, "w") as f:
+                    f.write("%d %d\n" % (len(self.stages), self.rate))
+                return
             with open(STATE, "w") as f:
-                f.write("%d %d %d %d %d\n" % (self.cw, self.ch, x, y, len(self.stages)))
+                f.write("%d %d %d %d %d %d\n" % (self.cw, self.ch, x, y, len(self.stages),
+                                                self.rate))
         except OSError:
             pass
 
     # ---- drag (title bar only; a move never resizes)
     def down(self, e):
+        if self.fullscreen:
+            return
         self.drag = (e.x_root - self.t.winfo_x(), e.y_root - self.t.winfo_y())
 
     def move(self, e):
@@ -810,7 +1388,12 @@ class Lens:
                       command=lambda: self.send_key(0x74))
         m.add_command(label="Open screenshot folder", command=self.open_shots)
         m.add_separator()
-        m.add_command(label="Resize the lens...", command=self.resize_dialog)
+        m.add_command(label=("End the A/B split" if self.split is not None
+                             else "Live A/B split      (neural left, raw right)"),
+                      command=self.toggle_split)
+        m.add_separator()
+        m.add_command(label="Resize the lens...", command=self.resize_dialog,
+                      state="disabled" if self.fullscreen else "normal")
         m.add_command(label="Settings...", command=self.settings_dialog)
         m.add_separator()
         m.add_command(label="Close", command=self.quit)
@@ -1143,56 +1726,178 @@ class Lens:
 
     # ---- settings
     def settings_dialog(self):
+        """Every setting the lens has, as a control with a plain explanation.
+
+        Nothing here requires editing the ini; the dialog writes it. A value
+        put back to its default is removed from the ini, so it follows the
+        default on the next machine rather than pinning this one's number.
+        Settings that change how the chain is built restart the lens, the same
+        way a resize does.
+        """
         t = tk.Toplevel(self.root)
         t.title("Neural Lens settings")
         t.attributes("-topmost", True)
         t.configure(bg=BG)
         t.resizable(False, False)
-        tk.Label(t, text="Where to save screenshots", bg=BG, fg=FG,
-                 font=("Segoe UI", 10, "bold")).grid(row=0, column=0, columnspan=3,
-                                                     sticky="w", padx=12, pady=(12, 4))
-        var = tk.StringVar(value=SHOT_DIR)
-        tk.Entry(t, textvariable=var, width=58, bg="#0b1220", fg=FG,
-                 insertbackground=FG, relief="flat").grid(row=1, column=0, columnspan=2,
-                                                          padx=(12, 6), pady=4, sticky="we")
+        row = [0]
 
-        def browse():
-            d = filedialog.askdirectory(initialdir=var.get() or DATA_DIR,
-                                        title="Where should screenshots go?")
-            if d:
-                var.set(os.path.normpath(d))
+        def section(text):
+            tk.Label(t, text=text, bg=BG, fg=FG, font=("Segoe UI", 10, "bold")).grid(
+                row=row[0], column=0, columnspan=3, sticky="w", padx=12, pady=(14, 2))
+            row[0] += 1
 
-        tk.Button(t, text="Browse", command=browse, relief="flat",
-                  bg="#334155", fg=FG).grid(row=1, column=2, padx=(0, 12), pady=4)
-        tk.Label(t, text="Display %d Hz. Repaints are paced at %d, and mpv is told %d,\n"
-                         "which is %d divided by the %d stage(s) now running.\n"
-                         "Override with fps and pump_hz in neural-lens.ini."
-                         % (DISPLAY_HZ, PUMP_HZ, self.fps, BASE_FPS, len(self.stages)),
-                 bg=BG, fg=DIM, justify="left",
-                 font=("Segoe UI", 9)).grid(row=2, column=0, columnspan=3,
-                                            sticky="w", padx=12, pady=(10, 4))
+        def explain(text):
+            tk.Label(t, text=text, bg=BG, fg=DIM, justify="left", wraplength=560,
+                     font=("Segoe UI", 9)).grid(row=row[0], column=0, columnspan=3,
+                                                sticky="w", padx=12, pady=(0, 2))
+            row[0] += 1
+
+        def switch(text, var):
+            tk.Checkbutton(t, text=text, variable=var, bg=BG, fg=FG, selectcolor="#0b1220",
+                           activebackground=BG, activeforeground=FG,
+                           font=("Segoe UI", 10)).grid(row=row[0], column=0, columnspan=3,
+                                                       sticky="w", padx=8, pady=(4, 0))
+            row[0] += 1
+
+        def slider(text, var, lo, hi):
+            tk.Label(t, text=text, bg=BG, fg=FG, font=("Segoe UI", 10)).grid(
+                row=row[0], column=0, sticky="w", padx=12, pady=(4, 0))
+            tk.Scale(t, from_=lo, to=hi, orient="horizontal", variable=var, length=300,
+                     bg=BG, fg=FG, troughcolor="#0b1220", highlightthickness=0,
+                     activebackground=ACCENT, font=("Consolas", 9)).grid(
+                row=row[0], column=1, columnspan=2, sticky="w", padx=(6, 12))
+            row[0] += 1
+
+        def folder(var, prompt):
+            tk.Entry(t, textvariable=var, width=58, bg="#0b1220", fg=FG,
+                     insertbackground=FG, relief="flat").grid(
+                row=row[0], column=0, columnspan=2, padx=(12, 6), pady=4, sticky="we")
+
+            def browse():
+                d = filedialog.askdirectory(initialdir=var.get() or DATA_DIR, title=prompt)
+                if d:
+                    var.set(os.path.normpath(d))
+
+            tk.Button(t, text="Browse", command=browse, relief="flat", bg="#334155",
+                      fg=FG).grid(row=row[0], column=2, padx=(0, 12), pady=4)
+            row[0] += 1
+
+        # ---- screenshots
+        section("Where to save screenshots")
+        shots = tk.StringVar(value=SHOT_DIR)
+        folder(shots, "Where should screenshots go?")
+
+        # ---- fullscreen
+        section("Fullscreen")
+        full = tk.BooleanVar(value=self.fullscreen)
+        switch("Cover the whole monitor the lens is on", full)
+        explain("Changing this restarts the lens. Windowed, it comes back at its last position "
+                "and size; fullscreen, the title bar sits over the top edge of the picture and "
+                "the lens cannot be dragged. A whole monitor is many times the pixels of a "
+                "window, so expect a much lower frame rate.")
+
+        # ---- frame rate
+        section("Frame rate")
+        adaptive = tk.BooleanVar(value=ADAPTIVE)
+        switch("Adjust the frame rate automatically (recommended)", adaptive)
+        explain("The lens watches what it actually shows and lowers the rate whenever the "
+                "picture falls behind, runs away in brightness or shimmers, then probes back "
+                "up while the content under it is still. Switched off, it asks for a fixed "
+                "rate instead: five sixths of the ceiling below, divided by the number of "
+                "passes. Changing this restarts the lens. Right now the visible stage is "
+                "asked for %.0f frames a second." % self.out_rate())
+        min_fps = tk.IntVar(value=MIN_FPS)
+        slider("Lowest rate it may go to", min_fps, 5, 60)
+        explain("The automatic adjustment never goes below this. A very large lens on a "
+                "modest GPU can need the bottom of the range. Applies straight away.")
+        ceiling = tk.IntVar(value=BASE_FPS)
+        slider("Frame rate ceiling", ceiling, 24, max(240, DISPLAY_HZ))
+        explain("Your display reports %d Hz, which is the default. The lens never asks for "
+                "more than five sixths of this. Lower it to spend less GPU on the lens. "
+                "Changing it restarts the lens." % DISPLAY_HZ)
+        pump = tk.IntVar(value=PUMP_HZ)
+        slider("Capture refresh", pump, 24, max(240, DISPLAY_HZ))
+        explain("How often the picture under the lens is captured, per second. The display's "
+                "own rate is the default and there is nothing to gain above it. Changing it "
+                "restarts the lens.")
+        most = tk.IntVar(value=MAX_PASSES)
+        slider("Most neural passes the plus button allows", most, 1, 8)
+        explain("Each pass renders the previous pass again. Two is usually the sweet spot, "
+                "three is visibly heavy, and every pass costs a share of the frame rate. "
+                "Applies straight away.")
+
+        # ---- folders
+        section("Folders")
+        mpv = tk.StringVar(value=MPV_DIR or "")
+        explain("The mpv install that carries the DLSS Neural Rendering stack.")
+        folder(mpv, "Where is the mpv with the neural rendering stack?")
+        data = tk.StringVar(value=DATA_DIR)
+        explain("Where the lens keeps its window state, settled frame rates and archived logs.")
+        folder(data, "Where should the lens keep its state and logs?")
+        explain("Both take effect at the next launch. Changing either restarts the lens.")
 
         def save():
-            global SHOT_DIR
-            d = var.get().strip()
-            if d:
+            global SHOT_DIR, MIN_FPS, MAX_PASSES
+            restart = False
+            d = shots.get().strip()
+            if d and d != SHOT_DIR:
                 SHOT_DIR = d
                 _save_ini("screenshot_dir", d)
+            if bool(adaptive.get()) != ADAPTIVE:
+                _save_ini("adaptive", None if adaptive.get() else "0")
+                restart = True
+            if int(min_fps.get()) != MIN_FPS:
+                MIN_FPS = int(min_fps.get())
+                _save_ini("min_fps", None if MIN_FPS == 12 else MIN_FPS)
+            if int(ceiling.get()) != BASE_FPS:
+                v = int(ceiling.get())
+                _save_ini("fps", None if v == DISPLAY_HZ else v)
+                restart = True
+            if int(pump.get()) != PUMP_HZ:
+                v = int(pump.get())
+                _save_ini("pump_hz", None if v == DISPLAY_HZ else v)
+                restart = True
+            if int(most.get()) != MAX_PASSES:
+                MAX_PASSES = int(most.get())
+                _save_ini("max_passes", None if MAX_PASSES == 4 else MAX_PASSES)
+                self.update_info()
+                if len(self.stages) > MAX_PASSES:
+                    self.set_passes(MAX_PASSES)
+            m = mpv.get().strip()
+            if m and m != (MPV_DIR or ""):
+                _save_ini("mpv_dir", m)
+                restart = True
+            dd = data.get().strip()
+            if dd and dd != DATA_DIR:
+                _save_ini("data_dir", dd)
+                restart = True
+            want = bool(full.get())
+            if want != self.fullscreen:
+                _save_ini("fullscreen", "1" if want else None)
+                restart = True
             t.destroy()
+            if restart:
+                # the windowed geometry is what a fullscreen launch derives its
+                # monitor from, and what the way back restores, so keep it current
+                if not self.fullscreen:
+                    self.save_state()
+                self.quit(restart=True)
 
         tk.Button(t, text="Save", command=save, relief="flat", bg=ACCENT,
-                  fg="#0b1220").grid(row=3, column=1, sticky="e", pady=(6, 12))
+                  fg="#0b1220").grid(row=row[0], column=1, sticky="e", pady=(12, 12))
         tk.Button(t, text="Cancel", command=t.destroy, relief="flat",
-                  bg="#334155", fg=FG).grid(row=3, column=2, sticky="w",
-                                            padx=(6, 12), pady=(6, 12))
+                  bg="#334155", fg=FG).grid(row=row[0], column=2, sticky="w",
+                                            padx=(6, 12), pady=(12, 12))
 
     def quit(self, restart=False):
         if self.closing:
             return
         self.restart = restart
         self.closing = True
+        self.stop_counter()
         for s in reversed(self.stages):
-            for step in (lambda s=s: s["ctl"].stop(),
+            for step in (lambda s=s: s["ipc"].close(),
+                         lambda s=s: s["ctl"].stop(),
                          lambda s=s: s["proc"].stdin.close(),
                          lambda s=s: (s["proc"].terminate(), s["proc"].wait(timeout=3))):
                 try:
@@ -1231,25 +1936,46 @@ def main():
         input("\nPress Enter to close.")
         return
     os.makedirs(DATA_DIR, exist_ok=True)
-    cw, ch, x, y, passes = 1400, 1000, 500, 400, 1
+    cw, ch, x, y, passes, rate = 1400, 1000, 500, 400, 1, None
     if os.path.exists(STATE):
         try:
             v = [int(n) for n in open(STATE).read().split()]
             cw, ch, x, y = v[:4]
             if len(v) > 4:
                 passes = v[4]
+            if len(v) > 5:
+                rate = v[5]
         except Exception:
             pass
+    if FULLSCREEN:
+        # the monitor the windowed lens sits on, whole. Pass count and settled
+        # rate come from the fullscreen chain's own file, since a rate that
+        # suits a 1400x1000 lens is far too high for a whole monitor.
+        x, y, cw, ch = monitor_rect(x + cw // 2, y + ch // 2)
+        # two pixels short of the monitor: a borderless window that covers a
+        # monitor exactly is taken over by the compositor's fullscreen path,
+        # and the title bar on top of it stops being drawn
+        ch -= 2
+        rate = None
+        if os.path.exists(FULL_STATE):
+            try:
+                v = [int(n) for n in open(FULL_STATE).read().split()]
+                passes = v[0]
+                if len(v) > 1:
+                    rate = v[1]
+            except Exception:
+                pass
     cw -= cw % 2
     ch -= ch % 2
     passes = max(1, min(MAX_PASSES, passes))
     archive_logs()
     root = tk.Tk()
     root.withdraw()
-    lens = Lens(root, x, y, cw, ch, passes)
+    lens = Lens(root, x, y, cw, ch, passes, rate, FULLSCREEN)
     print("Neural Lens %s (beta)" % __version__, flush=True)
-    print("lens ready %dx%d at (%d,%d), %d pass%s"
-          % (cw, ch, x, y, len(lens.stages), "" if len(lens.stages) == 1 else "es"),
+    print("lens ready %dx%d at (%d,%d), %d pass%s%s"
+          % (cw, ch, x, y, len(lens.stages), "" if len(lens.stages) == 1 else "es",
+             ", fullscreen" if FULLSCREEN else ""),
           flush=True)
 
     def watch():

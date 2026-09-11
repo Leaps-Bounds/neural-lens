@@ -8,3 +8,6 @@ __pycache__/
 *.dll
 *.addon64
 *.addon32
+
+# PyInstaller and Inno Setup output
+build/

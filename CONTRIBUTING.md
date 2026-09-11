@@ -18,6 +18,22 @@ own output, with every frame rate decision, and the previous session's copy is s
 your desktop. Window titles, notifications, file paths and account names all leak that way.
 Crop tightly, or skip the screenshot and send the log instead.
 
+## Building the installer
+
+Two tools, both free: PyInstaller (`pip install pyinstaller`) and Inno Setup 6
+(`winget install --id JRSoftware.InnoSetup --scope user`). From the repository root:
+
+```
+python -m PyInstaller --noconfirm --clean --noconsole --onedir --name NeuralLens ^
+    --collect-all windows_capture --hidden-import neural_stack ^
+    --distpath build\dist --workpath build\work --specpath build neural_lens.py
+"%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" installer\NeuralLens.iss
+```
+
+The result is `build\installer\NeuralLens-Setup-<version>.exe`. It contains the lens and
+nothing of the neural stack; `neural_stack.py` fetches that at first run. Bump the version in
+`neural_lens.py`, `CHANGELOG.md` and `installer\NeuralLens.iss` together.
+
 ## Before proposing a change to the capture path
 
 Read [docs/NOTES.md](docs/NOTES.md) first. It records the approaches that were already tried

@@ -598,3 +598,44 @@ the frame rate.
   `DispatchMessage` loop, or instrument the real lens.
 - Window capture delivers frames when a window is **recomposited**, so a static source with no
   forced invalidation produces almost no frames. That is not a failure of the capture path.
+
+## The installer and the stack setup
+
+The lens is frozen with PyInstaller and wrapped by Inno Setup into a per user installer,
+`PrivilegesRequired=lowest`, under `%LOCALAPPDATA%\Programs\NeuralLens`. The installer holds
+the lens and nothing else. `neural_stack.py` fetches the neural stack on first run, or from a
+Start Menu entry, or from the command line, into `%LOCALAPPDATA%\NeuralLens\stack`.
+
+Nothing is bundled, and licences force that rather than taste. mpv's `Copyright` file makes
+the build GPL, since it carries the `direct3d` output; bundling would oblige us to provide
+source for a binary we did not build. The motion vector shader the author's own setup uses,
+LumeniteFX, publishes no licence and no releases, so a new install gets VORT, MIT, provider 2
+in `DLSS5_Feed.fx`, with `V_MV_MODE=1` so its motion pass runs. NVIDIA's runtimes come from
+the RHI project's manifest, which carries no hashes, so the hashes live in `neural_stack.py`
+and a download matching none is refused. ReShade's DLL comes straight out of its setup exe,
+which is a zip, with nothing of ReShade's executed.
+
+Three facts measured while building it:
+
+- **The RHI manifest's 40 series build is not the one people already hold.** The manifest's
+  `310.8.SF-v2` zip unpacks to a file of 165,830,144 bytes, version 310.8.SF.0, unsigned, hash
+  6EB209E7...; the earlier community build is 165,840,496 bytes, version 310.8.0.0, signed by
+  NVIDIA with a hash mismatch, hash 8270B350.... Both run Neural Rendering on an RTX 4070 SUPER,
+  so both are accepted.
+- **A per user Vulkan layer coexists with a machine wide ReShade only under a different
+  name.** The loader loads one implicit layer per name, HKLM before HKCU, so a per user copy
+  named `VK_LAYER_reshade` is skipped wherever a machine wide one exists. The layer is
+  registered as `VK_LAYER_reshade_neural_lens`, with its own `ReShadeApps.ini` listing only
+  the stack's mpv, so each ReShade hooks only what it lists. Verified on a machine with the
+  machine wide layer present: the self test attached, loaded both add-ons and evaluated.
+- **`ReShadeApps.ini` is an allow list**, so the per user layer is loaded into every Vulkan
+  process and leaves each one alone unless it is listed.
+
+The card is identified by compute capability from the driver's own `nvidia-smi`, 8.9 for Ada
+and 12 for Blackwell, rather than by marketing names. The self test feeds this mpv raw frames
+on stdin, as the lens does, for nine seconds and reads `ReShade.log` for `feature 18 created`
+and `evaluation succeeded`; `0xbad00001` is reported as the wrong model for the card.
+
+`install-record.json` in the stack folder lists every file written and the registry value
+set, and `--uninstall-stack` removes exactly that. The Inno uninstaller asks before calling it,
+defaulting to keep, so a silent uninstall never deletes the download.

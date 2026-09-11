@@ -1476,6 +1476,7 @@ class Lens:
             retest = 30.0                         # seconds before bad is questioned
             spell = 0                             # consecutive seconds of shimmer
             clean = 0.0                           # when this rate last fell short
+            retaking = False                      # the last step was toward proven ground
             chain = None                          # the search is per chain
             dark = 0                              # consecutive seconds of runaway
             settle = 1.5                          # seconds to ignore after a change
@@ -1487,7 +1488,7 @@ class Lens:
                     continue
                 if chain is not self.stages:
                     chain, good, bad, hold, hist = self.stages, None, None, 5.0, []
-                    dark, settle = 0, 1.5
+                    dark, settle, retaking = 0, 1.5, False
                     bad_at, retest, spell = 0.0, 30.0, 0
                     self.best_rate = 0
                     last = clean = time.perf_counter()
@@ -1526,10 +1527,21 @@ class Lens:
                 dark = dark + 1 if runaway else 0
                 rate = self.rate
                 last_idx = len(self.stages) - 1
+                # Below a level this chain has already held is proven ground.
+                # It is retaken on a shorter window, and the recorded limit does
+                # not apply to it: a knock down records bad at the floor it fell
+                # to, and gating the way back behind that limit parked the lens
+                # there until the limit expired, 30 to 60 seconds of dead stop
+                # measured on both cards, before a single step was taken.
+                known = self.best_rate > rate
                 if dark >= 2:
                     bad = rate if bad is None else min(bad, rate)
                     bad_at = now
                     hold = min(hold * 2, 60.0)
+                    if retaking:
+                        # the proven level did not hold when retaken, so it is
+                        # not proven any more; probing has to earn it again
+                        self.best_rate = min(self.best_rate, max(0, rate - 1))
                     if good is not None and good < rate:
                         new = good
                     else:
@@ -1539,12 +1551,16 @@ class Lens:
                                     % (now - t0, lout, lin))
                     last = clean = time.perf_counter()
                     hist, dark, spell = [], 0, 0
+                    retaking = False
                     settle = 6.0                  # a collapse takes seconds to clear
                     continue
                 hist.append((now, self.out_frames, self.frames))
                 hist = [h for h in hist if now - h[0] <= 3.2]
-                if len(hist) < 4:
-                    continue                      # three full seconds of samples
+                # three full seconds of samples to judge new ground; a retake of
+                # proven ground is judged on two, since the level is known to work
+                # and the window only has to catch a chain that has since changed
+                if len(hist) < (3 if known else 4):
+                    continue
                 dt = now - hist[0][0]
                 presented = (self.out_frames - hist[0][1]) / dt
                 arriving = (self.frames - hist[0][2]) / dt
@@ -1552,7 +1568,7 @@ class Lens:
                 cap = _fps_for(1)
                 if arriving > 0:
                     cap = min(cap, int(arriving * 5 // 6))
-                if bad is not None:
+                if bad is not None and not known:
                     cap = min(cap, bad - 1)
                 still = not split and self.in_mad is not None and self.in_mad < 0.5
                 spiky = False
@@ -1606,6 +1622,8 @@ class Lens:
                     # probe and wobble once a minute for ever
                     bad_at = now
                     hold = min(hold * 2, 60.0)
+                    if retaking:
+                        self.best_rate = min(self.best_rate, max(0, rate - 1))
                     if good is not None and good < rate:
                         new = good                # a probe that failed: back to what held
                     elif spiky:
@@ -1625,6 +1643,14 @@ class Lens:
                            % (jumps, len(mads), floor) if spiky
                            else "presented %.0f, asked %.0f" % (presented, target))
                 else:
+                    # A limit the chain is now running at or above without falling
+                    # short is disproven, whatever recorded it. A knock down leaves
+                    # bad at the floor it fell to, and once proven ground has been
+                    # retaken past it, keeping it would clamp the cap under the
+                    # running rate and throw the lens back to the floor, measured
+                    # as 35 to 12 every 17 seconds for as long as the run lasted.
+                    if bad is not None and rate >= bad:
+                        bad, bad_at = None, now
                     # A level that has carried clean output for a while is evidence
                     # the chain can hold it, and makes an older bad worth doubting.
                     # A bad that was really a passing load clears for good; a real
@@ -1651,7 +1677,6 @@ class Lens:
                     # fifteen seconds cost four minutes of a user's session.
                     # Climbing above anything it has held is the cautious case
                     # and still waits for a still source and a full hold period.
-                    known = self.best_rate - 2 > rate
                     wait = 2.0 if known else hold
                     if rate > cap + 2:
                         new = max(MIN_FPS, cap)
@@ -1689,6 +1714,14 @@ class Lens:
                     self.apply_rate(new, "t=%.0fs %s" % (now - t0, why))
                     last = clean = time.perf_counter()
                     hist, spell = [], 0
+                    # a step back toward proven ground needs less settling than
+                    # a probe into the unknown, and is remembered as a retake so
+                    # a failure at the new level is charged to the proven level
+                    retaking = known and why == "probing"
+                    if retaking:
+                        settle = 0.5
+                else:
+                    retaking = False
 
         def guarded():
             # This runs on a daemon thread, so an exception would kill it silently

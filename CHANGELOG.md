@@ -70,7 +70,13 @@ Features:
   change of the output while the content is still. A rate that failed is tried again once the
   picture has been clean for a while, on a wait that doubles each time it fails again, so
   something else using the GPU for a while does not cap the lens for the rest of the session.
-  The highest rate the chain actually held is saved as a sixth field in the state file.
+  A rate the chain has already held is retaken in a few steps a few seconds apart, over moving
+  content too, and a limit recorded during a knock down neither gates that return nor survives
+  the chain running above it: back at its level 16 seconds after a knock down, where it took
+  64 to 94 seconds before. Presenting 87 of 90 is not a shortfall, a mild shortfall backs off
+  only a little, and the shimmer test scales with the frame rate rather than reading a slow
+  chain as a broken one. The highest rate the chain actually held is saved as a sixth field
+  in the state file.
   `adaptive = 0` in the ini keeps the fixed rule; `min_fps` sets the floor.
 
 Known limits:

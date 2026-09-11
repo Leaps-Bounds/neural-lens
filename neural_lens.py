@@ -113,6 +113,30 @@ def _find_mpv_dir():
 
 MPV_DIR = _find_mpv_dir()
 MPV = os.path.join(MPV_DIR, "mpv.exe") if MPV_DIR else None
+
+# Finding the folder only proves mpv.exe is in it, so an ordinary mpv install
+# passes, the lens starts, and it shows the screen back unchanged with nothing
+# said. That reads as the app doing nothing rather than as a misconfiguration.
+NEURAL_STACK = (
+    ("dlss5-feed.addon64", "the DLSS 5 feed add-on"),
+    ("renodx-dlss5.addon64", "the RenoDX DLSS 5 add-on"),
+    ("nvngx_dlssnr.dll", "NVIDIA's Neural Rendering model"),
+)
+
+
+def _missing_stack():
+    """Which parts of the Neural Rendering stack are not in MPV_DIR.
+
+    This warns rather than refuses. The names are matched exactly against a
+    known good install, so a variant layout that works should not be blocked on
+    a guess about filenames.
+    """
+    if not MPV_DIR:
+        return []
+    return [(n, d) for n, d in NEURAL_STACK
+            if not os.path.isfile(os.path.join(MPV_DIR, n))]
+
+
 # The stage windows are found by exact title, so the title carries the process
 # id: two lenses at once, one per monitor say, must not pick up each other's
 # stages while waiting for their own to appear.
@@ -341,6 +365,15 @@ def archive_logs():
             src = os.path.join(MPV_DIR, name)
             if os.path.isfile(src) and os.path.getsize(src) > 0:
                 shutil.copy2(src, os.path.join(LOGDIR, "%s-%s" % (stamp, name)))
+        # mpv's stderr is appended to once per stage for the life of a session,
+        # and the pruning below sorts by name, so a file not carrying a stamp is
+        # never reached and would grow without bound. Roll it into the archive.
+        prev = os.path.join(LOGDIR, "mpv-stderr.log")
+        if os.path.isfile(prev):
+            if os.path.getsize(prev) > 0:
+                os.replace(prev, os.path.join(LOGDIR, "%s-mpv-stderr.log" % stamp))
+            else:
+                os.remove(prev)
         files = sorted(os.listdir(LOGDIR))
         while len(files) > 80:
             os.remove(os.path.join(LOGDIR, files.pop(0)))
@@ -620,20 +653,49 @@ class Lens:
                "--keep-open=yes", "--cache=no",
                "--demuxer-max-bytes=%d" % (self.cw * self.ch * 4 * 8),
                "--title=%s" % title]
+        # mpv's stderr used to go to DEVNULL, so when it could not start, the
+        # reason was destroyed and only the symptom below survived. stdout stays
+        # discarded: mpv's status line is continuous and would bloat the file.
+        errlog = os.path.join(LOGDIR, "mpv-stderr.log")
+        try:
+            os.makedirs(LOGDIR, exist_ok=True)
+            errf = open(errlog, "a", encoding="utf-8", errors="replace")
+            errf.write("\n--- %s  %s ---\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), title))
+            errf.flush()
+        except OSError:
+            errf, errlog = subprocess.DEVNULL, None
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL, cwd=MPV_DIR, env=env)
+                                stderr=errf, cwd=MPV_DIR, env=env)
+        if errf is not subprocess.DEVNULL:
+            try:
+                errf.close()          # the child holds its own handle
+            except OSError:
+                pass
         hwnd = None
-        for _ in range(140):
+        for i in range(140):
             hwnd = find_mpv(title)
             if hwnd:
                 break
+            if i == 20:
+                # thirty five seconds of nothing reads as a hang, so say what
+                # is being waited for rather than leaving it silent
+                print("waiting for mpv to open its window ...", flush=True)
             time.sleep(0.25)
         if not hwnd:
             try:
                 proc.kill()
             except Exception:
                 pass
-            raise SystemExit("mpv window %r never appeared" % title)
+            raise SystemExit("\n".join([
+                "mpv never opened a window for stage %s." % title,
+                "",
+                "The usual cause is that this mpv install cannot start with the",
+                "Neural Rendering stack loaded, so check that ReShade is registered",
+                "as the Vulkan layer for it.",
+                "",
+                ("What mpv printed is in:\n  %s" % errlog) if errlog
+                else "mpv's own output could not be captured.",
+            ]))
         st = u.GetWindowLongPtrW(hwnd, GWL_STYLE)
         u.SetWindowLongPtrW(hwnd, GWL_STYLE, st & ~WS_THICKFRAME & ~WS_MAXIMIZEBOX)
         self.set_interactive(hwnd, False)
@@ -1896,19 +1958,28 @@ class Lens:
                       fg=FG).grid(row=row[0], column=2, padx=(0, 12), pady=4)
             row[0] += 1
 
+        # the console and the menu already name the version; a bug report is
+        # far more likely to be written with this dialog open than either
+        tk.Label(t, text="Neural Lens %s (beta)" % __version__, bg=BG, fg=DIM,
+                 font=("Segoe UI", 9)).grid(row=row[0], column=0, columnspan=3,
+                                            sticky="w", padx=12, pady=(10, 0))
+        row[0] += 1
+
         # ---- screenshots
         section("Where to save screenshots")
         shots = tk.StringVar(value=SHOT_DIR)
         folder(shots, "Where should screenshots go?")
 
         # ---- fullscreen
-        section("Fullscreen")
+        section("Fullscreen (experimental)")
         full = tk.BooleanVar(value=self.fullscreen)
         switch("Cover the whole monitor the lens is on", full)
-        explain("Changing this restarts the lens. Windowed, it comes back at its last position "
-                "and size; fullscreen, the title bar sits over the top edge of the picture and "
-                "the lens cannot be dragged. A whole monitor is many times the pixels of a "
-                "window, so expect a much lower frame rate.")
+        explain("Experimental, and the least tested part of the lens: try it rather than rely "
+                "on it, and please report what happens. Changing it restarts the lens. "
+                "Windowed, it comes back at its last position and size; fullscreen, the title "
+                "bar sits over the top edge of the picture and the lens cannot be dragged. A "
+                "whole monitor is many times the pixels of a window, so expect a much lower "
+                "frame rate.")
 
         # ---- frame rate
         section("Frame rate")
@@ -2034,6 +2105,19 @@ class Lens:
         self.root.quit()
 
 
+def _pause():
+    """Hold the console open so a message on the way out can be read.
+
+    stdin is not always a console. Under pythonw, or with input redirected,
+    input() raises EOFError, which would bury the message this exists to let
+    you read under a traceback about the attempt to wait for you.
+    """
+    try:
+        input("\nPress Enter to close.")
+    except (EOFError, OSError):
+        print("")            # the prompt carries no newline of its own
+
+
 def main():
     if not MPV_DIR:
         print("\n".join([
@@ -2047,9 +2131,26 @@ def main():
             "  copy neural-lens.ini.example to neural-lens.ini and set mpv_dir",
             "  or put an 'mpv' folder beside neural_lens.py",
         ]))
-        input("\nPress Enter to close.")
+        _pause()
         return
-    os.makedirs(DATA_DIR, exist_ok=True)
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+    except OSError as exc:
+        # data_dir is taken from the ini or the environment verbatim and is the
+        # one setting nothing validates, so a path on a drive that does not
+        # exist used to arrive here as a raw traceback
+        print("\n".join([
+            "Could not use the folder the lens keeps its state in:",
+            "",
+            "  %s" % DATA_DIR,
+            "",
+            "  %s" % exc,
+            "",
+            "Set data_dir in neural-lens.ini to a folder that exists, or delete",
+            "that line to use the default under LOCALAPPDATA.",
+        ]))
+        _pause()
+        return
     cw, ch, x, y, passes, rate = 1400, 1000, 500, 400, 1, None
     if os.path.exists(STATE):
         try:
@@ -2085,6 +2186,24 @@ def main():
     archive_logs()
     root = tk.Tk()
     root.withdraw()
+    missing = _missing_stack()
+    if missing:
+        # This has to run before the first stage exists. Stage windows are
+        # topmost and a stock messagebox is not, so once the chain is up this
+        # dialog would be drawn underneath the lens: see Lens.confirm.
+        note = "\n".join(
+            ["Neural Rendering will probably not run.",
+             "",
+             "These are not in the mpv folder:",
+             "  %s" % MPV_DIR,
+             ""]
+            + ["  %s   (%s)" % (n, d) for n, d in missing]
+            + ["",
+               "The lens will still open, but it will most likely show the screen",
+               "back to you unchanged. The README says what the mpv install needs",
+               "to carry; none of it is included here."])
+        print("\n" + note + "\n", flush=True)
+        messagebox.showwarning("Neural Lens", note)
     lens = Lens(root, x, y, cw, ch, passes, rate, FULLSCREEN)
     print("Neural Lens %s (beta)" % __version__, flush=True)
     print("lens ready %dx%d at (%d,%d), %d pass%s%s"

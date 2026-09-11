@@ -30,4 +30,14 @@ echo.
 
 python "%~dp0neural_lens.py" %*
 
+rem  Without this, an error message printed on the way out vanishes with the
+rem  console the moment this script ends, which is what happens on a double
+rem  click. A normal close exits 0 and skips it.
+if errorlevel 1 (
+  echo.
+  echo   The lens stopped with an error. The message above says why.
+  pause
+  exit /b 1
+)
+
 endlocal

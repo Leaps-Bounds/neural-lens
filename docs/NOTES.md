@@ -198,6 +198,9 @@ instead, measuring 12.7/255 on plain text.
 
 ### Fullscreen
 
+Experimental, and the least tested part of the lens. It has had far less exercise than the
+windowed path, and is shipped to be tried and reported on rather than relied on.
+
 Two things bit when the lens first covered a whole monitor:
 
 - **A layered window larger than the screen comes up blank.** The windowed chrome is the

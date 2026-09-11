@@ -113,7 +113,10 @@ def _find_mpv_dir():
 
 MPV_DIR = _find_mpv_dir()
 MPV = os.path.join(MPV_DIR, "mpv.exe") if MPV_DIR else None
-TITLE = "LensNR"
+# The stage windows are found by exact title, so the title carries the process
+# id: two lenses at once, one per monitor say, must not pick up each other's
+# stages while waiting for their own to appear.
+TITLE = "LensNR %d" % os.getpid()
 __version__ = "0.1.0"        # beta; see CHANGELOG.md
 
 DATA_DIR = (os.environ.get("NEURAL_LENS_DATA") or _INI.get("data_dir")
@@ -130,6 +133,7 @@ except ValueError:
 
 BAR, EDGE = 34, 2
 DIVIDER = 14                 # grab width of the A/B divider; the line drawn is 4
+KEY_HOLD = 350               # ms a posted key stays down, longer than any stage's frame
 KEY, BG, FG, ACCENT = "#010203", "#1b2430", "#cbd5e1", "#4ade80"
 DIM, WARN = "#64748b", "#fbbf24"
 def _display_hz():
@@ -484,6 +488,7 @@ class Lens:
         self.shot_busy = False
         self.shot_buf = np.empty((ch, cw, 4), np.uint8)
         self.stages = []            # [{title, proc, hwnd, ctl}], last one is visible
+        self.pending = passes       # the pass count chosen on the bar, applied by Set
 
         # ---- chrome (tk): title bar + subtle border + transparent hole
         t = tk.Toplevel(root)
@@ -519,20 +524,25 @@ class Lens:
         self.x_btn.bind("<Enter>", lambda e: self.x_btn.config(bg="#e11d48"))
         self.x_btn.bind("<Leave>", lambda e: self.x_btn.config(bg=BG))
 
+        # plus and minus only choose a number; Set rebuilds the chain at it, so
+        # going from one pass to four is one rebuild rather than three
+        self.set_btn = tk.Label(bar, text=" Set ", bg=BG, fg=DIM, font=("Segoe UI", 10, "bold"))
+        self.set_btn.pack(side="right", padx=(2, 6))
+        self.set_btn.bind("<Button-1>", lambda e: self.apply_passes())
         self.plus = tk.Label(bar, text=" + ", bg=BG, fg=FG, font=("Segoe UI", 13, "bold"))
         self.plus.pack(side="right")
-        self.plus.bind("<Button-1>", lambda e: self.add_pass())
+        self.plus.bind("<Button-1>", lambda e: self.bump_passes(1))
         self.pass_lbl = tk.Label(bar, text="1 pass", bg=BG, fg=ACCENT, font=("Consolas", 9))
         self.pass_lbl.pack(side="right", padx=2)
         self.minus = tk.Label(bar, text=" \u2212 ", bg=BG, fg=FG, font=("Segoe UI", 13, "bold"))
         self.minus.pack(side="right")
-        self.minus.bind("<Button-1>", lambda e: self.drop_pass())
-        for b in (self.plus, self.minus):
+        self.minus.bind("<Button-1>", lambda e: self.bump_passes(-1))
+        for b in (self.plus, self.minus, self.set_btn):
             b.bind("<Enter>", lambda e, b=b: b.config(bg="#334155"))
             b.bind("<Leave>", lambda e, b=b: b.config(bg=BG))
 
         tk.Frame(t, bg=KEY).place(x=EDGE, y=BAR, width=cw, height=ch)
-        nodrag = (self.x_btn, self.menu_btn, self.plus, self.minus)
+        nodrag = (self.x_btn, self.menu_btn, self.plus, self.minus, self.set_btn)
         for wdg in (bar,) + tuple(bar.winfo_children()):
             if wdg not in nodrag:
                 wdg.bind("<ButtonPress-1>", self.down)
@@ -945,7 +955,9 @@ class Lens:
         and the output counter all belong to one chain.
         """
         n = max(1, min(MAX_PASSES, n))
+        self.pending = n
         if self.closing or n == len(self.stages):
+            self.update_info()
             return
         self.info.config(text="rebuilding at %d pass%s ..."
                               % (n, "" if n == 1 else "es"), fg=WARN)
@@ -1041,10 +1053,23 @@ class Lens:
 
     def update_info(self):
         n = len(self.stages)
-        self.pass_lbl.config(text="%d pass%s" % (n, "" if n == 1 else "es"),
-                             fg=ACCENT if n == 1 else WARN)
-        self.plus.config(fg=DIM if n >= MAX_PASSES else FG)
-        self.minus.config(fg=DIM if n <= 1 else FG)
+        p = max(1, min(MAX_PASSES, self.pending))
+        self.pending = p
+        chosen = p != n
+        self.pass_lbl.config(text="%d pass%s" % (p, "" if p == 1 else "es"),
+                             fg=WARN if chosen else ACCENT)
+        self.set_btn.config(fg=ACCENT if chosen else DIM)
+        self.plus.config(fg=DIM if p >= MAX_PASSES else FG)
+        self.minus.config(fg=DIM if p <= 1 else FG)
+
+    def bump_passes(self, step):
+        """Choose a pass count on the bar without rebuilding anything yet."""
+        self.pending = max(1, min(MAX_PASSES, self.pending + step))
+        self.update_info()
+
+    def apply_passes(self):
+        if self.pending != len(self.stages):
+            self.set_passes(self.pending)
 
     def stats(self):
         if self.closing:
@@ -1379,8 +1404,8 @@ class Lens:
         m.add_command(label="Toggle NR on/off   (F6, all passes)",
                       command=lambda: self.send_key(0x75))
         m.add_separator()
-        m.add_command(label="Add a pass      (+)", command=self.add_pass)
-        m.add_command(label="Remove a pass   (\u2212)", command=self.drop_pass)
+        m.add_command(label="Add a pass now", command=self.add_pass)
+        m.add_command(label="Remove a pass now", command=self.drop_pass)
         m.add_separator()
         m.add_command(label="Save before and after      (both images, plus a join)",
                       command=self.take_screenshot)
@@ -1417,40 +1442,50 @@ class Lens:
         u.SetFocus(hwnd)
         u.AttachThreadInput(me, tid, False)
 
-    @staticmethod
-    def press(vk):
-        u.keybd_event(vk, 0, 0, 0)
-        time.sleep(0.03)
-        u.keybd_event(vk, 0, 2, 0)
+    def post_key(self, hwnd, vk):
+        """Deliver one key press straight to a stage's message queue.
+
+        ReShade reads its hotkeys from the window's own messages, so a posted
+        WM_KEYDOWN and WM_KEYUP reach it whether or not the window has focus.
+        But it only notices a press when it polls, once per presented frame,
+        and a stage presents anywhere from 12 to 100 frames a second. A key that
+        goes down and up inside one frame is never seen. The earlier approach,
+        focusing the window and synthesising a 30 ms press, dropped presses for
+        exactly that reason, more often with more passes, which left the overlay
+        and the lens's idea of it out of step: Done tweaking would not close it,
+        and the next Tweak would not open it. So the key is held for a quarter
+        of a second, longer than the slowest frame, before it is released.
+        """
+        scan = u.MapVirtualKeyW(vk, 0)
+        ext = 0x1000000 if vk in (0x24, 0x21, 0x22, 0x23, 0x2D, 0x2E) else 0
+        lp = (scan << 16) | 1 | ext
+        u.PostMessageW(hwnd, 0x100, vk, lp)
+        self.root.after(KEY_HOLD, lambda: u.PostMessageW(hwnd, 0x101, vk, lp | 0xC0000000))
 
     def toggle_tweak(self):
         h = self.visible()
         self.tweak = not self.tweak
         if self.tweak:
+            # interactive first, so the overlay that opens can be used with the
+            # mouse; the key itself does not need the focus
             self.set_interactive(h, True)
             self.info.config(text="TWEAK MODE: Home hides/shows the ReShade menu", fg=WARN)
+            self.post_key(h, 0x24)
             self.root.after(150, lambda: self.focus(h))
-            self.root.after(320, lambda: self.press(0x24))
         else:
-            self.focus(h)
-            self.press(0x24)
-            self.root.after(250, lambda: self.set_interactive(h, False))
+            # the key first, and the window made click-through only after it
+            # has been released: taking the styles back drops the focus, and
+            # ReShade forgets every key it is holding when that happens
+            self.post_key(h, 0x24)
+            self.root.after(KEY_HOLD + 200, lambda: self.set_interactive(h, False))
             self.info.config(text="%d x %d" % (self.cw, self.ch), fg=DIM)
 
     def send_key(self, vk, idx=0):
-        """Walk the stages one at a time so every pass gets the key."""
-        if self.closing or idx >= len(self.stages):
+        """Every stage gets the key, so a toggle applies to every pass."""
+        if self.closing:
             return
-        h = self.stages[idx]["hwnd"]
-        if self.tweak and idx == len(self.stages) - 1:
-            self.focus(h)
-            self.press(vk)
-            return
-        self.set_interactive(h, True)
-        self.root.after(120, lambda: self.focus(h))
-        self.root.after(260, lambda: self.press(vk))
-        self.root.after(420, lambda: self.set_interactive(h, False))
-        self.root.after(540, lambda: self.send_key(vk, idx + 1))
+        for s in list(self.stages):
+            self.post_key(s["hwnd"], vk)
 
     # ---- resize
     # The lens cannot resize in place: that recreates mpv's swapchain, which makes
@@ -1979,8 +2014,15 @@ def main():
           flush=True)
 
     def watch():
-        while not lens.closing and lens.stages[0]["proc"].poll() is None:
+        # the stage list is empty for a moment during a rebuild, and reading
+        # stages[0] then used to kill this thread, after which a dead stage
+        # went unnoticed for the rest of the session
+        while not lens.closing:
             time.sleep(0.4)
+            if lens.rebuilding or not lens.stages:
+                continue
+            if lens.stages[0]["proc"].poll() is not None:
+                break
         root.after(0, lens.quit)
 
     threading.Thread(target=watch, daemon=True).start()

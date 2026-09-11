@@ -234,9 +234,12 @@ because the windowed state file is what the way back restores, and a rate that s
   element being in frame; the static half of the same image gave the real figure. Check that the
   source is unchanged across samples before trusting any difference in the output.
 - **Establish a noise floor** by capturing the same state twice before trusting a difference.
-- **Do not infer NR state from the F6 toggle log.** The focus dance sometimes fails to register a
-  press, which inverts the inference. Measure absolutely instead: capture the region with the
-  lens absent, then with the lens over it. Passthrough means off, a large difference means on.
+- **Do not infer NR state from the F6 toggle log.** The focus dance the lens used to deliver keys
+  sometimes failed to register a press, which inverts the inference. Keys are now posted to
+  each stage's message queue (`WM_KEYDOWN` and `WM_KEYUP` to the window), which ReShade reads
+  without the window having focus and which does not drop; the focus dance is gone. The advice
+  stands anyway: measure absolutely, capture the region with the lens absent, then with the
+  lens over it. Passthrough means off, a large difference means on.
 - Neural Rendering's strength scales with local detail, about 4.5x stronger on the most detailed
   tenth of an image than on the flattest half. Flat content changing very little is expected.
 - **Never assert an absolute difference for Neural Rendering.** The strength depends on what is

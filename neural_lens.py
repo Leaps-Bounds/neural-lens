@@ -194,7 +194,7 @@ except (TypeError, ValueError):
 # Fullscreen covers the whole monitor the lens is on. It is an ini flag rather
 # than a window state because the lens has to restart to change size, and the
 # windowed geometry in the state file must survive the round trip, so the
-# fullscreen chain keeps its pass count and settled rate in a file of its own.
+# fullscreen chain keeps its pass count and best held rate in a file of its own.
 FULLSCREEN = str(_INI.get("fullscreen", "0")).strip().lower() in ("1", "yes", "on", "true")
 FULL_STATE = os.path.join(DATA_DIR, "lens-state-fullscreen.txt")
 
@@ -481,7 +481,8 @@ class Lens:
         self._in_prev = None
         self._out_prev = None
         self.rate_note = ""         # last governor decision, for the title bar
-        self.saved_rate = rate      # settled rate from the state file, if any
+        self.saved_rate = rate      # best held rate from the state file, if any
+        self.best_rate = 0          # highest rate this chain has actually held
         self.restart = False        # set by the resize flow, read by main()
         self.shot_want = False      # ask the capture thread for one source frame
         self.shot_ready = False
@@ -577,7 +578,7 @@ class Lens:
         self.fps = _fps_for(passes)
         self.rate = self.start_rate(passes) if ADAPTIVE else self.fps
         if ADAPTIVE and self.saved_rate:
-            # the state file remembers what this size and pass count settled at,
+            # the state file remembers the best rate this size and pass count held,
             # so the chain does not have to shimmer its way down again
             self.rate = max(MIN_FPS, min(self.rate, self.saved_rate))
         self._build_first(x, y)
@@ -1199,7 +1200,7 @@ class Lens:
         2000x1400 lens at 100 presented 27 and collapsed to a mean of 14. Every
         one of those was clean at 24.
 
-        So the rate is governed, once a second, from three measurements:
+        So the rate is governed, once a second, from four measurements:
 
         - the mean luminance entering stage 1 against the mean luminance the
           visible stage shows. Neural Rendering moves it by two or three percent;
@@ -1210,7 +1211,7 @@ class Lens:
         - what the visible stage presents. If that falls short of the rate by
           more than measurement noise, the chain is over capacity: the rate drops
           to two thirds of what was presented, and the next probe upward waits
-          twice as long. A level that failed is not tried again in this chain.
+          twice as long.
         - what enters stage 1. The rate is also held to five sixths of that,
           because declaring even exactly what arrives shimmers (0.220 at 5
           percent headroom against a floor of 0.146 on the 5090).
@@ -1219,28 +1220,51 @@ class Lens:
           time and shimmers anyway: one pass at 78 on a loaded 4070 had 47
           percent of frames jump by more than 1.5 out of 255, at 45 none did.
           On a still source, more than 3 percent of frames jumping like that
-          marks the level as failed. On a moving source the change is motion,
-          so it is ignored, and the rate does not probe upward either, because
-          the result could not be checked.
+          marks the level as failed, but only when it survives a second reading
+          a second later: another process taking the GPU spikes the floor to
+          1.51 and 1.77 for four seconds and then settles to 0.12 while it is
+          still running. On a moving source the change is motion, so it is
+          ignored, and the rate does not probe upward either, because the
+          result could not be checked.
 
         When nothing has bitten for a while the rate probes upward, never above
         the fixed rule's rate, which is the ceiling. A probe lands halfway
         between the last rate that held and the lowest that failed, and a failed
         probe falls straight back to the rate that held, so the search closes in
         a few steps and stops once the two are within a couple of frames.
+
+        A level that failed is recorded, but not for ever. It is questioned again
+        once the chain has carried clean output for twenty seconds and the limit
+        is at least half a minute old, on an interval that doubles each time the
+        limit turns out to be real. So a passing load costs under a minute rather
+        than the rest of the session, while a chain that genuinely cannot go
+        faster is left alone for longer and longer.
+
+        Telling contention apart from incapacity by watching the rate frames
+        arrive at was tried and dropped. It holds at the pump's rate while the
+        chain alone collapses, which is promising, and at one pass it separated
+        the two cleanly. At four passes the lens depressed its own input enough
+        to look like another process: arriving averaged 98 against a line of 114,
+        no limit was ever recorded, and the rate hunted over a 19 fps range
+        instead of settling.
+
         Changes take effect over IPC as mpv's playback speed, so the chain is
-        never rebuilt for a rate change, and the settled rate is saved with the
-        window state so the next launch starts there.
+        never rebuilt for a rate change, and the best rate that actually held is
+        saved with the window state so the next launch starts there.
         """
         def loop():
             hist = []
             hold = 5.0
             good = None                           # highest stage 1 rate seen to hold
             bad = None                            # lowest stage 1 rate seen to fall short
+            bad_at = 0.0                          # when bad was last recorded
+            retest = 30.0                         # seconds before bad is questioned
+            spell = 0                             # consecutive seconds of shimmer
+            clean = 0.0                           # when this rate last fell short
             chain = None                          # the search is per chain
             dark = 0                              # consecutive seconds of runaway
             settle = 1.5                          # seconds to ignore after a change
-            t0 = last = time.perf_counter()
+            t0 = last = clean = time.perf_counter()
             while not self.closing:
                 time.sleep(1.0)
                 if self.closing or not ADAPTIVE or self.rebuilding or not self.stages:
@@ -1249,7 +1273,9 @@ class Lens:
                 if chain is not self.stages:
                     chain, good, bad, hold, hist = self.stages, None, None, 5.0, []
                     dark, settle = 0, 1.5
-                    last = time.perf_counter()
+                    bad_at, retest, spell = 0.0, 30.0, 0
+                    self.best_rate = 0
+                    last = clean = time.perf_counter()
                 now = time.perf_counter()
                 if now < self.settle_until:
                     hist = []
@@ -1269,16 +1295,17 @@ class Lens:
                 last_idx = len(self.stages) - 1
                 if dark >= 2:
                     bad = rate if bad is None else min(bad, rate)
+                    bad_at = now
+                    hold = min(hold * 2, 60.0)
                     if good is not None and good < rate:
                         new = good
                     else:
                         good = None
                         new = max(MIN_FPS, rate // 2)
-                    hold = min(hold * 2, 60.0)
                     self.apply_rate(new, "t=%.0fs runaway, showing %.0f for %.0f"
                                     % (now - t0, lout, lin))
-                    last = time.perf_counter()
-                    hist, dark = [], 0
+                    last = clean = time.perf_counter()
+                    hist, dark, spell = [], 0, 0
                     settle = 6.0                  # a collapse takes seconds to clear
                     continue
                 hist.append((now, self.out_frames, self.frames))
@@ -1311,10 +1338,23 @@ class Lens:
                         # at low rates a window holds few frames, and two odd
                         # ones out of forty are noise, not shimmer
                         spiky = (jumps >= 3 and jumps > 0.03 * len(mads)) or floor > 1.5
+                # The floor jumps for a few seconds when another process takes the
+                # GPU, then settles while that load is still running: measured 1.51
+                # and 1.77 at the onset, then 0.12 to 0.46 for the thirty seconds
+                # after. One sample is an event, not a level, so shimmer has to
+                # survive a second look before it costs anything.
+                spell = spell + 1 if spiky else 0
+                spiky = spell >= 2
                 new, why = rate, ""
                 deficit = target - presented
                 if deficit > max(0.03 * target, 0.7) or spiky:
+                    clean = now
                     bad = rate if bad is None else min(bad, rate)
+                    # the interval keeps doubling across failures rather than
+                    # resetting, or a chain that genuinely cannot go faster would
+                    # probe and wobble once a minute for ever
+                    bad_at = now
+                    hold = min(hold * 2, 60.0)
                     if good is not None and good < rate:
                         new = good                # a probe that failed: back to what held
                     elif spiky:
@@ -1326,42 +1366,81 @@ class Lens:
                         # as a stage 1 rate
                         new = int(presented * 2 / 3 / self.stage_rate(1.0, last_idx))
                         new = max(MIN_FPS, min(new, rate - 1))
-                    hold = min(hold * 2, 60.0)
                     why = ("shimmer, %d of %d frames jumped, floor %.2f"
                            % (jumps, len(mads), floor) if spiky
                            else "presented %.0f, asked %.0f" % (presented, target))
                 else:
+                    # A level that has carried clean output for a while is evidence
+                    # the chain can hold it, and makes an older bad worth doubting.
+                    # A bad that was really a passing load clears for good; a real
+                    # ceiling costs one failed probe and is then left alone for
+                    # twice as long, so the cost of asking falls away over time.
+                    if (bad is not None and now - clean >= 20.0
+                            and now - bad_at >= retest):
+                        bad, bad_at = None, now
+                        retest = min(retest * 2, 600.0)
+                        # an expiry is a deliberate decision to re-test, so the
+                        # wait between probes drops sharply rather than creeping
+                        # down, or the decision is spent waiting to act on it
+                        hold = max(5.0, hold / 4)
+                        cap = _fps_for(1)
+                        if arriving > 0:
+                            cap = min(cap, int(arriving * 5 // 6))
                     if rate > cap + 2:
                         new = max(MIN_FPS, cap)
                         why = "arriving %.0f" % arriving
-                    elif still and now - last >= hold and rate < cap - 1:
-                        step = (bad - rate) // 2 if bad is not None else max(2, rate // 8)
-                        step = min(step, max(2, rate // 4))   # a big jump can collapse
-                        if step >= max(1, rate // 20):
-                            # shimmer near the knee can take fifteen seconds to
-                            # show, so a level only counts as held once a whole
-                            # hold period has passed at it, which is now
-                            good = rate
-                            new = min(cap, rate + step)
-                            why = "probing"
+                    elif still and now - last >= hold:
+                        # Shimmer near the knee can take fifteen seconds to show,
+                        # so a level only counts as held once a whole hold period
+                        # has passed at it, which is now. It is recorded even when
+                        # there is no headroom left to probe into, or the rate the
+                        # lens actually settles at is never the one written to the
+                        # state file: two runs that both held 99 for well over two
+                        # minutes saved 97 and 91.
+                        good = rate
+                        self.best_rate = max(self.best_rate, rate)
+                        if rate < cap - 1:
+                            step = ((bad - rate) // 2 if bad is not None
+                                    else max(2, rate // 8))
+                            step = min(step, max(2, rate // 4))  # a big jump collapses
+                            if step >= max(1, rate // 20):
+                                new = min(cap, rate + step)
+                                why = "probing"
                 if new != rate:
                     self.apply_rate(new, "t=%.0fs %s" % (now - t0, why))
-                    last = time.perf_counter()
-                    hist = []
+                    last = clean = time.perf_counter()
+                    hist, spell = [], 0
 
-        threading.Thread(target=loop, daemon=True).start()
+        def guarded():
+            # This runs on a daemon thread, so an exception would kill it silently
+            # and the rate would simply stop moving, which looks exactly like a
+            # chain that has settled. The rate holds at its last working value,
+            # which is safe, but say what happened rather than leaving it to be
+            # inferred from a number that never changes again.
+            try:
+                loop()
+            except Exception as exc:
+                print("rate governor stopped: %r, rate held at %d"
+                      % (exc, self.rate), flush=True)
+
+        threading.Thread(target=guarded, daemon=True).start()
 
     def save_state(self):
         x, y = self.inner()
+        # The rate worth remembering is the best one this chain actually held, not
+        # whatever it happens to sit at now. Saving the instantaneous rate meant a
+        # lens closed while something else had the GPU reopened at the depressed
+        # rate and had to climb back from there.
+        keep = self.best_rate if self.best_rate else self.rate
         try:
             if self.fullscreen:
                 # the windowed geometry stays untouched for the way back
                 with open(FULL_STATE, "w") as f:
-                    f.write("%d %d\n" % (len(self.stages), self.rate))
+                    f.write("%d %d\n" % (len(self.stages), keep))
                 return
             with open(STATE, "w") as f:
                 f.write("%d %d %d %d %d %d\n" % (self.cw, self.ch, x, y, len(self.stages),
-                                                self.rate))
+                                                keep))
         except OSError:
             pass
 
@@ -1867,7 +1946,7 @@ class Lens:
         explain("The mpv install that carries the DLSS Neural Rendering stack.")
         folder(mpv, "Where is the mpv with the neural rendering stack?")
         data = tk.StringVar(value=DATA_DIR)
-        explain("Where the lens keeps its window state, settled frame rates and archived logs.")
+        explain("Where the lens keeps its window state, remembered frame rates and archived logs.")
         folder(data, "Where should the lens keep its state and logs?")
         explain("Both take effect at the next launch. Changing either restarts the lens.")
 
@@ -1983,7 +2062,7 @@ def main():
         except Exception:
             pass
     if FULLSCREEN:
-        # the monitor the windowed lens sits on, whole. Pass count and settled
+        # the monitor the windowed lens sits on, whole. Pass count and best held
         # rate come from the fullscreen chain's own file, since a rate that
         # suits a 1400x1000 lens is far too high for a whole monitor.
         x, y, cw, ch = monitor_rect(x + cw // 2, y + ch // 2)

@@ -35,8 +35,11 @@ Features:
 - An adaptive frame rate. Every stage is declared at the display rate and presents at a
   playback speed the lens changes live over mpv's IPC pipe, from what the visible stage
   actually presents, the brightness of the output against the input, and the frame to frame
-  change of the output while the content is still. The settled rate is saved as a sixth field
-  in the state file. `adaptive = 0` in the ini keeps the fixed rule; `min_fps` sets the floor.
+  change of the output while the content is still. A rate that failed is tried again once the
+  picture has been clean for a while, on a wait that doubles each time it fails again, so
+  something else using the GPU for a while does not cap the lens for the rest of the session.
+  The highest rate the chain actually held is saved as a sixth field in the state file.
+  `adaptive = 0` in the ini keeps the fixed rule; `min_fps` sets the floor.
 
 Known limits:
 

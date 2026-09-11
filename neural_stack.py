@@ -71,8 +71,19 @@ SOURCES = {
     "renodx": "https://github.com/RankFTW/rhi-repo/releases/download/renodx-dlss5-4.70/renodx-dlss5_4.70.zip",
     "vort": "https://raw.githubusercontent.com/vortigern11/vort_Shaders/main/",
     "vort_api": "https://api.github.com/repos/vortigern11/vort_Shaders/contents/Shaders/Includes",
+    # ReshadeMotionEstimation by Jakob Wapenhensch, CC BY-NC 4.0, pinned to its
+    # last commit since the repository publishes no releases
+    "drme": "https://raw.githubusercontent.com/JakobPCoder/ReshadeMotionEstimation/5fc3f434ba15/",
     "headers": "https://raw.githubusercontent.com/crosire/reshade-shaders/slim/Shaders/",
 }
+DRME_FILES = ["MotionEstimation.fx", "MotionEstimation.fxh", "MotionEstimationUI.fxh", "MotionVectors.fxh"]
+# Which shader estimates motion vectors for the Feed. Measured on scrolling
+# text as the partial ink fraction of the page, lower is crisper, at a slow,
+# a reading and a fast scroll: DRME 0.075, 0.096, 0.102; LumeniteFX 0.092,
+# 0.097, 0.104; VORT 0.099, 0.109, 0.106; no provider 0.114, 0.123. DRME is
+# CC BY-NC 4.0, so it may be fetched and used with credit in a free tool and
+# is the default; VORT is MIT and stays as the alternative.
+PROVIDERS = {"drme": 0, "vort": 2}
 # vort_Motion.fx pulls in most of its Includes folder through nested includes
 # (Depth, ColorTex, BlueNoise, Tonemap and more, four of which a hand picked
 # list once missed, so the shader failed to compile and the Feed fell back to
@@ -276,11 +287,13 @@ def find_lumenite(folder):
 
 
 class Install:
-    def __init__(self, target=DEFAULT_TARGET, gpu=None, dlssnr=None, dlss=None, log=None, lumenite=None):
+    def __init__(self, target=DEFAULT_TARGET, gpu=None, dlssnr=None, dlss=None, log=None, lumenite=None,
+                 provider="drme"):
         self.target = os.path.abspath(target)
         self.gpu = gpu
         self.given = {"nvngx_dlssnr.dll": dlssnr, "nvngx_dlss.dll": dlss}
         self.log = log
+        self.provider = provider if provider in PROVIDERS else "drme"
         # LumeniteFX cannot be fetched or shipped, but a copy the user already
         # holds can be used: its motion vectors ghost less on scrolling text
         self.lumenite = find_lumenite(lumenite) if lumenite else None
@@ -472,6 +485,9 @@ class Install:
             self.add(fetch(SOURCES["headers"] + name, os.path.join(base, name), self.log, name))
         self.say("shaders: VORT motion vectors (MIT), %d includes and its texture, and ReShade's headers"
                  % len(includes))
+        for name in DRME_FILES:
+            self.add(fetch(SOURCES["drme"] + name, os.path.join(base, name), self.log, name))
+        self.say("shaders: ReshadeMotionEstimation by Jakob Wapenhensch (CC BY-NC 4.0)")
         if self.lumenite:
             for rel_path in LUMENITE_FILES:
                 dest = os.path.join(self.target, "reshade-shaders", rel_path.replace("/", os.sep))
@@ -481,15 +497,19 @@ class Install:
             self.record["components"]["motion_vectors"] = "LumeniteFX, the user's own copy"
             self.say("shaders: your LumeniteFX copied in; it will provide the motion vectors")
         else:
-            self.record["components"]["motion_vectors"] = "VORT"
+            self.record["components"]["motion_vectors"] = {"drme": "ReshadeMotionEstimation", "vort": "VORT"}[self.provider]
 
     def step_config(self):
         self.add(write_text(os.path.join(self.target, "portable_config", "mpv.conf"), MPV_CONF))
         self.add(write_text(os.path.join(self.target, "portable_config", "input.conf"), INPUT_CONF))
+        # the templates are written for VORT; the chosen provider is substituted
         ini, preset = RESHADE_INI, RESHADE_PRESET
         if self.lumenite:
             ini = ini.replace("DLSS5_MV_PROVIDER=2,V_MV_MODE=1", "DLSS5_MV_PROVIDER=3")
             preset = preset.replace("vort_MotionEffects@vort_Motion.fx", "Lumenite_Kernel@lumenite_Kernel.fx")
+        elif self.provider == "drme":
+            ini = ini.replace("DLSS5_MV_PROVIDER=2,V_MV_MODE=1", "DLSS5_MV_PROVIDER=0")
+            preset = preset.replace("vort_MotionEffects@vort_Motion.fx", "DRME@MotionEstimation.fx")
         self.add(write_text(os.path.join(self.target, "ReShade.ini"), ini))
         self.add(write_text(os.path.join(self.target, "ReShadePreset.ini"), preset))
         self.add(write_text(os.path.join(self.target, "dlss5-feed.cfg"), FEED_CFG))
@@ -698,9 +718,9 @@ def wizard(parent=None, target=DEFAULT_TARGET):
         tk.Button(root, text="Browse", command=pick, relief="flat", bg="#334155", fg=FG).grid(
             row=3 + i, column=2, padx=(0, 14))
     lum = tk.StringVar()
-    tk.Label(root, text="Motion vectors come from VORT (MIT). If you already have LumeniteFX, point at "
-                        "its reshade-shaders folder and your copy is used instead: it ghosts less on "
-                        "scrolling text. It cannot be downloaded for you.",
+    tk.Label(root, text="Motion vectors come from ReshadeMotionEstimation by Jakob Wapenhensch (CC BY-NC "
+                        "4.0). If you already have LumeniteFX and prefer it, point at its reshade-shaders "
+                        "folder and your copy is used instead. It cannot be downloaded for you.",
              bg=BG, fg=DIM, justify="left", wraplength=620, font=("Segoe UI", 9)).grid(
         row=5, column=0, columnspan=3, sticky="w", padx=14, pady=(10, 2))
     tk.Label(root, text="LumeniteFX", bg=BG, fg=FG, font=("Consolas", 9)).grid(row=6, column=0, sticky="w", padx=14)
@@ -789,7 +809,9 @@ def main(argv=None):
     ap.add_argument("--dlssnr", help="an nvngx_dlssnr.dll you already have; its hash is checked")
     ap.add_argument("--dlss", help="an nvngx_dlss.dll you already have; its hash is checked")
     ap.add_argument("--lumenite", help="a reshade-shaders folder holding LumeniteFX you already have; "
-                                       "its motion vectors are used instead of VORT's")
+                                       "its motion vectors are used instead")
+    ap.add_argument("--provider", choices=sorted(PROVIDERS), default="drme",
+                    help="which fetched shader estimates motion vectors (default drme)")
     ap.add_argument("--verify", action="store_true", help="only run the self test")
     ap.add_argument("--uninstall", action="store_true")
     a = ap.parse_args(argv)
@@ -801,7 +823,7 @@ def main(argv=None):
             ok, detail = verify(a.target)
             print(detail)
             return 0 if ok else 1
-        ok = Install(a.target, a.gpu, a.dlssnr, a.dlss, lumenite=a.lumenite).run()
+        ok = Install(a.target, a.gpu, a.dlssnr, a.dlss, lumenite=a.lumenite, provider=a.provider).run()
         print("")
         print("OK: the stack works. Point the lens at %s" % a.target if ok else
               "The stack was installed but the self test did not pass; see above.")

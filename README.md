@@ -83,14 +83,15 @@ What it fetches, and from where:
 | `nvngx_dlss.dll` 310.8.0 and the Neural Rendering model for your card | the RHI project's manifest, hash checked against this README |
 | `dlss5-feed.addon64` and `DLSS5_Feed.fx` | DLSS5-Feeder, the current release |
 | `renodx-dlss5.addon64` | the RHI repository |
-| VORT motion vectors (MIT) and ReShade's two shader headers | their repositories |
+| ReshadeMotionEstimation (CC BY-NC 4.0), VORT (MIT) and ReShade's two shader headers | their repositories |
 
 If you already have NVIDIA's two DLLs, point the setup at them and it uses those instead, once
-their hashes check out. Motion vectors come from VORT, which is the only estimator whose
-licence allows it to be fetched; measured against LumeniteFX, scrolling text ghosts a little
-more with it, doubled letters at the ends of words at reading speeds. If you already have
-LumeniteFX, point the setup at its folder and your copy is used instead; it cannot be
-downloaded for you. The setup ends with a self test that opens an mpv window for a few
+their hashes check out. Motion vectors come from ReshadeMotionEstimation by Jakob Wapenhensch,
+CC BY-NC 4.0, which measured crisper on scrolling text than every other estimator that may be
+fetched, and a little crisper than LumeniteFX. VORT (MIT) is fetched too and can be chosen
+instead. If you already have LumeniteFX and prefer it, point the setup at its folder and your
+copy is used; it cannot be downloaded for you. The setup is for personal, non-commercial use,
+which is what that licence allows. The setup ends with a self test that opens an mpv window for a few
 seconds and reads ReShade's log, and says plainly whether Neural Rendering ran. The Start Menu
 also has a "stack setup" entry to fetch or repair it later.
 

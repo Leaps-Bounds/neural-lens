@@ -262,12 +262,30 @@ def write_text(path, text):
 
 
 # ---------------------------------------------------------------- steps
+LUMENITE_FILES = ["Shaders/lumenite_Kernel.fx", "Shaders/include/lumenite_ColorManagement.fxh",
+                  "Shaders/include/lumenite_Compute.fxh", "Shaders/include/lumenite_Helpers.fxh",
+                  "Shaders/include/lumenite_Projections.fxh", "Textures/lumenite_bluenoise256.png"]
+
+
+def find_lumenite(folder):
+    """The reshade-shaders folder holding LumeniteFX, given it or its parent."""
+    for root in (folder, os.path.join(folder, "reshade-shaders")):
+        if all(os.path.isfile(os.path.join(root, f)) for f in LUMENITE_FILES):
+            return root
+    return None
+
+
 class Install:
-    def __init__(self, target=DEFAULT_TARGET, gpu=None, dlssnr=None, dlss=None, log=None):
+    def __init__(self, target=DEFAULT_TARGET, gpu=None, dlssnr=None, dlss=None, log=None, lumenite=None):
         self.target = os.path.abspath(target)
         self.gpu = gpu
         self.given = {"nvngx_dlssnr.dll": dlssnr, "nvngx_dlss.dll": dlss}
         self.log = log
+        # LumeniteFX cannot be fetched or shipped, but a copy the user already
+        # holds can be used: its motion vectors ghost less on scrolling text
+        self.lumenite = find_lumenite(lumenite) if lumenite else None
+        if lumenite and not self.lumenite:
+            raise StackError("no LumeniteFX under %s: it needs %s" % (lumenite, ", ".join(LUMENITE_FILES)))
         self.record = {"version": __version__, "target": self.target, "layer_dir": LAYER_DIR,
                        "files": [], "registry": [], "components": {}}
 
@@ -454,12 +472,26 @@ class Install:
             self.add(fetch(SOURCES["headers"] + name, os.path.join(base, name), self.log, name))
         self.say("shaders: VORT motion vectors (MIT), %d includes and its texture, and ReShade's headers"
                  % len(includes))
+        if self.lumenite:
+            for rel_path in LUMENITE_FILES:
+                dest = os.path.join(self.target, "reshade-shaders", rel_path.replace("/", os.sep))
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                shutil.copy2(os.path.join(self.lumenite, rel_path), dest)
+                self.add(dest)
+            self.record["components"]["motion_vectors"] = "LumeniteFX, the user's own copy"
+            self.say("shaders: your LumeniteFX copied in; it will provide the motion vectors")
+        else:
+            self.record["components"]["motion_vectors"] = "VORT"
 
     def step_config(self):
         self.add(write_text(os.path.join(self.target, "portable_config", "mpv.conf"), MPV_CONF))
         self.add(write_text(os.path.join(self.target, "portable_config", "input.conf"), INPUT_CONF))
-        self.add(write_text(os.path.join(self.target, "ReShade.ini"), RESHADE_INI))
-        self.add(write_text(os.path.join(self.target, "ReShadePreset.ini"), RESHADE_PRESET))
+        ini, preset = RESHADE_INI, RESHADE_PRESET
+        if self.lumenite:
+            ini = ini.replace("DLSS5_MV_PROVIDER=2,V_MV_MODE=1", "DLSS5_MV_PROVIDER=3")
+            preset = preset.replace("vort_MotionEffects@vort_Motion.fx", "Lumenite_Kernel@lumenite_Kernel.fx")
+        self.add(write_text(os.path.join(self.target, "ReShade.ini"), ini))
+        self.add(write_text(os.path.join(self.target, "ReShadePreset.ini"), preset))
         self.add(write_text(os.path.join(self.target, "dlss5-feed.cfg"), FEED_CFG))
         self.say("config: mpv, ReShade, the preset and the feed written")
 
@@ -665,11 +697,28 @@ def wizard(parent=None, target=DEFAULT_TARGET):
 
         tk.Button(root, text="Browse", command=pick, relief="flat", bg="#334155", fg=FG).grid(
             row=3 + i, column=2, padx=(0, 14))
-    log = tk.Text(root, width=88, height=16, bg="#0b1220", fg=FG, relief="flat", font=("Consolas", 9),
+    lum = tk.StringVar()
+    tk.Label(root, text="Motion vectors come from VORT (MIT). If you already have LumeniteFX, point at "
+                        "its reshade-shaders folder and your copy is used instead: it ghosts less on "
+                        "scrolling text. It cannot be downloaded for you.",
+             bg=BG, fg=DIM, justify="left", wraplength=620, font=("Segoe UI", 9)).grid(
+        row=5, column=0, columnspan=3, sticky="w", padx=14, pady=(10, 2))
+    tk.Label(root, text="LumeniteFX", bg=BG, fg=FG, font=("Consolas", 9)).grid(row=6, column=0, sticky="w", padx=14)
+    tk.Entry(root, textvariable=lum, width=64, bg="#0b1220", fg=FG, insertbackground=FG,
+             relief="flat").grid(row=6, column=1, sticky="we", padx=(6, 6), pady=2)
+
+    def pick_lum():
+        d = filedialog.askdirectory(title="Where is the reshade-shaders folder holding LumeniteFX?")
+        if d:
+            lum.set(os.path.normpath(d))
+
+    tk.Button(root, text="Browse", command=pick_lum, relief="flat", bg="#334155", fg=FG).grid(
+        row=6, column=2, padx=(0, 14))
+    log = tk.Text(root, width=88, height=14, bg="#0b1220", fg=FG, relief="flat", font=("Consolas", 9),
                   state="disabled", wrap="word")
-    log.grid(row=5, column=0, columnspan=3, padx=14, pady=(10, 6), sticky="we")
+    log.grid(row=7, column=0, columnspan=3, padx=14, pady=(10, 6), sticky="we")
     status = tk.Label(root, text="", bg=BG, fg=DIM, font=("Segoe UI", 9))
-    status.grid(row=6, column=0, columnspan=2, sticky="w", padx=14)
+    status.grid(row=8, column=0, columnspan=2, sticky="w", padx=14)
     result = {"ok": False, "done": False}
     q = queue.Queue()
 
@@ -697,7 +746,8 @@ def wizard(parent=None, target=DEFAULT_TARGET):
     def work():
         try:
             ok = Install(where.get(), gen, have["nvngx_dlssnr.dll"].get() or None,
-                         have["nvngx_dlss.dll"].get() or None, log=q.put).run()
+                         have["nvngx_dlss.dll"].get() or None, log=q.put,
+                         lumenite=lum.get() or None).run()
             result["ok"] = ok
         except StackError as exc:
             q.put("")
@@ -719,9 +769,9 @@ def wizard(parent=None, target=DEFAULT_TARGET):
 
     go = tk.Button(root, text="Set it up", command=start, relief="flat", bg=ACCENT, fg="#0b1220",
                    font=("Segoe UI", 10, "bold"), state="normal" if gen else "disabled")
-    go.grid(row=6, column=2, sticky="e", padx=14, pady=(4, 14))
+    go.grid(row=8, column=2, sticky="e", padx=14, pady=(4, 14))
     tk.Button(root, text="Not now", command=root.destroy, relief="flat", bg="#334155", fg=FG).grid(
-        row=7, column=2, sticky="e", padx=14, pady=(0, 14))
+        row=9, column=2, sticky="e", padx=14, pady=(0, 14))
     root.grab_set() if parent else None
     if parent:
         parent.wait_window(root)
@@ -738,6 +788,8 @@ def main(argv=None):
     ap.add_argument("--gpu", choices=sorted(GENERATIONS))
     ap.add_argument("--dlssnr", help="an nvngx_dlssnr.dll you already have; its hash is checked")
     ap.add_argument("--dlss", help="an nvngx_dlss.dll you already have; its hash is checked")
+    ap.add_argument("--lumenite", help="a reshade-shaders folder holding LumeniteFX you already have; "
+                                       "its motion vectors are used instead of VORT's")
     ap.add_argument("--verify", action="store_true", help="only run the self test")
     ap.add_argument("--uninstall", action="store_true")
     a = ap.parse_args(argv)
@@ -749,7 +801,7 @@ def main(argv=None):
             ok, detail = verify(a.target)
             print(detail)
             return 0 if ok else 1
-        ok = Install(a.target, a.gpu, a.dlssnr, a.dlss).run()
+        ok = Install(a.target, a.gpu, a.dlssnr, a.dlss, lumenite=a.lumenite).run()
         print("")
         print("OK: the stack works. Point the lens at %s" % a.target if ok else
               "The stack was installed but the self test did not pass; see above.")

@@ -73,10 +73,19 @@ can also be pointed somewhere else on their own, from the menu's Settings.
   content the lens captured, the neural rendered result, and the two joined side by side. Both
   halves come from the same live pipeline a fraction of a second apart, so on still content they
   line up pixel for pixel. It pauses briefly first, so the menu you just used is not in the shot.
+- **Live A/B split** from the menu puts a draggable divider across the lens, with Neural
+  Rendering on the left of it and the untouched source on the right, both live. It costs
+  nothing: the lens is see-through, so the right side is simply the screen underneath. Works
+  at any pass count and in fullscreen. Pick the menu entry again to end it.
 - **Resize it** from the menu. A translucent outline appears over the lens showing its live
   size. Drag any edge, let go, and confirm. See [Limits](#limits) for why this restarts.
 - **Settings** in the menu chooses where screenshots are saved, and remembers the choice in
   `neural-lens.ini`.
+- **Fullscreen** is a checkbox in Settings. The lens then covers the whole monitor it is on,
+  with the title bar over the top edge of the picture, and cannot be dragged. Changing it
+  restarts the lens, like a resize, and the windowed position and size are kept for the way
+  back. A whole monitor is a lot of pixels: expect the frame rate to settle well below the
+  windowed one, and see [Frame rate](#frame-rate) for what it does about that.
 
 ## How it works
 
@@ -122,32 +131,43 @@ the round trip through capture and mpv is very nearly lossless, and what accumul
 neural work. The maximum is 4, changeable with `max_passes` in the ini.
 
 **Each pass lowers the frame rate on purpose.** Every pass is another full capture and present
-stage, so the chain delivers fewer frames per second. mpv is told a rate below what it can
-actually receive: on a 120 Hz panel that works out as 100 at one pass, then 50, 33 and 25.
+stage, so the chain delivers fewer frames per second, and each stage is asked for a little less
+than the stage feeding it. The visible stage starts at five sixths of your display's refresh
+rate at one pass, and at that divided by the pass count beyond, and the rate is then adjusted to
+what the machine actually manages (see Frame rate below).
 
-Telling it anything faster makes it present frames that have not arrived yet, and Neural
-Rendering then re-runs over its own output. A large mismatch crushes the picture toward black
-and recovers, over and over. A small one, even declaring exactly what arrives, makes it shimmer
-instead, which is why the margin exists rather than a plain division. Because that rate is fixed
-when mpv starts, changing the pass count restarts every stage.
+Asking a stage for more than it can deliver makes it present frames that have not arrived yet,
+and Neural Rendering then re-runs over its own output. A large mismatch crushes the picture
+toward black or white and recovers, over and over. A small one makes it shimmer instead.
 
 Two passes is usually the sweet spot. Three is visibly heavy on most content.
 
 ### Frame rate
 
-On an RTX 5090 driving a 120 Hz display, capture into the first stage runs at about **117 fps**.
-What you actually watch is the presented rate, which is deliberately held below that: **100** at
-one pass, then 50, 33 and 25 as passes are added. See Multiple passes for why the gap is
-necessary rather than wasteful.
+The rate the lens asks for is adjusted while it runs, because what a chain can deliver depends
+on the GPU, the size of the lens, the number of passes and whatever else the GPU is doing at the
+time. Measured on an RTX 4070 SUPER, a 1400x1000 lens at one pass held 100 with the GPU idle and
+about 60 with a video playing beside it; the same lens at two passes held 35; a 2000x1400 lens
+held 41. On an RTX 5090 the same 1400x1000 lens held 100 at one pass.
 
-Adding passes also costs GPU time: roughly 32 percent utilisation at one pass, 57 at two, 80 at
-three. Be aware that the fps figure in the title bar counts frames arriving from capture into
-the first stage rather than frames presented by the last one, so it reports the input side
-rather than what you are looking at.
+Once a second the lens compares three things: the frames the visible stage presents against the
+rate it was asked for, the mean brightness of what enters the chain against what comes out, and,
+while the content under the lens is still, how much the output changes from frame to frame. A
+shortfall, a brightness runaway or a shimmer lowers the rate. When the picture has been stable
+for a while and the content is still, the rate probes upward again in small steps, never above
+five sixths of the display rate. The settled rate is saved with the window position, so the next
+launch starts from it.
 
-The single biggest factor here was a library default rather than anything expensive: the
-capture binding's `minimum_update_interval` throttles delivery to about 60 fps unless it is set
-to 0. See [docs/NOTES.md](docs/NOTES.md).
+The title bar shows the input side and the output side: `120 in  33 out` means capture delivers
+120 frames a second into the first stage and the visible stage is asked for 33. Settings has a
+switch to turn the adjustment off and keep the fixed rule, a slider for the lowest rate it may
+go to, and sliders for the frame rate ceiling and the capture refresh, each with an explanation
+of what it does. Everything the lens can be told lives in that dialog; the ini file is only
+where it writes the answers.
+
+The single biggest factor in the input rate was a library default rather than anything
+expensive: the capture binding's `minimum_update_interval` throttles delivery to about 60 fps
+unless it is set to 0. See [docs/NOTES.md](docs/NOTES.md).
 
 ## Limits
 

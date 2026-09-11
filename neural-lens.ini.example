@@ -1,4 +1,5 @@
-# Copy this file to neural-lens.ini and edit.
+# Copy this file to neural-lens.ini and edit, or do not: the Settings dialog in
+# the lens's menu has a control for every setting here and writes this file.
 # Every setting is optional. Command line and environment variables win over
 # this file.
 
@@ -21,15 +22,27 @@ mpv_dir = C:\Games\_mpv
 # Frame pacing. Both default to the display's own refresh rate, so a 240 Hz
 # monitor is paced at 240. Only set these to force something else.
 #
-# fps is a ceiling, not the rate mpv is actually given. Five sixths of it is
-# divided by the number of neural passes, because every pass is another capture
-# and present stage and the chain delivers fewer frames per second. On a 120 Hz
-# display that works out as 100 at one pass, 50 at two, 33 at three and 25 at
-# four. The margin is deliberate: declaring even exactly what arrives makes mpv
-# present frames that are not there yet, and the picture shimmers. Declaring far
-# more than arrives makes it crush toward black and recover, repeatedly.
+# fps is a ceiling, not the rate the lens actually asks for. Five sixths of it
+# is where the visible stage starts, divided by the number of neural passes. The
+# lens then lowers the rate whenever the chain falls short, the output runs away
+# in brightness, or the picture shimmers on still content, and probes back up
+# while the picture stays clean. The margin is deliberate: asking a stage for
+# even exactly what arrives makes mpv present frames that are not there yet,
+# and the picture shimmers. Asking for far more makes it crush toward black or
+# white and recover, repeatedly.
 # fps = 120
 # pump_hz = 120
 
+# Set adaptive = 0 to keep the fixed rule above instead of adjusting it live.
+# min_fps is the lowest rate the adjustment will go to. A full screen lens on a
+# mid range card can need the floor.
+# adaptive = 1
+# min_fps = 12
+
 # Highest number of neural passes the plus button will go to.
 # max_passes = 4
+
+# Cover the whole monitor the lens is on. The Settings dialog has a checkbox
+# for this and writes it here. Pass count and settled rate for the fullscreen
+# chain are kept apart from the windowed ones.
+# fullscreen = 0

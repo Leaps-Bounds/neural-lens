@@ -69,11 +69,16 @@ SOURCES = {
     "manifest": "https://raw.githubusercontent.com/RankFTW/RHI/main/dlss_manifest.json",
     "feeder_api": "https://api.github.com/repos/jlrouzies-fr/DLSS5-Feeder/releases/latest",
     "renodx": "https://github.com/RankFTW/rhi-repo/releases/download/renodx-dlss5-4.70/renodx-dlss5_4.70.zip",
-    "vort": "https://raw.githubusercontent.com/vortigern11/vort_Shaders/main/Shaders/",
+    "vort": "https://raw.githubusercontent.com/vortigern11/vort_Shaders/main/",
+    "vort_api": "https://api.github.com/repos/vortigern11/vort_Shaders/contents/Shaders/Includes",
     "headers": "https://raw.githubusercontent.com/crosire/reshade-shaders/slim/Shaders/",
 }
-VORT_FILES = ["vort_Motion.fx", "Includes/vort_Defs.fxh", "Includes/vort_Motion_UI.fxh",
-              "Includes/vort_MotionUtils.fxh", "Includes/vort_MotionVectors.fxh"]
+# vort_Motion.fx pulls in most of its Includes folder through nested includes
+# (Depth, ColorTex, BlueNoise, Tonemap and more, four of which a hand picked
+# list once missed, so the shader failed to compile and the Feed fell back to
+# zero motion vectors). The whole folder is fetched, plus the blue noise
+# texture the motion pass samples.
+VORT_TEXTURES = ["vort_BlueNoise.png"]
 HEADER_FILES = ["ReShade.fxh", "ReShadeUI.fxh"]
 
 # The manifest carries no hashes, so these are held here. Every one was measured
@@ -433,13 +438,22 @@ class Install:
 
     def step_shaders(self):
         base = os.path.join(self.target, "reshade-shaders", "Shaders")
-        for rel_path in VORT_FILES:
-            self.add(fetch(SOURCES["vort"] + rel_path, os.path.join(base, rel_path.replace("/", os.sep)),
-                           self.log, rel_path))
+        textures = os.path.join(self.target, "reshade-shaders", "Textures")
+        self.add(fetch(SOURCES["vort"] + "Shaders/vort_Motion.fx", os.path.join(base, "vort_Motion.fx"),
+                       self.log, "vort_Motion.fx"))
+        includes = [e["name"] for e in fetch_json(SOURCES["vort_api"])
+                    if e.get("type") == "file" and e["name"].startswith("vort_") and e["name"].endswith(".fxh")]
+        if len(includes) < 10:
+            raise StackError("the VORT repository listed only %d include files" % len(includes))
+        for name in includes:
+            self.add(fetch(SOURCES["vort"] + "Shaders/Includes/" + name, os.path.join(base, "Includes", name),
+                           self.log, name))
+        for name in VORT_TEXTURES:
+            self.add(fetch(SOURCES["vort"] + "Textures/" + name, os.path.join(textures, name), self.log, name))
         for name in HEADER_FILES:
             self.add(fetch(SOURCES["headers"] + name, os.path.join(base, name), self.log, name))
-        os.makedirs(os.path.join(self.target, "reshade-shaders", "Textures"), exist_ok=True)
-        self.say("shaders: VORT motion vectors (MIT) and ReShade's headers")
+        self.say("shaders: VORT motion vectors (MIT), %d includes and its texture, and ReShade's headers"
+                 % len(includes))
 
     def step_config(self):
         self.add(write_text(os.path.join(self.target, "portable_config", "mpv.conf"), MPV_CONF))
@@ -526,6 +540,21 @@ def verify(target, log=None, seconds=9.0):
     addons = ("DLSS 5 Neural Rendering" in text, "DLSS 5 Feed" in text)
     lines = ["    ReShade attached: yes",
              "    add-ons loaded: Neural Rendering %s, Feed %s" % tuple("yes" if a else "NO" for a in addons)]
+    # A still needs no motion vectors, so Neural Rendering can run with the
+    # provider missing and nobody would know until something moved. The Feed
+    # says which provider it found; read that rather than trust the picture.
+    try:
+        feed = open(os.path.join(target, "dlss5-feed.log"), encoding="utf-8", errors="replace").read()
+        prov = [l for l in feed.splitlines() if "DLSS5_MV_PROVIDER" in l]
+        last = prov[-1].split("DLSS5_MV_PROVIDER=", 1)[-1] if prov else ""
+        if not prov or "-> none" in last:
+            lines.append("    motion vectors: NO PROVIDER, so anything that moves would smear. "
+                         "The VORT shader did not compile or was not found: %s" % (last[:90] or "no Feed log"))
+            return False, "\n".join(lines)
+        lines.append("    motion vectors: %s" % last.split(",", 1)[0][:90])
+    except OSError:
+        lines.append("    motion vectors: the Feed wrote no log")
+        return False, "\n".join(lines)
     if failed:
         lines.append("    Neural Rendering: FAILED to start, %s" % failed.group(1))
         if failed.group(1).lower() == "0xbad00001":

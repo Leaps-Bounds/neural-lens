@@ -639,3 +639,31 @@ and `evaluation succeeded`; `0xbad00001` is reported as the wrong model for the 
 `install-record.json` in the stack folder lists every file written and the registry value
 set, and `--uninstall-stack` removes exactly that. The Inno uninstaller asks before calling it,
 defaulting to keep, so a silent uninstall never deletes the download.
+
+### VORT against LumeniteFX, measured before publishing VORT
+
+The self test passed with VORT's shader failing to compile, because a still needs no motion
+vectors: four of its includes were missing from a hand picked list, the Feed logged "no known
+VORT shader is installed: motion vectors will be zero", and nothing else said so. The setup now
+fetches VORT's whole include folder and its blue noise texture, and the self test reads the
+Feed's provider line and fails on "none".
+
+With that fixed, the same lens ran over the same scrolling source on both stacks at a fixed
+30 fps, with Neural Rendering on and then off on each, so the provider was the only difference.
+Sharpness is the variance of the Laplacian of the dumped output frames, higher is sharper:
+
+```
+                              NR on     NR off    kept
+grid, 3 px a frame            LumeniteFX   2080      2509     83%
+                              VORT         3128      3297     95%
+page of text, 3 px a frame    LumeniteFX    671       938     72%
+                              VORT          617       880     70%
+frame to frame change, text   LumeniteFX   8.8       10.2
+                              VORT         6.8        8.0
+```
+
+Level on text, ahead on the grid, steadier frame to frame on both. VORT is what new installs
+get; the author's own setup stays on LumeniteFX. The washed out frames seen in the first,
+governed run over motion at 85 fps were the rate, not the provider: at a fixed 30 neither
+stack showed them, and the brightness of that run sat 8 percent high, inside the runaway
+margin. A washout over moving content at a rate the chain cannot carry is not yet caught.

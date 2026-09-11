@@ -217,6 +217,26 @@ its window and an unexpected traceback out of `main()`. A harness driven from a 
 console window sees the same, so any test that reaches a fatal path has to replace
 `messagebox.showerror` first, or it blocks on a dialog nobody will dismiss.
 
+### Per monitor DPI awareness
+
+A 1400x760 lens on the 5090's secondary monitor produced a 1680x912 chain: ReShade created its
+Neural Rendering resources at 1680x912 and the Feed delivered frames at 1680x912, while
+`GetWindowRect` from inside the lens said 1400x760. The ratio, 1.2, is not a scaling factor,
+it is the ratio of two: 150 percent over 125. The lens was system DPI aware, which keeps the DPI
+the session logged on with and lives in a coordinate space Windows virtualizes against each
+monitor, so a window it placed on a monitor whose scaling differed from that was rescaled by
+Windows on the way, and the lens never saw the real size. The lens is now per monitor DPI
+aware, version 2, so every coordinate it uses is a physical pixel on whichever monitor it is on.
+
+Verified on the 4070 with the primary monitor switched to 125 percent while the session had
+logged on at 100: the lens asked for 1400x760, a per monitor aware probe measured the stage
+window at 1400x760 physical, ReShade created its resources at 1400x760, and the chrome measured
+1404x796 with both windows reporting 120 DPI, so nothing is bitmap stretched either. The same
+test before the change also agreed on the primary, which is what separated "follows the
+monitor" from "follows the geometry" and pointed at the secondary monitor's scaling context.
+Fonts follow the monitor's DPI now; the bar is 34 pixels and holds a 10 point label up to 200
+percent.
+
 ### Fullscreen
 
 Experimental, and the least tested part of the lens. It has had far less exercise than the

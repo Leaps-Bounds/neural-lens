@@ -69,7 +69,22 @@ from windows_capture import WindowsCapture, Frame, InternalCaptureControl
 
 
 def _script_dir():
+    """The folder the ini lives in: beside the script, or beside the exe when
+    frozen, where __file__ would point inside the bundle's internals."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
     return os.path.dirname(os.path.abspath(__file__))
+
+
+def _relaunch_cmd():
+    """How to start another copy of this program with the same arguments.
+
+    Frozen, the executable is the program and sys.argv[0] is the executable
+    too, so passing it again as the first argument would be wrong.
+    """
+    if getattr(sys, "frozen", False):
+        return [sys.executable] + sys.argv[1:]
+    return [sys.executable, os.path.abspath(sys.argv[0])] + sys.argv[1:]
 
 
 def _read_ini():
@@ -104,7 +119,10 @@ def _find_mpv_dir():
         if a == "--mpv-dir" and i + 1 < len(sys.argv):
             cands.append(sys.argv[i + 1])
     cands += [os.environ.get("NEURAL_LENS_MPV_DIR"), _INI.get("mpv_dir"),
-              os.path.join(_script_dir(), "mpv"), r"C:\Games\_mpv"]
+              os.path.join(_script_dir(), "mpv"),
+              # where the lens's own stack setup puts it
+              os.path.join(os.environ.get("LOCALAPPDATA") or "", "NeuralLens", "stack"),
+              r"C:\Games\_mpv"]
     for d in cands:
         if d and os.path.isfile(os.path.join(d, "mpv.exe")):
             return os.path.abspath(d)
@@ -2509,8 +2527,56 @@ def _fatal(text):
         pass
 
 
+def _offer_setup(reason):
+    """Offer to fetch and assemble the neural stack, and relaunch if it worked.
+
+    Returns True when the lens has been relaunched and this process should
+    simply return. The stack setup lives in neural_stack.py and puts everything
+    under LOCALAPPDATA, which _find_mpv_dir already looks in, so the relaunch
+    finds it with no ini change.
+    """
+    try:
+        import neural_stack
+    except ImportError:
+        return False
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    want = messagebox.askyesno(
+        "Neural Lens",
+        reason + "\n\nSet up the Neural Rendering stack now? About 230 MB is downloaded from "
+        "the projects that publish each part into a folder of your own, registered for your "
+        "user only, with no administrator prompt. It takes a few minutes.")
+    ok = False
+    if want:
+        ok = neural_stack.wizard(root)
+    try:
+        root.destroy()
+    except Exception:
+        pass
+    if not ok:
+        return False
+    subprocess.Popen(_relaunch_cmd(), cwd=_script_dir())
+    return True
+
+
 def main():
+    # two entry points the installer uses: the Start Menu's stack setup, and
+    # the uninstaller's removal of what the setup registered and wrote
+    if "--setup-stack" in sys.argv:
+        import neural_stack
+        neural_stack.wizard()
+        return
+    if "--uninstall-stack" in sys.argv:
+        import neural_stack
+        try:
+            neural_stack.uninstall()
+        except neural_stack.StackError as exc:
+            print(exc, flush=True)
+        return
     if not MPV_DIR:
+        if _offer_setup("The lens could not find an mpv with the DLSS Neural Rendering stack."):
+            return
         _fatal("\n".join([
             "Could not find mpv.exe.",
             "",
@@ -2592,7 +2658,8 @@ def main():
                "back to you unchanged. The README says what the mpv install needs",
                "to carry; none of it is included here."])
         print("\n" + note + "\n", flush=True)
-        messagebox.showwarning("Neural Lens", note)
+        if _offer_setup(note):
+            return
     try:
         lens = Lens(root, x, y, cw, ch, passes, rate, FULLSCREEN)
     except SystemExit as exc:
@@ -2637,7 +2704,7 @@ def main():
         except Exception:
             pass
         time.sleep(1.0)
-        cmd = [sys.executable, os.path.abspath(sys.argv[0])] + sys.argv[1:]
+        cmd = _relaunch_cmd()
         note = os.path.join(LOGDIR, "restart.log")
         try:
             # the new size lives in the state file; lens.cw and lens.ch are the old one

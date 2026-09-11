@@ -43,13 +43,13 @@ build of it you need depends on your card:
 | RTX 50 series (Blackwell) | NVIDIA's stock 310.8 model, unmodified |
 | RTX 40 series (Ada) | a community modified build of the same 310.8 model |
 
-The two are indistinguishable by everything except content. Both are 165,840,496 bytes, both
-report file version 310.8.0.0, and both carry the same `NVIDIA DLSSNR - DVS PRODUCTION`
-description. So identify them by hash:
+All carry the same `NVIDIA DLSSNR - DVS PRODUCTION` description, so identify them by hash. Three
+builds are known to run:
 
 ```
-stock       E16BCF15E16E13F527491CDF7845B2FE6521A738D8F7C9C721866A8496E1FC8E
-40 series   8270B350CD82DE5CE89806872CDD6B6A9249B80836B91BBEB3573470744CC206
+stock, RTX 50          E16BCF15E16E13F527491CDF7845B2FE6521A738D8F7C9C721866A8496E1FC8E   165,840,496 bytes, version 310.8.0.0
+40 series, current     6EB209E764F39872625DEBD6ABAF45E2BB6322F6F270F781F70C059AE30B3927   165,830,144 bytes, version 310.8.SF.0
+40 series, earlier     8270B350CD82DE5CE89806872CDD6B6A9249B80836B91BBEB3573470744CC206   165,840,496 bytes, version 310.8.0.0
 ```
 
 Neither is included or redistributed here, and this project does not host the 40 series build
@@ -66,6 +66,31 @@ You also need:
 - Python 3 with `numpy` and `windows-capture`.
 
 ## Install
+
+**The installer.** Run `NeuralLens-Setup-<version>.exe` from the releases page. It needs no
+administrator prompt: it puts the lens under your own user folder, adds a Start Menu entry and
+an uninstaller, and that is all it contains. On first start the lens offers to set up the
+neural stack. Nothing of the stack is bundled; about 230 MB is downloaded from the projects
+that publish each part into a folder of your own, and ReShade is registered as a Vulkan layer
+for your user only, under its own name, so an existing ReShade on the machine is left alone.
+
+What it fetches, and from where:
+
+| part | from |
+|---|---|
+| mpv | shinchiro's mpv-winbuild-cmake, the current release |
+| ReShade 6.8.0 with add-on support | reshade.me, the DLL taken out of the setup without running it |
+| `nvngx_dlss.dll` 310.8.0 and the Neural Rendering model for your card | the RHI project's manifest, hash checked against this README |
+| `dlss5-feed.addon64` and `DLSS5_Feed.fx` | DLSS5-Feeder, the current release |
+| `renodx-dlss5.addon64` | the RHI repository |
+| VORT motion vectors (MIT) and ReShade's two shader headers | their repositories |
+
+If you already have NVIDIA's two DLLs, point the setup at them and it uses those instead, once
+their hashes check out. The setup ends with a self test that opens an mpv window for a few
+seconds and reads ReShade's log, and says plainly whether Neural Rendering ran. The Start Menu
+also has a "stack setup" entry to fetch or repair it later.
+
+**From source**, if you would rather:
 
 1. Put this folder anywhere you like. It runs in place.
 2. `pip install numpy windows-capture`

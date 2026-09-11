@@ -677,6 +677,10 @@ VORT                          0.099    0.109    0.106
 ```
 
 A modest but visible step down at reading speeds, converging at fast scroll where both ghost.
+The one other provider with a licence, dh_uber_motion (GPL-2.0, the Feed's provider 0 through
+the shared texMotionVectors), measured 0.112, 0.113 and 0.108 at the same three speeds, behind
+both. qUINT is all rights reserved and no longer ships a motion shader; Launchpad forbids
+redistribution. So the licensed order is LumeniteFX, then VORT, then dh_uber_motion.
 Neither VORT's own options (its rest mode is for engine vectors) nor the Feed's validation
 values (the author's preset holds the shader's defaults) changed it. VORT is what new installs
 get, because it is the only provider that may be distributed; the setup takes a LumeniteFX

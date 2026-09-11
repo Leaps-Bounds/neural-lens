@@ -465,6 +465,30 @@ was running when it closed. Saving the instantaneous rate meant a lens closed du
 event reopened at the depressed rate: two runs that each held 99 for over two minutes saved 97
 and 91.
 
+The brightness runaway test judges the output against the range the input has occupied over the
+last second and a half, not its latest value. The output lags the input by the pipeline delay
+plus up to a few frames of sampling, so on content whose brightness moves the two describe
+different moments and disagree while nothing is wrong. Measured on a scrolling source whose
+field cross-fades between dark and bright every couple of seconds, the way a video with scene
+changes does: a one pass chain that had just held 100 fps pinned went 100, 50, 25, 12 in 27
+seconds on false runaways and stayed at 12 for the rest of the run, which is what the user's own
+log showed over a video. With the range test the same source held 100 for the full 90 seconds
+with no verdict at all. On a still the range is a point, so the test is unchanged there: four
+passes pushed past capacity over a still still draws runaway verdicts. The stated limit is that
+over moving content a crush toward black on a scene that already reaches near black lands inside
+the input's own range and is not caught; a crush toward white over a scene that never reached it
+still is, and the presented shortfall test is unaffected. That is no worse than before, when the
+test fired constantly on motion and so was useless there.
+
+At four passes the governor still hunts over a detailed still, and the pinned measurement shows
+why it is not capacity: stage 1 pinned at 43, 60, 72 and 85, which is visible 25 to 49, left the
+picture intact at every one, brightness 48 in and 48 out, floor 0.19, with only a mild shortfall
+at the top. The runaway verdicts in the governed run all fired within seconds of a probe step. A
+speed change at four passes ripples through four stages and four buffers, and the brightness
+excursion it causes outlasts the 1.5 second settle window, so the governor reads a transition as
+a collapse and backs off to half. A settle window that grows with the pass count is the likely
+remedy and has not been tried.
+
 Measurement traps that cost time here: F6 is persisted by the add-on as `NeuralUplift=0` in
 ReShade.ini, so one toggle turns Neural Rendering off for every later launch; a full frame
 difference inside the capture callback costs 10 ms at 1400x1000 and caps the capture near 40,

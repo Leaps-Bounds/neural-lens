@@ -121,6 +121,10 @@ NEURAL_STACK = (
     ("dlss5-feed.addon64", "the DLSS 5 feed add-on"),
     ("renodx-dlss5.addon64", "the RenoDX DLSS 5 add-on"),
     ("nvngx_dlssnr.dll", "NVIDIA's Neural Rendering model"),
+    # the super resolution DLL is required even though the lens never upscales:
+    # with it renamed aside the lens started, held 100 fps and rendered nothing
+    # at all, feature=18 never created and the output within 0.01 of the input
+    ("nvngx_dlss.dll", "NVIDIA's DLSS runtime, which the model loads through"),
 )
 
 
@@ -569,6 +573,7 @@ class Lens:
         self.in_lum = None          # mean luminance entering stage 1, sampled
         self.out_lum = None         # mean luminance the visible stage shows
         self.in_mad = None          # how much the source moves, sampled
+        self.in_lums = collections.deque(maxlen=64)      # (t, luminance) entering stage 1
         self.out_mads = collections.deque(maxlen=1200)   # (t, change) per output frame
         self._in_prev = None
         self._out_prev = None
@@ -577,7 +582,9 @@ class Lens:
         self._shown = None          # (time, out_frames) behind the fps readout
         self._fps_hist = collections.deque(maxlen=3)
         self.saved_rate = rate      # best held rate from the state file, if any
-        self.best_rate = 0          # highest rate this chain has actually held
+        # the state file's rate is a level this size and pass count held before,
+        # so it counts as proven ground the governor may retake quickly
+        self.best_rate = rate or 0  # highest rate this chain has actually held
         self.restart = False        # set by the resize flow, read by main()
         self.shot_want = False      # ask the capture thread for one source frame
         self.shot_ready = False
@@ -857,6 +864,7 @@ class Lens:
                         # whether the source is still enough to judge shimmer
                         sub = bufs[i][::4, ::4, :3].astype(np.int16)
                         lens.in_lum = float(sub.mean())
+                        lens.in_lums.append((time.perf_counter(), lens.in_lum))
                         if lens._in_prev is not None and lens._in_prev.shape == sub.shape:
                             lens.in_mad = float(np.abs(sub - lens._in_prev).mean())
                         lens._in_prev = sub
@@ -1411,7 +1419,10 @@ class Lens:
           a collapse moves it by half or more, and it can do that while every
           frame is still presented on time (measured: one pass at 90 presented 90
           and sat at a mean of 250 out of 255). Two seconds of that and the rate
-          halves.
+          halves. The output is judged against the range the input has occupied
+          over the last second and a half, not its latest value, because on a
+          video the two are sampled at different moments and disagree while
+          nothing is wrong: that false alarm alone took a chain from 100 to 12.
         - what the visible stage presents. If that falls short of the rate by
           more than measurement noise, the chain is over capacity: the rate drops
           to two thirds of what was presented, and the next probe upward waits
@@ -1492,8 +1503,26 @@ class Lens:
                 # capture carries the clipped part as black, so neither the
                 # brightness nor the frame to frame change means anything
                 split = self.split is not None
-                runaway = (not split and lin is not None and lout is not None
-                           and abs(lout - lin) > max(12.0, 0.2 * lin))
+                # The output lags the input by the pipeline delay plus up to a
+                # few frames of sampling, so on content whose brightness moves,
+                # any video with a scene change, the two describe different
+                # moments and disagree while nothing is wrong. Measured: a
+                # brightness-swinging scrolling source took a healthy one pass
+                # chain, which had just held 100 fps pinned, from 100 to 12 in
+                # 27 seconds on false runaways and held it there, which is what
+                # the user's own log showed over a video. So the output is
+                # judged against the range the input has occupied over the last
+                # second and a half rather than its latest value. On a still
+                # that range is a point and nothing changes; on a video it is
+                # wide and the lag is tolerated; a real collapse still crushes
+                # the output to a brightness the input never had.
+                recent = [l for t, l in list(self.in_lums) if now - t <= 1.5]
+                if split or lout is None or not recent:
+                    runaway = False
+                else:
+                    lo, hi = min(recent), max(recent)
+                    margin = max(12.0, 0.2 * (sum(recent) / len(recent)))
+                    runaway = lout < lo - margin or lout > hi + margin
                 dark = dark + 1 if runaway else 0
                 rate = self.rate
                 last_idx = len(self.stages) - 1
@@ -1538,10 +1567,24 @@ class Lens:
                         # not. Clean floors on still content measured 0.15 to
                         # 0.95 on this source set; a floor above 1.5 is shimmer.
                         floor = float(np.median(mads))
-                        jumps = sum(1 for m in mads if m > max(1.5, 3.0 * floor))
-                        # at low rates a window holds few frames, and two odd
-                        # ones out of forty are noise, not shimmer
-                        spiky = (jumps >= 3 and jumps > 0.03 * len(mads)) or floor > 1.5
+                        # How much a frame may differ from the one before it
+                        # scales with the time between them: at 12 fps they sit
+                        # 83 ms apart, at 90 fps only 11, and ordinary drift over
+                        # the longer gap is not shimmer. Judging it against a
+                        # fixed 1.5 made this fire more readily the lower the
+                        # rate already was, which is backwards, and trapped a
+                        # user's lens at 12 on a chain that went on to hold 90.
+                        # The 1.5 was measured at 78 fps, so it is carried as a
+                        # change per second of gap and is unchanged at that point.
+                        gap = 1.0 / max(presented, 1.0)
+                        limit = max(1.5 * gap * 78.0, 3.0 * floor)
+                        jumps = sum(1 for m in mads if m > limit)
+                        # the calibration was 47 percent of frames jumping while
+                        # the picture was genuinely breaking and none at all when
+                        # it was clean, so a quarter sits well inside that margin.
+                        # Three percent sat close enough to nothing that ordinary
+                        # content crossed it: 9 frames out of 275 was enough.
+                        spiky = (jumps >= 3 and jumps > 0.25 * len(mads)) or floor > 1.5
                 # The floor jumps for a few seconds when another process takes the
                 # GPU, then settles while that load is still running: measured 1.51
                 # and 1.77 at the onset, then 0.12 to 0.46 for the thirty seconds
@@ -1551,7 +1594,11 @@ class Lens:
                 spiky = spell >= 2
                 new, why = rate, ""
                 deficit = target - presented
-                if deficit > max(0.03 * target, 0.7) or spiky:
+                # Presenting 87 of 90 is not a failure. Three percent was tight
+                # enough that near perfect delivery dropped a user's lens from 90
+                # to 58, and neither mpv's pacing nor a three second count is
+                # that exact.
+                if deficit > max(0.08 * target, 1.5) or spiky:
                     clean = now
                     bad = rate if bad is None else min(bad, rate)
                     # the interval keeps doubling across failures rather than
@@ -1566,9 +1613,13 @@ class Lens:
                         new = max(MIN_FPS, int(rate * 5 // 6))
                     else:
                         good = None               # what held no longer does
-                        # two thirds of what the visible stage managed, expressed
-                        # as a stage 1 rate
-                        new = int(presented * 2 / 3 / self.stage_rate(1.0, last_idx))
+                        # A mild shortfall means the chain is a little over
+                        # capacity, and what it just presented is by definition
+                        # achievable, so back off to just under that rather than
+                        # to two thirds. Two thirds is kept for a severe one,
+                        # where the presented figure is not to be trusted either.
+                        share = 2.0 / 3.0 if deficit > 0.25 * target else 0.95
+                        new = int(presented * share / self.stage_rate(1.0, last_idx))
                         new = max(MIN_FPS, min(new, rate - 1))
                     why = ("shimmer, %d of %d frames jumped, floor %.2f"
                            % (jumps, len(mads), floor) if spiky
@@ -1590,10 +1641,22 @@ class Lens:
                         cap = _fps_for(1)
                         if arriving > 0:
                             cap = min(cap, int(arriving * 5 // 6))
+                    # Returning to a level this chain has already held needs no
+                    # verification and no still source, because it is known to
+                    # work. That matters most over a video: probing requires a
+                    # still source, so without this one false knock down leaves
+                    # the rate on the floor for the whole film. So proven ground
+                    # is retaken in a few halving steps two seconds apart, moving
+                    # content included, where creeping back at plus two every
+                    # fifteen seconds cost four minutes of a user's session.
+                    # Climbing above anything it has held is the cautious case
+                    # and still waits for a still source and a full hold period.
+                    known = self.best_rate - 2 > rate
+                    wait = 2.0 if known else hold
                     if rate > cap + 2:
                         new = max(MIN_FPS, cap)
                         why = "arriving %.0f" % arriving
-                    elif still and now - last >= hold:
+                    elif (known or still) and now - last >= wait:
                         # Shimmer near the knee can take fifteen seconds to show,
                         # so a level only counts as held once a whole hold period
                         # has passed at it, which is now. It is recorded even when
@@ -1604,10 +1667,22 @@ class Lens:
                         good = rate
                         self.best_rate = max(self.best_rate, rate)
                         if rate < cap - 1:
-                            step = ((bad - rate) // 2 if bad is not None
-                                    else max(2, rate // 8))
-                            step = min(step, max(2, rate // 4))  # a big jump collapses
-                            if step >= max(1, rate // 20):
+                            if known:
+                                # halfway back to the proven level each time,
+                                # and never more than half again in one go
+                                step = max(2, (self.best_rate - rate + 1) // 2)
+                                step = min(step, max(4, rate // 2))
+                            else:
+                                step = ((bad - rate) // 2 if bad is not None
+                                        else max(2, rate // 8))
+                                step = min(step, max(2, rate // 4))  # a big jump collapses
+                            # The convergence guard belongs to the search between
+                            # what held and what failed. Retaking proven ground is
+                            # not a search, and within a few frames of the target
+                            # the halving step falls under the guard, which would
+                            # park the lens just short of its own best rate for
+                            # ever: from 12 with 90 proven it stopped dead at 87.
+                            if known or step >= max(1, rate // 20):
                                 new = min(cap, rate + step)
                                 why = "probing"
                 if new != rate:

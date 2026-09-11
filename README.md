@@ -188,9 +188,12 @@ about 60 with a video playing beside it; the same lens at two passes held 35; a 
 held 41. On an RTX 5090 the same 1400x1000 lens held 100 at one pass.
 
 Once a second the lens compares three things: the frames the visible stage presents against the
-rate it was asked for, the mean brightness of what enters the chain against what comes out, and,
-while the content under the lens is still, how much the output changes from frame to frame. A
-shortfall, a brightness runaway or a shimmer lowers the rate. When the picture has been stable
+rate it was asked for, the brightness of what comes out against the range of brightness that has
+gone in over the last second and a half, and, while the content under the lens is still, how
+much the output changes from frame to frame. A shortfall, a brightness runaway or a shimmer
+lowers the rate. The brightness test uses a range rather than the latest value because the
+output lags the input slightly, and over a video with scene changes the two would otherwise
+disagree while nothing is wrong: that false alarm alone took a lens from 100 to 12 fps. When the picture has been stable
 for a while and the content is still, the rate probes upward again in small steps, never above
 five sixths of the display rate.
 

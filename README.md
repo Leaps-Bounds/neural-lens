@@ -193,9 +193,12 @@ gone in over the last second and a half, and, while the content under the lens i
 much the output changes from frame to frame. A shortfall, a brightness runaway or a shimmer
 lowers the rate. The brightness test uses a range rather than the latest value because the
 output lags the input slightly, and over a video with scene changes the two would otherwise
-disagree while nothing is wrong: that false alarm alone took a lens from 100 to 12 fps. When the picture has been stable
-for a while and the content is still, the rate probes upward again in small steps, never above
-five sixths of the display rate.
+disagree while nothing is wrong: that false alarm alone took a lens from 100 to 12 fps. When
+the picture has been stable for a while and the content is still, the rate probes upward again
+in small steps, never above five sixths of the display rate. A rate the lens has already held
+is retaken much faster, in a few steps a few seconds apart and over moving content too, since
+it is known to work: after a fifteen second knock down, a 4070 was back at its level in 16
+seconds.
 
 A rate that failed is not held against the lens for ever. Something else using the GPU, a game
 or a video, lowers what the chain can carry for as long as it runs, and a limit learned then is

@@ -423,23 +423,47 @@ five sixths of the stage feeding it, because equal rates at two passes were clea
 shimmered at 37. Once a second the governor reads:
 
 - the frames the visible stage presents, from a counting only capture of its window, against
-  the rate it was asked for. A shortfall drops the rate to two thirds of what was presented.
+  the rate it was asked for. Presenting 87 of 90 is not a shortfall: the margin is 8 percent of
+  the target, because 3 percent was tight enough that near perfect delivery dropped a lens from
+  90 to 58. A mild shortfall backs off to 95 percent of what was presented, which is by
+  definition achievable; a severe one, more than a quarter short, backs off to two thirds,
+  since the presented figure is then not to be trusted either.
 - the mean brightness entering stage 1 against the mean brightness shown. Neural Rendering moves
   it by two or three percent; a collapse moves it by half or more, and can do so while every
   frame is presented on time (one pass at 90 presented 90 and showed 153 for 115). Two seconds
   of that halves the rate.
 - while the source is still (its own sampled change under 0.5), the frame to frame change of
-  the output. Either more than 3 percent of frames jumping above three times the median, or a
-  median above 1.5, marks the level as failed, but only when the reading repeats a second
-  later. Another process taking the GPU spiked the median to 1.51 and 1.77 for four seconds
-  and then settled to between 0.12 and 0.46 while it was still running, so a single reading is
-  an event rather than a level. Just over the knee the shimmer is continuous rather than
-  spiky: one pass at 83 on a loaded 4070 changed by about 3 every frame.
+  the output. A frame counts as a jump when it differs from the one before by more than a
+  limit that scales with the gap between them: 1.5 out of 255 at 78 fps, where it was
+  calibrated, so 7.8 at 15 fps and 1.3 at 90. A fixed 1.5 fired more readily the lower the
+  rate already was, which is backwards, and trapped a lens at 12 on a chain that went on to
+  hold 90. More than a quarter of frames jumping, or a median above 1.5, marks the level as
+  failed, but only when the reading repeats a second later. The broken calibration had 47
+  percent of frames jumping and a clean one none, so a quarter sits well inside that; 3
+  percent was close enough to nothing that ordinary content crossed it, 9 frames in 275.
+  Another process taking the GPU spiked the median to 1.51 and 1.77 for four seconds and then
+  settled to between 0.12 and 0.46 while it was still running, so a single reading is an event
+  rather than a level. Just over the knee the shimmer is continuous rather than spiky: one
+  pass at 83 on a loaded 4070 changed by about 3 every frame.
 
 A failed level falls back to the last level a probe departed from, since a level near the knee
-can take fifteen seconds to show its shimmer and cannot be trusted sooner. Probes go halfway to
-the lowest failed level, only while the source is still, and stop when the step is under a
-twentieth of the rate.
+can take fifteen seconds to show its shimmer and cannot be trusted sooner. Probes into new
+ground go halfway to the lowest failed level, only while the source is still, and stop when the
+step is under a twentieth of the rate.
+
+Ground the chain has already held is different. The highest rate it held is remembered, and
+after a knock down it is retaken in halving steps on a two sample window with half a second of
+settling, about three seconds a step, moving content included, because the level is known to
+work and only a chain that has since changed could refuse it. The recorded limit does not apply
+on the way back: a knock down records the limit at the floor it fell to, and gating the return
+behind it parked the lens at that floor until the limit expired, 30 seconds on the 5090 and 58
+on the 4070, since the wait is the retest interval, whatever it has grown to. A limit the chain
+is then running at or above is dropped, or it clamps the cap under the running rate and throws
+the lens back to the floor, measured as 35 to 12 every 17 seconds. A retake that fails lowers
+the remembered level to just under the rate that failed, so a level the GPU can no longer carry
+is not chased. Measured on the 4070 at 2936x1530, one pass over a still: settled at 37, knocked
+to 12 for 15 seconds, retook 37 in 16 seconds after release in five steps; the same run took 94
+seconds before, and 64 on the 5090.
 
 The lowest failed level expires. It clears once the output has been clean for twenty seconds and
 the level is at least thirty seconds old, and the wait before the next clearing doubles to a ten

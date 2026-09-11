@@ -109,6 +109,10 @@ can also be pointed somewhere else on their own, from the menu's Settings.
   size. Drag any edge, let go, and confirm. See [Limits](#limits) for why this restarts.
 - **Settings** in the menu chooses where screenshots are saved, and remembers the choice in
   `neural-lens.ini`.
+- **F6 turns Neural Rendering off and on** in every pass at once, from the menu or the key
+  itself. The add-on reads the physical key, so F6 pressed anywhere toggles it. While it is off
+  the title bar says `NR off` and the pass controls wait, because a pass with Neural Rendering
+  off is only a copy of the last one.
 - **It has a taskbar button.** A fullscreen application, or another window that insists on
   being on top, can leave the lens buried underneath it. Click the lens on the taskbar and it
   comes back to the front and stays on top again. The button's Close window closes the lens.
@@ -207,9 +211,11 @@ lens plays slower than frames arrive, so that buffer was always full and every f
 delay. Over a video this is the gap between the sound and the lens's picture, and it grows at
 lower frame rates, because each buffered frame lasts longer.
 
-The title bar shows the input side and the output side: `120 in  33 out` means capture delivers
-120 frames a second into the first stage and the visible stage is asked for 33. Settings has a
-switch to turn the adjustment off and keep the fixed rule, a slider for the lowest rate it may
+The title bar shows the frame rate the lens is actually showing you, averaged over the last few
+seconds, with a word beside it when the adjustment has just acted. Settings can change that to
+the input and output sides instead, where `120 in  33 out` means capture delivers 120 frames a
+second into the first stage and the visible stage is asked for 33, or to the size alone. It
+also has a switch to turn the adjustment off and keep the fixed rule, a slider for the lowest rate it may
 go to, and sliders for the frame rate ceiling and the capture refresh, each with an explanation
 of what it does. Everything the lens can be told lives in that dialog; the ini file is only
 where it writes the answers.

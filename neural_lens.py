@@ -137,6 +137,29 @@ def _missing_stack():
             if not os.path.isfile(os.path.join(MPV_DIR, n))]
 
 
+def _read_nr_enabled():
+    """Whether the add-on will start with Neural Rendering on, from ReShade.ini.
+
+    The add-on persists its F6 toggle there as NeuralUplift and reads it at
+    start: measured, a session begun with NeuralUplift=0 ran as a passthrough,
+    an in-to-out difference of 1.2 against 2.2 with it on, same image. It is
+    written only at exit, so this is the starting state and nothing more. The
+    running state is tracked from the key itself, see Lens.watch_f6.
+    """
+    if not MPV_DIR:
+        return True
+    try:
+        with open(os.path.join(MPV_DIR, "ReShade.ini"), encoding="utf-8",
+                  errors="replace") as fh:
+            for line in fh:
+                bare = line.strip()
+                if bare.lower().startswith("neuraluplift="):
+                    return bare.split("=", 1)[1].strip().lower() not in ("0", "no", "off", "false")
+    except OSError:
+        pass
+    return True
+
+
 # The stage windows are found by exact title, so the title carries the process
 # id: two lenses at once, one per monitor say, must not pick up each other's
 # stages while waiting for their own to appear.
@@ -249,6 +272,14 @@ except (TypeError, ValueError):
 # fullscreen chain keeps its pass count and best held rate in a file of its own.
 FULLSCREEN = str(_INI.get("fullscreen", "0")).strip().lower() in ("1", "yes", "on", "true")
 FULL_STATE = os.path.join(DATA_DIR, "lens-state-fullscreen.txt")
+
+# What the title bar shows beside the size. fps is what the visible pass
+# actually presents, averaged over the last few seconds, which is the number a
+# person means by it. detail is the capture rate in and the rate asked of the
+# visible pass, which is what the governor works from. size is just the size.
+READOUT = str(_INI.get("readout", "fps")).strip().lower()
+if READOUT not in ("fps", "detail", "size"):
+    READOUT = "fps"
 
 
 def _fps_for(stages):
@@ -542,6 +573,9 @@ class Lens:
         self._in_prev = None
         self._out_prev = None
         self.rate_note = ""         # last governor decision, for the title bar
+        self.readout = READOUT      # what the title bar shows beside the size
+        self._shown = None          # (time, out_frames) behind the fps readout
+        self._fps_hist = collections.deque(maxlen=3)
         self.saved_rate = rate      # best held rate from the state file, if any
         self.best_rate = 0          # highest rate this chain has actually held
         self.restart = False        # set by the resize flow, read by main()
@@ -551,6 +585,7 @@ class Lens:
         self.shot_buf = np.empty((ch, cw, 4), np.uint8)
         self.stages = []            # [{title, proc, hwnd, ctl}], last one is visible
         self.pending = passes       # the pass count chosen on the bar, applied by Set
+        self.nr_on = _read_nr_enabled()   # Neural Rendering on, as far as the lens knows
 
         # ---- chrome (tk): title bar + subtle border + transparent hole
         t = tk.Toplevel(root)
@@ -653,6 +688,7 @@ class Lens:
 
         self.start_pump()
         self.start_governor()
+        self.watch_f6()
         self.root.after(1000, self.stats)
         self.root.after(200, self.watch_filter)
 
@@ -1202,6 +1238,13 @@ class Lens:
         p = max(1, min(MAX_PASSES, self.pending))
         self.pending = p
         chosen = p != n
+        if not self.nr_on:
+            # every pass is a neural pass, so with Neural Rendering off each one
+            # is a copy of the last; the controls wait until it is back
+            self.pass_lbl.config(text="NR off", fg=DIM)
+            for b in (self.set_btn, self.plus, self.minus):
+                b.config(fg=DIM)
+            return
         self.pass_lbl.config(text="%d pass%s" % (p, "" if p == 1 else "es"),
                              fg=WARN if chosen else ACCENT)
         self.set_btn.config(fg=ACCENT if chosen else DIM)
@@ -1210,23 +1253,39 @@ class Lens:
 
     def bump_passes(self, step):
         """Choose a pass count on the bar without rebuilding anything yet."""
+        if not self.nr_on:
+            return
         self.pending = max(1, min(MAX_PASSES, self.pending + step))
         self.update_info()
 
     def apply_passes(self):
-        if self.pending != len(self.stages):
+        if self.nr_on and self.pending != len(self.stages):
             self.set_passes(self.pending)
 
     def stats(self):
         if self.closing:
             return
+        # What the visible pass actually presented over the last few seconds,
+        # which is the number a person means by fps. Its counter restarts with
+        # the chain, so a step backwards starts the average over.
+        now, n = time.perf_counter(), self.out_frames
+        if self._shown is not None and n >= self._shown[1] and now > self._shown[0]:
+            self._fps_hist.append((n - self._shown[1]) / (now - self._shown[0]))
+        elif self._shown is not None and n < self._shown[1]:
+            self._fps_hist.clear()
+        self._shown = (now, n)
+        shown = sum(self._fps_hist) / len(self._fps_hist) if self._fps_hist else None
         if self.t_first and self.frames > 30 and not self.tweak:
-            fps = self.frames / max(time.perf_counter() - self.t_first, 1e-6)
-            if ADAPTIVE:
-                txt = "%d x %d   %.0f in  %.0f out%s" % (self.cw, self.ch, fps,
-                                                          self.out_rate(), self.rate_note)
+            size = "%d x %d" % (self.cw, self.ch)
+            if self.readout == "size":
+                txt = size
+            elif self.readout == "detail" and ADAPTIVE:
+                fps = self.frames / max(now - self.t_first, 1e-6)
+                txt = "%s   %.0f in  %.0f out%s" % (size, fps, self.out_rate(), self.rate_note)
+            elif shown is not None:
+                txt = "%s   %.0f fps%s" % (size, shown, self.rate_note)
             else:
-                txt = "%d x %d   %.0f fps" % (self.cw, self.ch, fps)
+                txt = size
             self.info.config(text=txt, fg=DIM)
         self.root.after(1000, self.stats)
 
@@ -1625,11 +1684,13 @@ class Lens:
         m.add_command(label=("Done tweaking  (back to click-through)" if self.tweak
                              else "Tweak NR settings  (ReShade overlay, Home)"),
                       command=self.toggle_tweak)
-        m.add_command(label="Toggle NR on/off   (F6, all passes)",
-                      command=lambda: self.send_key(0x75))
+        m.add_command(label=("Turn NR back on   (F6, all passes)" if not self.nr_on
+                             else "Turn NR off   (F6, all passes)"),
+                      command=self.toggle_nr)
         m.add_separator()
-        m.add_command(label="Add a pass now", command=self.add_pass)
-        m.add_command(label="Remove a pass now", command=self.drop_pass)
+        off = "disabled" if not self.nr_on else "normal"
+        m.add_command(label="Add a pass now", command=self.add_pass, state=off)
+        m.add_command(label="Remove a pass now", command=self.drop_pass, state=off)
         m.add_separator()
         m.add_command(label="Save before and after      (both images, plus a join)",
                       command=self.take_screenshot)
@@ -1710,6 +1771,78 @@ class Lens:
             return
         for s in list(self.stages):
             self.post_key(s["hwnd"], vk)
+
+    # ---- Neural Rendering on or off
+    # The add-on reads its F6 from the physical keyboard, through
+    # GetAsyncKeyState, not from window messages. Measured with a still image
+    # under the lens and the in-to-out difference as the witness: F6 posted to
+    # the stage did nothing in three runs, with or without focus, while one
+    # real keystroke with no focus at all took it from 1.20 to 2.22. So F6
+    # anywhere on the system toggles Neural Rendering in every stage, and the
+    # lens watches the same key the same way to keep its own idea in step.
+    def watch_f6(self):
+        def loop():
+            down = False
+            while not self.closing:
+                now = bool(u.GetAsyncKeyState(0x75) & 0x8000)
+                if now and not down:
+                    self.root.after(0, self._nr_toggled)
+                down = now
+                time.sleep(0.05)      # a human press lasts longer than this
+
+        threading.Thread(target=loop, daemon=True).start()
+
+    def _nr_toggled(self):
+        if self.closing:
+            return
+        self.nr_on = not self.nr_on
+        print("Neural Rendering %s" % ("on" if self.nr_on else "off"), flush=True)
+        self.update_info()
+
+    def press_key(self, vk):
+        """A genuine keystroke, since that is what the add-on reads.
+
+        Unlike a posted message it reaches the whole system, so the stage takes
+        the focus for the press and hands it back afterwards; without that the
+        key also lands in whatever is under the lens, and F6 in a browser moves
+        the cursor to the address bar. The key is held longer than the slowest
+        frame, and the click-through styles come back only after it is released:
+        dropping the focus makes ReShade forget every key it is holding.
+        """
+        if self.closing or not self.stages:
+            return
+        h = self.visible()
+        prev = u.GetForegroundWindow()
+        self.set_interactive(h, True)
+        self.focus(h)
+
+        def back():
+            if not self.tweak:
+                self.set_interactive(h, False)
+            if prev and prev != h:
+                try:
+                    me = k32.GetCurrentThreadId()
+                    tid = u.GetWindowThreadProcessId(prev, None)
+                    u.AttachThreadInput(me, tid, True)
+                    u.SetForegroundWindow(prev)
+                    u.AttachThreadInput(me, tid, False)
+                except Exception:
+                    pass
+
+        def up():
+            u.keybd_event(vk, 0, 2, 0)
+            self.root.after(150, back)
+
+        def down():
+            u.keybd_event(vk, 0, 0, 0)
+            self.root.after(KEY_HOLD, up)
+
+        self.root.after(120, down)
+
+    def toggle_nr(self):
+        """The menu's toggle. watch_f6 sees the press and flips the state."""
+        if not self.closing:
+            self.press_key(0x75)
 
     # ---- resize
     # The lens cannot resize in place: that recreates mpv's swapchain, which makes
@@ -2018,6 +2151,13 @@ class Lens:
                                                        sticky="w", padx=8, pady=(4, 0))
             row[0] += 1
 
+        def radio(text, var, value):
+            tk.Radiobutton(t, text=text, variable=var, value=value, bg=BG, fg=FG,
+                           selectcolor="#0b1220", activebackground=BG, activeforeground=FG,
+                           font=("Segoe UI", 10)).grid(row=row[0], column=0, columnspan=3,
+                                                       sticky="w", padx=8, pady=(2, 0))
+            row[0] += 1
+
         def slider(text, var, lo, hi):
             tk.Label(t, text=text, bg=BG, fg=FG, font=("Segoe UI", 10)).grid(
                 row=row[0], column=0, sticky="w", padx=12, pady=(4, 0))
@@ -2094,6 +2234,16 @@ class Lens:
                 "three is visibly heavy, and every pass costs a share of the frame rate. "
                 "Applies straight away.")
 
+        # ---- title bar
+        section("Title bar")
+        readout = tk.StringVar(value=self.readout)
+        radio("The frame rate the lens is showing", readout, "fps")
+        radio("Capture rate in, and the rate asked of the visible pass", readout, "detail")
+        radio("Only the size", readout, "size")
+        explain("What sits beside the size on the title bar. The frame rate is what the "
+                "visible pass actually presents, averaged over the last few seconds. Applies "
+                "straight away.")
+
         # ---- folders
         section("Folders")
         mpv = tk.StringVar(value=MPV_DIR or "")
@@ -2143,6 +2293,10 @@ class Lens:
             if want != self.fullscreen:
                 _save_ini("fullscreen", "1" if want else None)
                 restart = True
+            r = readout.get()
+            if r != self.readout:
+                self.readout = r
+                _save_ini("readout", None if r == "fps" else r)
             t.destroy()
             if restart:
                 # the windowed geometry is what a fullscreen launch derives its

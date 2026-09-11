@@ -36,6 +36,15 @@ Features:
 - No console. The launcher starts the lens under pythonw. Everything it prints goes to
   `lens.log` in the log folder, rotated with the archived logs, and anything that stops it
   from starting is shown as a dialog. `python neural_lens.py` still runs it with a console.
+- The title bar shows the frame rate the lens is actually presenting, averaged over the last
+  few seconds, rather than the capture rate in and the rate asked out, which meant little to
+  most people. Settings offers those, or the size alone, as `readout` in the ini.
+- The pass controls wait while Neural Rendering is off, since each pass is then only a copy
+  of the last: the bar says `NR off`, plus, minus and Set do nothing, and the menu's add and
+  remove are greyed. The state is seeded from `NeuralUplift` in `ReShade.ini` and tracked from
+  the key itself, because the add-on reads F6 from the physical keyboard, so F6 pressed
+  anywhere toggles it. The menu's own toggle, which posted a message the add-on never read,
+  now presses the key with the stage briefly focused.
 - Plus and minus on the title bar choose a pass count and Set applies it, one rebuild for any
   jump. The menu's add and remove entries still apply at once.
 - Keys for ReShade (Home, F6, F5) are posted straight to each stage's message queue instead

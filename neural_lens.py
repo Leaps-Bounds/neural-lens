@@ -341,7 +341,16 @@ def _fps_for(stages):
 u = ctypes.windll.user32
 mag = ctypes.windll.magnification
 k32 = ctypes.windll.kernel32
-u.SetProcessDPIAware()
+# Per monitor DPI aware, version 2, so every coordinate the lens uses is a
+# physical pixel on whichever monitor it is on. System DPI awareness, the
+# previous setting, keeps the DPI the session logged on with and lives in a
+# virtualized coordinate space: a 1400x760 lens on a monitor whose scaling
+# differed from that produced a 1680x912 chain, exactly the ratio of the two
+# scalings, while the lens believed its window was 1400x760.
+try:
+    u.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+except (AttributeError, OSError):
+    u.SetProcessDPIAware()
 try:
     ctypes.windll.winmm.timeBeginPeriod(1)   # default granularity is 15.6 ms
 except Exception:
@@ -1496,7 +1505,12 @@ class Lens:
                 if now < self.settle_until:
                     hist = []
                     continue
-                if now - last < settle:
+                # A speed change ripples through every stage and its buffers, and
+                # the brightness excursion it causes lasts longer the more stages
+                # there are: at four passes it outlasted a fixed 1.5 seconds and
+                # read as a collapse within seconds of every probe step.
+                ripple = 1.0 + 0.5 * (len(self.stages) - 1)
+                if now - last < settle * ripple:
                     continue                      # the speed change is still settling
                 settle = 1.5
                 lin, lout = self.in_lum, self.out_lum
@@ -1709,6 +1723,12 @@ class Lens:
                             # ever: from 12 with 90 proven it stopped dead at 87.
                             if known or step >= max(1, rate // 20):
                                 new = min(cap, rate + step)
+                                if known:
+                                    # never past the level being retaken: a step of
+                                    # two from one below it overshot, failed, lowered
+                                    # the level by one and overshot again, 35 and 37
+                                    # alternating every ten seconds at four passes
+                                    new = min(new, self.best_rate)
                                 why = "probing"
                 if new != rate:
                     self.apply_rate(new, "t=%.0fs %s" % (now - t0, why))

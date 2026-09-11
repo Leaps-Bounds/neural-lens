@@ -21,6 +21,14 @@ Features:
   writes `neural-lens.ini`; nothing needs editing by hand.
 - Per session log archiving into `%LOCALAPPDATA%\NeuralLens\logs`, so evidence from a failed
   run survives the next launch.
+- The lens is per monitor DPI aware, so a lens on a monitor whose scaling differs from the one
+  the session logged on with is the size it says it is. Before, a 1400x760 lens on such a
+  monitor ran a 1680x912 chain, rescaled by Windows on the way, and the lens could not tell.
+- Four passes settles. The window the governor waits after a rate change grows with the pass
+  count, since the brightness ripple of a change through four stages outlasted the fixed wait
+  and read as a collapse, and a retake of a remembered level never steps past that level,
+  which had two rates alternating every ten seconds. Measured at four passes over a still: a
+  spread of 4 fps over 90 seconds, from 35 to 39.
 - Startup checks for a misconfigured install. A folder without `mpv.exe` is named, with the
   four ways to point the lens elsewhere. An mpv that lacks the Neural Rendering stack warns
   which files are missing, since it would otherwise start and quietly show the screen back

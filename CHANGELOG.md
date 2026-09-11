@@ -21,6 +21,12 @@ Features:
   writes `neural-lens.ini`; nothing needs editing by hand.
 - Per session log archiving into `%LOCALAPPDATA%\NeuralLens\logs`, so evidence from a failed
   run survives the next launch.
+- Startup checks for a misconfigured install. A folder without `mpv.exe` is named, with the
+  four ways to point the lens elsewhere. An mpv that lacks the Neural Rendering stack warns
+  which files are missing, since it would otherwise start and quietly show the screen back
+  unchanged. A `data_dir` that cannot be created says so rather than raising. mpv's own stderr
+  is kept in `mpv-stderr.log` beside the archived logs, so a stage that never opens a window
+  reports the cause instead of only the symptom.
 - Plus and minus on the title bar choose a pass count and Set applies it, one rebuild for any
   jump. The menu's add and remove entries still apply at once.
 - Keys for ReShade (Home, F6, F5) are posted straight to each stage's message queue instead
@@ -29,9 +35,11 @@ Features:
 - A live A/B split from the menu: a draggable divider with Neural Rendering on its left and the
   raw source on its right. Every stage window is clipped to the left of the divider, so the
   right side is the screen itself.
-- Fullscreen, as a checkbox in Settings. The lens covers the whole monitor it is on, with the
-  title bar over the top edge of the picture. It restarts to change, like a resize, and keeps
-  the windowed position and size for the way back. `fullscreen = 1` in the ini does the same.
+- Fullscreen, as a checkbox in Settings, and **experimental**: it is the least tested part of
+  the lens, included to be tried and reported on rather than relied on. The lens covers the
+  whole monitor it is on, with the title bar over the top edge of the picture. It restarts to
+  change, like a resize, and keeps the windowed position and size for the way back.
+  `fullscreen = 1` in the ini does the same.
 - An adaptive frame rate. Every stage is declared at the display rate and presents at a
   playback speed the lens changes live over mpv's IPC pipe, from what the visible stage
   actually presents, the brightness of the output against the input, and the frame to frame

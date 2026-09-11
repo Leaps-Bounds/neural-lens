@@ -9,6 +9,10 @@ The single most useful attachment is the archived `ReShade.log`. Every launch co
 previous session's logs into `%LOCALAPPDATA%\NeuralLens\logs`, so if something goes wrong,
 launch the lens once more and attach the newest archived log.
 
+If the lens never opened at all, there will be no `ReShade.log` to send, because ReShade
+never loaded. Attach `mpv-stderr.log` from the same folder instead. It holds whatever mpv
+itself printed, and it is the only place the reason survives.
+
 **A word on screenshots.** A screenshot of the lens contains whatever was behind it, meaning
 your desktop. Window titles, notifications, file paths and account names all leak that way.
 Crop tightly, or skip the screenshot and send the log instead.

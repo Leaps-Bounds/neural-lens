@@ -107,11 +107,13 @@ can also be pointed somewhere else on their own, from the menu's Settings.
   size. Drag any edge, let go, and confirm. See [Limits](#limits) for why this restarts.
 - **Settings** in the menu chooses where screenshots are saved, and remembers the choice in
   `neural-lens.ini`.
-- **Fullscreen** is a checkbox in Settings. The lens then covers the whole monitor it is on,
-  with the title bar over the top edge of the picture, and cannot be dragged. Changing it
-  restarts the lens, like a resize, and the windowed position and size are kept for the way
-  back. A whole monitor is a lot of pixels: expect the frame rate to settle well below the
-  windowed one, and see [Frame rate](#frame-rate) for what it does about that.
+- **Fullscreen** is a checkbox in Settings, and is **experimental**: it is the least tested
+  part of the lens, included to be tried and reported on rather than relied on. The lens
+  covers the whole monitor it is on, with the title bar over the top edge of the picture, and
+  cannot be dragged. Changing it restarts the lens, like a resize, and the windowed position
+  and size are kept for the way back. A whole monitor is a lot of pixels: expect the frame
+  rate to settle well below the windowed one, and see [Frame rate](#frame-rate) for what it
+  does about that.
 
 ## How it works
 
@@ -218,7 +220,16 @@ unless it is set to 0. See [docs/NOTES.md](docs/NOTES.md).
 
 ## Troubleshooting
 
-**Neural Rendering looks like it is doing nothing.** Its strength depends heavily on the
+**The lens warned at startup that Neural Rendering will probably not run.** It checks the mpv
+folder for `dlss5-feed.addon64`, `renodx-dlss5.addon64` and `nvngx_dlssnr.dll`, and names any
+that are missing. Finding the folder only proves `mpv.exe` is in it, so an ordinary mpv install
+is accepted and the lens opens normally: it simply shows the screen back to you unchanged, which
+looks like the app doing nothing rather than an install that is incomplete. See
+[Before you start, the honest prerequisite](#before-you-start-the-honest-prerequisite) for what
+the mpv install has to carry. None of it is included or redistributed here.
+
+**Neural Rendering looks like it is doing nothing.** If the startup check above said nothing,
+the install is fine and this is almost certainly the content. Its strength depends heavily on the
 content. It scales with local detail, measured about 4.5 times stronger on the most detailed
 tenth of an image than on the flattest half. On a rendered character it is obvious; on flat
 interface elements it can be hard to see even while fully active. The menu's before and after
@@ -234,8 +245,10 @@ that size. If it happens repeatedly, `%LOCALAPPDATA%\NeuralLens\logs\restart.log
 the replacement printed before it gave up.
 
 **Something went wrong and you want to know why.** Every launch copies the previous session's
-`ReShade.log` and `dlss5-feed.log` into `%LOCALAPPDATA%\NeuralLens\logs`, keeping the 40 most
-recent, so evidence from a failed run survives restarting. In an archived `ReShade.log`, the
+`ReShade.log` and `dlss5-feed.log` into `%LOCALAPPDATA%\NeuralLens\logs`, keeping the 80 most
+recent files, so evidence from a failed run survives restarting. Anything mpv itself wrote to
+its error stream is in `mpv-stderr.log` in the same folder, which is where to look when a stage
+never opened a window. In an archived `ReShade.log`, the
 line that confirms Neural Rendering was really running is `feature=18 (DLSSNR`, which means the
 feature was created. Do not judge it by counting `evaluation succeeded (count=` lines: that is a
 milestone message, emitted at the first evaluation and the sixtieth and then not again, so a

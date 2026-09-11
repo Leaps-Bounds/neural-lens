@@ -42,7 +42,8 @@ mpv_dir = C:\Games\_mpv
 # Highest number of neural passes the plus button will go to.
 # max_passes = 4
 
-# Cover the whole monitor the lens is on. The Settings dialog has a checkbox
-# for this and writes it here. Pass count and best held rate for the fullscreen
-# chain are kept apart from the windowed ones.
+# Experimental. Cover the whole monitor the lens is on. This is the least
+# tested part of the lens, so try it rather than rely on it. The Settings
+# dialog has a checkbox for this and writes it here. Pass count and best held
+# rate for the fullscreen chain are kept apart from the windowed ones.
 # fullscreen = 0

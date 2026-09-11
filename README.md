@@ -74,7 +74,9 @@ You also need:
    - `set NEURAL_LENS_MPV_DIR=D:\path\to\mpv`
    - copy `neural-lens.ini.example` to `neural-lens.ini` and set `mpv_dir`
    - or put an `mpv` folder beside `neural_lens.py`
-4. Run `Launch-LensNR.cmd`.
+4. Run `Launch-LensNR.cmd`. No console window opens. Everything the lens prints goes to
+   `%LOCALAPPDATA%\NeuralLens\logs\lens.log`, and anything that stops it from starting is shown
+   as a dialog. To watch it live instead, run `python neural_lens.py`.
 
 Window position, pass count, screenshots and archived logs live in `%LOCALAPPDATA%\NeuralLens`.
 Redirect all of it with `data_dir` in the ini, or the `NEURAL_LENS_DATA` variable. Screenshots
@@ -107,6 +109,9 @@ can also be pointed somewhere else on their own, from the menu's Settings.
   size. Drag any edge, let go, and confirm. See [Limits](#limits) for why this restarts.
 - **Settings** in the menu chooses where screenshots are saved, and remembers the choice in
   `neural-lens.ini`.
+- **It has a taskbar button.** A fullscreen application, or another window that insists on
+  being on top, can leave the lens buried underneath it. Click the lens on the taskbar and it
+  comes back to the front and stays on top again. The button's Close window closes the lens.
 - **Fullscreen** is a checkbox in Settings, and is **experimental**: it is the least tested
   part of the lens, included to be tried and reported on rather than relied on. The lens
   covers the whole monitor it is on, with the title bar over the top edge of the picture, and
@@ -194,6 +199,14 @@ load stopped. The highest rate the chain actually held is saved with the window 
 the next launch starts from that rather than from whatever it happened to be running when it
 closed.
 
+The picture in the lens runs a little behind what is under it, since every frame is captured,
+handed to mpv, neural rendered and presented again. Measured at one pass and 99 fps with a
+window flipping between black and white under the lens, from the flip on screen to the flip in
+the output: 68 ms. It was 136 ms until mpv's readahead was cut from eight frames to two; the
+lens plays slower than frames arrive, so that buffer was always full and every frame in it was
+delay. Over a video this is the gap between the sound and the lens's picture, and it grows at
+lower frame rates, because each buffered frame lasts longer.
+
 The title bar shows the input side and the output side: `120 in  33 out` means capture delivers
 120 frames a second into the first stage and the visible stage is asked for 33. Settings has a
 switch to turn the adjustment off and keep the fixed rule, a slider for the lowest rate it may
@@ -248,7 +261,9 @@ the replacement printed before it gave up.
 `ReShade.log` and `dlss5-feed.log` into `%LOCALAPPDATA%\NeuralLens\logs`, keeping the 80 most
 recent files, so evidence from a failed run survives restarting. Anything mpv itself wrote to
 its error stream is in `mpv-stderr.log` in the same folder, which is where to look when a stage
-never opened a window. In an archived `ReShade.log`, the
+never opened a window. The lens's own output, including every frame rate decision, is in
+`lens.log` there, with the previous session's copy stamped beside it. In an archived
+`ReShade.log`, the
 line that confirms Neural Rendering was really running is `feature=18 (DLSSNR`, which means the
 feature was created. Do not judge it by counting `evaluation succeeded (count=` lines: that is a
 milestone message, emitted at the first evaluation and the sixtieth and then not again, so a

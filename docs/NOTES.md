@@ -662,8 +662,26 @@ frame to frame change, text   LumeniteFX   8.8       10.2
                               VORT         6.8        8.0
 ```
 
-Level on text, ahead on the grid, steadier frame to frame on both. VORT is what new installs
-get; the author's own setup stays on LumeniteFX. The washed out frames seen in the first,
-governed run over motion at 85 fps were the rate, not the provider: at a fixed 30 neither
-stack showed them, and the brightness of that run sat 8 percent high, inside the runaway
-margin. A washout over moving content at a rate the chain cannot carry is not yet caught.
+Those numbers said level on text and the frames said otherwise: on the page of text VORT's
+output shows doubled letters at the ends of words where LumeniteFX's is nearly crisp, at a
+slow scroll too. Sharpness cannot see a ghost, since a second edge adds high frequencies, and
+VORT's lower frame to frame change is the ghost itself, a blend that lags. The measure that
+agrees with the eye is the partial ink fraction of the page, the share of pixels between 40
+and 160 out of 255 on a black on white page, where crisp text is bimodal and a ghost adds mid
+greys:
+
+```
+scroll, px per source frame     1        3        6
+LumeniteFX                    0.092    0.097    0.104
+VORT                          0.099    0.109    0.106
+```
+
+A modest but visible step down at reading speeds, converging at fast scroll where both ghost.
+Neither VORT's own options (its rest mode is for engine vectors) nor the Feed's validation
+values (the author's preset holds the shader's defaults) changed it. VORT is what new installs
+get, because it is the only provider that may be distributed; the setup takes a LumeniteFX
+copy the user already holds and configures provider 3 instead, which distributes nothing. The
+author's own setup stays on LumeniteFX. The washed out frames seen in the first, governed run
+over motion at 85 fps were the rate, not the provider: at a fixed 30 neither stack showed them,
+and the brightness of that run sat 8 percent high, inside the runaway margin. A washout over
+moving content at a rate the chain cannot carry is not yet caught.

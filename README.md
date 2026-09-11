@@ -86,7 +86,11 @@ What it fetches, and from where:
 | VORT motion vectors (MIT) and ReShade's two shader headers | their repositories |
 
 If you already have NVIDIA's two DLLs, point the setup at them and it uses those instead, once
-their hashes check out. The setup ends with a self test that opens an mpv window for a few
+their hashes check out. Motion vectors come from VORT, which is the only estimator whose
+licence allows it to be fetched; measured against LumeniteFX, scrolling text ghosts a little
+more with it, doubled letters at the ends of words at reading speeds. If you already have
+LumeniteFX, point the setup at its folder and your copy is used instead; it cannot be
+downloaded for you. The setup ends with a self test that opens an mpv window for a few
 seconds and reads ReShade's log, and says plainly whether Neural Rendering ran. The Start Menu
 also has a "stack setup" entry to fetch or repair it later.
 

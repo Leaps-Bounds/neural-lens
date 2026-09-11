@@ -27,6 +27,15 @@ Features:
   unchanged. A `data_dir` that cannot be created says so rather than raising. mpv's own stderr
   is kept in `mpv-stderr.log` beside the archived logs, so a stage that never opens a window
   reports the cause instead of only the symptom.
+- Half the delay. mpv's readahead is two frames instead of eight, with its latency mode on.
+  Measured at one pass and 99 fps, from a change under the lens to the change in its output:
+  136 ms before, 68 ms after, with the presented rate and the output floor unchanged.
+- A taskbar button. A fullscreen application, or another window that insists on being on top,
+  could leave the lens buried with no way back. Clicking the lens on the taskbar brings every
+  stage and the title bar back to the top, and the button's Close window closes the lens.
+- No console. The launcher starts the lens under pythonw. Everything it prints goes to
+  `lens.log` in the log folder, rotated with the archived logs, and anything that stops it
+  from starting is shown as a dialog. `python neural_lens.py` still runs it with a console.
 - Plus and minus on the title bar choose a pass count and Set applies it, one rebuild for any
   jump. The menu's add and remove entries still apply at once.
 - Keys for ReShade (Home, F6, F5) are posted straight to each stage's message queue instead

@@ -11,7 +11,8 @@ launch the lens once more and attach the newest archived log.
 
 If the lens never opened at all, there will be no `ReShade.log` to send, because ReShade
 never loaded. Attach `mpv-stderr.log` from the same folder instead. It holds whatever mpv
-itself printed, and it is the only place the reason survives.
+itself printed, and it is the only place the reason survives. `lens.log` beside it is the lens's
+own output, with every frame rate decision, and the previous session's copy is stamped next to it.
 
 **A word on screenshots.** A screenshot of the lens contains whatever was behind it, meaning
 your desktop. Window titles, notifications, file paths and account names all leak that way.

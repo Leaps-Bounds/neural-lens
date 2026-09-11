@@ -147,6 +147,34 @@ DATA_DIR = (os.environ.get("NEURAL_LENS_DATA") or _INI.get("data_dir")
             or os.path.join(os.environ.get("LOCALAPPDATA") or _script_dir(), "NeuralLens"))
 STATE = os.path.join(DATA_DIR, "lens-state.txt")
 LOGDIR = os.path.join(DATA_DIR, "logs")
+
+# Started by pythonw there is no console. Everything the lens prints goes to
+# lens.log in the log folder instead, and anything that used to stop and wait
+# for Enter is shown as a dialog, since there is nothing left to read it in.
+HEADLESS = ctypes.windll.kernel32.GetConsoleWindow() == 0
+
+
+def _redirect_output():
+    """Send stdout and stderr to lens.log, rolling the previous one into the
+    archive first so it is pruned with the rest. Returns the path, or None."""
+    try:
+        os.makedirs(LOGDIR, exist_ok=True)
+        cur = os.path.join(LOGDIR, "lens.log")
+        if os.path.isfile(cur):
+            if os.path.getsize(cur) > 0:
+                stamp = time.strftime("%Y%m%d-%H%M%S")
+                os.replace(cur, os.path.join(LOGDIR, "%s-lens.log" % stamp))
+            else:
+                os.remove(cur)
+        f = open(cur, "w", encoding="utf-8", errors="replace", buffering=1)
+        sys.stdout = sys.stderr = f
+        return cur
+    except OSError:
+        return None
+
+
+if sys.stdout is None:
+    _redirect_output()
 SHOT_DIR = (os.environ.get("NEURAL_LENS_SHOTS") or _INI.get("screenshot_dir")
             or os.path.join(DATA_DIR, "screenshots"))
 
@@ -651,7 +679,17 @@ class Lens:
                "--hidpi-window-scale=no", "--no-border", "--no-osc",
                "--no-window-dragging", "--ontop", "--force-window=immediate",
                "--keep-open=yes", "--cache=no",
-               "--demuxer-max-bytes=%d" % (self.cw * self.ch * 4 * 8),
+               # Two frames of readahead rather than eight, plus mpv's own low
+               # latency mode. The lens plays slower than frames arrive, so this
+               # buffer is always full and every frame in it is pure delay.
+               # Measured at one pass and 99 fps with a black and white flipper
+               # under the lens, from the change on screen to the change in the
+               # output: eight frames 136 ms, two frames 78 ms, two frames with
+               # the latency hacks 68 ms, with 99 fps presented throughout. One
+               # frame measured 63 ms but leaves no slack for a late frame, which
+               # is what makes the picture shimmer, so two is the floor.
+               "--demuxer-max-bytes=%d" % (self.cw * self.ch * 4 * 2),
+               "--video-latency-hacks=yes",
                "--title=%s" % title]
         # mpv's stderr used to go to DEVNULL, so when it could not start, the
         # reason was destroyed and only the symptom below survived. stdout stays
@@ -860,6 +898,51 @@ class Lens:
                                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
             except Exception:
                 pass
+
+    def bring_back(self):
+        """Put every stage and the title bar back on top, in chain order.
+
+        A fullscreen application, or another window that asks to be on top,
+        can leave the lens underneath and demoted from topmost, with no way
+        back short of restarting it. raise_chrome only re-asserts the title
+        bar, so on its own it would put a bar back on top of nothing.
+        """
+        for s in list(self.stages):
+            try:
+                u.SetWindowPos(s["hwnd"], HWND_TOPMOST, 0, 0, 0, 0,
+                               SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+            except Exception:
+                pass
+        self.raise_chrome()
+
+    # ---- taskbar
+    # The title bar cannot have a taskbar button: it is an override redirect
+    # window that never activates, so the mouse can reach the application
+    # under the lens. The hidden tk root stands in for it. It is fully
+    # transparent and parked minimised, so it is never seen, but its button is
+    # on the taskbar. Clicking that restores the root, which lands in
+    # _taskbar_click: the lens comes back to the top and the root is minimised
+    # again before it can be noticed. Tk toplevels on Windows are not owned by
+    # the root, so minimising it does not take the title bar with it; measured
+    # rather than assumed.
+    def show_in_taskbar(self):
+        r = self.root
+        r.title("DLSS 5 Neural Lens")
+        r.geometry("1x1+0+0")
+        try:
+            r.attributes("-alpha", 0.0)
+        except Exception:
+            pass
+        r.protocol("WM_DELETE_WINDOW", self.quit)   # Close window on the button
+        r.iconify()
+        r.update_idletasks()
+        r.bind("<Map>", self._taskbar_click)
+
+    def _taskbar_click(self, _event=None):
+        if self.closing:
+            return
+        self.bring_back()
+        self.root.after(80, self.root.iconify)
 
     # ---- live A/B split
     # The lens is see-through, so the raw source is already on screen under the
@@ -2108,19 +2191,45 @@ class Lens:
 def _pause():
     """Hold the console open so a message on the way out can be read.
 
-    stdin is not always a console. Under pythonw, or with input redirected,
-    input() raises EOFError, which would bury the message this exists to let
-    you read under a traceback about the attempt to wait for you.
+    stdin is not always a console. With input redirected, input() raises
+    EOFError, and under pythonw it raises RuntimeError; either would bury the
+    message this exists to let you read under a traceback about the attempt
+    to wait for you. With no console at all there is nothing to hold open.
     """
+    if HEADLESS:
+        return
     try:
         input("\nPress Enter to close.")
-    except (EOFError, OSError):
+    except (EOFError, OSError, RuntimeError):
         print("")            # the prompt carries no newline of its own
+
+
+def _fatal(text):
+    """Say why the lens cannot start, somewhere it will actually be seen.
+
+    With a console, print and wait for Enter. Without one, the print goes to
+    lens.log and a dialog carries the message: a line in a log file is not
+    something a person who just double clicked a launcher is going to find.
+    """
+    print(text, flush=True)
+    if not HEADLESS:
+        _pause()
+        return
+    try:
+        made = None
+        if tk._default_root is None:
+            made = tk.Tk()          # or messagebox makes a visible one itself
+            made.withdraw()
+        messagebox.showerror("Neural Lens", text)
+        if made is not None:
+            made.destroy()
+    except Exception:
+        pass
 
 
 def main():
     if not MPV_DIR:
-        print("\n".join([
+        _fatal("\n".join([
             "Could not find mpv.exe.",
             "",
             "Point the lens at your mpv install (the one carrying the DLSS 5",
@@ -2131,7 +2240,6 @@ def main():
             "  copy neural-lens.ini.example to neural-lens.ini and set mpv_dir",
             "  or put an 'mpv' folder beside neural_lens.py",
         ]))
-        _pause()
         return
     try:
         os.makedirs(DATA_DIR, exist_ok=True)
@@ -2139,7 +2247,7 @@ def main():
         # data_dir is taken from the ini or the environment verbatim and is the
         # one setting nothing validates, so a path on a drive that does not
         # exist used to arrive here as a raw traceback
-        print("\n".join([
+        _fatal("\n".join([
             "Could not use the folder the lens keeps its state in:",
             "",
             "  %s" % DATA_DIR,
@@ -2149,7 +2257,6 @@ def main():
             "Set data_dir in neural-lens.ini to a folder that exists, or delete",
             "that line to use the default under LOCALAPPDATA.",
         ]))
-        _pause()
         return
     cw, ch, x, y, passes, rate = 1400, 1000, 500, 400, 1, None
     if os.path.exists(STATE):
@@ -2204,7 +2311,14 @@ def main():
                "to carry; none of it is included here."])
         print("\n" + note + "\n", flush=True)
         messagebox.showwarning("Neural Lens", note)
-    lens = Lens(root, x, y, cw, ch, passes, rate, FULLSCREEN)
+    try:
+        lens = Lens(root, x, y, cw, ch, passes, rate, FULLSCREEN)
+    except SystemExit as exc:
+        # a stage that never opened its window. Under pythonw the message
+        # would go to the log and the lens would simply fail to appear.
+        _fatal(str(exc))
+        return
+    lens.show_in_taskbar()
     print("Neural Lens %s (beta)" % __version__, flush=True)
     print("lens ready %dx%d at (%d,%d), %d pass%s%s"
           % (cw, ch, x, y, len(lens.stages), "" if len(lens.stages) == 1 else "es",
@@ -2269,4 +2383,13 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception:
+        # under pythonw a traceback goes to lens.log and the lens simply never
+        # appears, which is the silence the log and the dialogs exist to end
+        import traceback
+        _fatal("The lens stopped with an error.\n\n" + traceback.format_exc())
+        sys.exit(1)

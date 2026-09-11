@@ -196,6 +196,27 @@ instead, measuring 12.7/255 on plain text.
   one log per stage, and `feature=18` appears once per *file* rather than once per run. Anything
   that archives or inspects logs must cover all of them.
 
+### The taskbar button is the tk root
+
+The title bar is an override redirect window that never activates, so the mouse reaches the
+application under the lens, and that combination has no taskbar button. The hidden tk root
+stands in: titled, fully transparent, and parked minimised. Restoring it from the taskbar fires
+`<Map>`, the handler re-asserts topmost on every stage in chain order and then on the bar, and
+minimises the root again before it can be seen. `raise_chrome` alone would not do, since it
+re-asserts only the bar. Tk toplevels on Windows are not owned by the root, which was measured
+rather than assumed: the bar stayed visible with the root minimised, and restoring fired exactly
+one `<Map>`. Close window on the button arrives as the root's delete request and quits the lens.
+
+### No console
+
+The launcher starts the lens under pythonw. `sys.stdout` is None there, so at import everything
+printed is redirected to `lens.log` in the log folder, with the previous one first rolled into a
+stamped copy so the archive's pruning covers it. `GetConsoleWindow()` returning zero is what
+turns the messages that used to wait for Enter into dialogs, including a stage that never opened
+its window and an unexpected traceback out of `main()`. A harness driven from a tool with no
+console window sees the same, so any test that reaches a fatal path has to replace
+`messagebox.showerror` first, or it blocks on a dialog nobody will dismiss.
+
 ### Fullscreen
 
 Experimental, and the least tested part of the lens. It has had far less exercise than the
@@ -441,6 +462,31 @@ ReShade.ini, so one toggle turns Neural Rendering off for every later launch; a 
 difference inside the capture callback costs 10 ms at 1400x1000 and caps the capture near 40,
 which looks exactly like a chain limit; the ReShade frametime overlay in the corner of the stage
 reports mpv's own present cadence and is an independent witness.
+
+### Where the delay goes
+
+Measured with a separate process flipping a window between black and white under the lens, and
+two Windows Graphics Capture sessions in the harness, one on the flipper and one on the visible
+stage, each timestamping the moment its mean crosses mid grey. Both pass through the compositor
+once, so that cancels and the difference is the lens pipeline. One pass, 1400x1000, the rate
+pinned at 99, 21 flips per run:
+
+```
+mpv readahead                                    median   p90    presented
+8 frames, the old default                        136 ms   147    98.9 fps
+2 frames                                          78 ms    91    99.0
+2 frames + --video-latency-hacks=yes              68 ms    76    98.9
+  + --vulkan-swap-mode=mailbox                    69 ms    75    98.8
+1 frame + hacks + mailbox + --swapchain-depth=1   63 ms    69    98.9
+```
+
+The readahead is the cost. The lens plays slower than frames arrive, so the buffer is always
+full and every frame in it is delay, ten milliseconds each at 99 fps and more at lower rates.
+Two frames plus the latency hacks is what ships. Mailbox changed nothing. One frame gains five
+milliseconds but leaves no slack for a late frame, which is what makes the picture shimmer, so
+two is the floor. The flipper is featureless and can show stutter but not shimmer, so the two
+frame buffer was checked separately over a detailed still: an output floor of 0.341 against
+0.343 with eight frames, zero jumps, and 100 fps held in both.
 
 ### What does not cause the 60 fps ceiling
 

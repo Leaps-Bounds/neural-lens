@@ -14,30 +14,21 @@ rem    or put an "mpv" folder beside this script
 rem
 rem  Requires python 3 with numpy and windows-capture:
 rem    pip install numpy windows-capture
+rem
+rem  The lens runs without a console. Everything it prints goes to
+rem  %LOCALAPPDATA%\NeuralLens\logs\lens.log, and anything that stops it
+rem  from starting is shown as a dialog. To run it with a console instead,
+rem  for example to watch the rate decisions live:
+rem    python neural_lens.py
 rem ---------------------------------------------------------------
 
-where python >nul 2>&1
+where pythonw >nul 2>&1
 if errorlevel 1 (
-  echo   python was not found on PATH. Install Python 3 and try again.
+  echo   pythonw was not found on PATH. Install Python 3 and try again.
   pause
   exit /b 1
 )
 
-echo.
-echo   DLSS 5 Neural Lens
-echo   drag the title bar to move it. The X closes it.
-echo.
-
-python "%~dp0neural_lens.py" %*
-
-rem  Without this, an error message printed on the way out vanishes with the
-rem  console the moment this script ends, which is what happens on a double
-rem  click. A normal close exits 0 and skips it.
-if errorlevel 1 (
-  echo.
-  echo   The lens stopped with an error. The message above says why.
-  pause
-  exit /b 1
-)
+start "" pythonw "%~dp0neural_lens.py" %*
 
 endlocal

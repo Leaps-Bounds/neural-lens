@@ -117,6 +117,9 @@ body:
         If the lens never opened, or a stage never appeared, attach `mpv-stderr.log` from
         the same folder instead. That is what mpv itself printed, and it is the only place
         the reason survives.
+
+        For anything about the picture or the frame rate, attach `lens.log` from that folder
+        too. It is the lens's own output, including every rate decision it made.
       render: shell
 
   - type: checkboxes

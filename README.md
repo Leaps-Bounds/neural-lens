@@ -33,6 +33,29 @@ through it. You need an mpv install that already contains:
 | `nvngx_dlss.dll` | NVIDIA's DLSS runtime | NVIDIA |
 | `nvngx_dlssnr.dll` | NVIDIA's Neural Rendering model | NVIDIA |
 
+### Which Neural Rendering model, by card generation
+
+`nvngx_dlssnr.dll` is NVIDIA's model, and the version this was built against is **310.8**. Which
+build of it you need depends on your card:
+
+| card | model |
+|---|---|
+| RTX 50 series (Blackwell) | NVIDIA's stock 310.8 model, unmodified |
+| RTX 40 series (Ada) | a community modified build of the same 310.8 model |
+
+The two are indistinguishable by everything except content. Both are 165,840,496 bytes, both
+report file version 310.8.0.0, and both carry the same `NVIDIA DLSSNR - DVS PRODUCTION`
+description. So identify them by hash:
+
+```
+stock       E16BCF15E16E13F527491CDF7845B2FE6521A738D8F7C9C721866A8496E1FC8E
+40 series   8270B350CD82DE5CE89806872CDD6B6A9249B80836B91BBEB3573470744CC206
+```
+
+Neither is included or redistributed here, and this project does not host the 40 series build
+or point at a source for it. If Neural Rendering never engages on a 40 series card with the
+stock model, this is the first thing to check.
+
 The test is simple: if you can open a video in that mpv and see Neural Rendering applied to it,
 you have everything you need. If you cannot, fix that first.
 

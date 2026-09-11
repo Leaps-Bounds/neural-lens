@@ -26,7 +26,9 @@ Features:
   the lens fetches the neural stack from the projects that publish each part, about 230 MB,
   into a folder of your own: mpv, ReShade taken out of its setup without running it, NVIDIA's
   two runtimes with the model chosen for the card by compute capability and checked against
-  known hashes, the DLSS 5 Feeder, the RenoDX add-on, and VORT motion vectors. ReShade is
+  known hashes, the DLSS 5 Feeder, the RenoDX add-on, and motion vectors from
+  ReshadeMotionEstimation, chosen by measurement over every estimator that may be fetched, with
+  VORT as the alternative and a LumeniteFX copy of your own accepted. ReShade is
   registered as a Vulkan layer for the user only, under its own name with its own allow list,
   so an existing ReShade on the machine is neither touched nor doubled. It ends with a self
   test that says whether Neural Rendering ran. The uninstaller offers to remove all of it.

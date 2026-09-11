@@ -677,15 +677,38 @@ VORT                          0.099    0.109    0.106
 ```
 
 A modest but visible step down at reading speeds, converging at fast scroll where both ghost.
-The one other provider with a licence, dh_uber_motion (GPL-2.0, the Feed's provider 0 through
-the shared texMotionVectors), measured 0.112, 0.113 and 0.108 at the same three speeds, behind
-both. qUINT is all rights reserved and no longer ships a motion shader; Launchpad forbids
-redistribution. So the licensed order is LumeniteFX, then VORT, then dh_uber_motion.
 Neither VORT's own options (its rest mode is for engine vectors) nor the Feed's validation
-values (the author's preset holds the shader's defaults) changed it. VORT is what new installs
-get, because it is the only provider that may be distributed; the setup takes a LumeniteFX
-copy the user already holds and configures provider 3 instead, which distributes nothing. The
-author's own setup stays on LumeniteFX. The washed out frames seen in the first, governed run
-over motion at 85 fps were the rate, not the provider: at a fixed 30 neither stack showed them,
-and the brightness of that run sat 8 percent high, inside the runaway margin. A washout over
-moving content at a rate the chain cannot carry is not yet caught.
+values (the author's preset holds the shader's defaults) changed it.
+
+Every provider the Feed lists was then put through the same page at the same three speeds,
+plus a control with no provider enabled at all, which the Feed answers with zero vectors:
+
+```
+                                                    slow    reading   fast    licence
+Launchpad (iMMERSE, Pascal Gilcher)                 0.051   0.083     -       all rights reserved, permission needed
+ReshadeMotionEstimation (Jakob Wapenhensch)         0.075   0.096     0.102   CC BY-NC 4.0
+LumeniteFX Kernel                                   0.092   0.097     0.104   none
+VORT (Vortigern)                                    0.099   0.109     0.106   MIT
+dh_uber_motion (AlucardDH)                          0.112   0.113     0.108   GPL-2.0
+no provider, zero vectors                           0.114   0.123     -
+```
+
+So the default a new install gets is ReshadeMotionEstimation, DRME, the Feed's provider 0
+through the shared `texMotionVectors`: crisper than LumeniteFX on this test, and CC BY-NC 4.0
+allows it to be fetched and used with credit in a free tool. Two things to know about it. Its
+repository publishes no releases and was last touched in 2023, so the setup pins the commit.
+And on ReShade 6.8 its first pass, the frame save, fails to compile with "cannot sample from
+texture that is also used as render target"; the Feed's header warns that DRME then "silently
+writes nothing", but measured here the estimator's remaining passes produce vectors that beat
+every alternative, and the zero vector control is far worse, so the warning describes a
+different case or an older build. VORT is fetched as well and can be chosen instead. Launchpad
+was the best of all, but its licence requires the author's explicit permission to use it as
+part of another project, so it was only ever run privately here; that permission is worth
+asking for. qUINT is all rights reserved and no longer ships a motion shader. The setup still
+takes a LumeniteFX copy the user already holds and configures provider 3 from it, which
+distributes nothing; the author's own setup stays on LumeniteFX.
+
+The washed out frames seen in the first, governed run over motion at 85 fps were the rate, not
+the provider: at a fixed 30 no stack showed them, and the brightness of that run sat 8 percent
+high, inside the runaway margin. A washout over moving content at a rate the chain cannot
+carry is not yet caught.

@@ -181,8 +181,16 @@ rate it was asked for, the mean brightness of what enters the chain against what
 while the content under the lens is still, how much the output changes from frame to frame. A
 shortfall, a brightness runaway or a shimmer lowers the rate. When the picture has been stable
 for a while and the content is still, the rate probes upward again in small steps, never above
-five sixths of the display rate. The settled rate is saved with the window position, so the next
-launch starts from it.
+five sixths of the display rate.
+
+A rate that failed is not held against the lens for ever. Something else using the GPU, a game
+or a video, lowers what the chain can carry for as long as it runs, and a limit learned then is
+wrong once it stops. So a limit is tried again after the picture has been clean for a while, on
+a wait that doubles each time the limit turns out to be real. Measured on an RTX 5090 at one
+pass: 100 with the GPU to itself, 62 under load, and back to 99 about half a minute after the
+load stopped. The highest rate the chain actually held is saved with the window position, so
+the next launch starts from that rather than from whatever it happened to be running when it
+closed.
 
 The title bar shows the input side and the output side: `120 in  33 out` means capture delivers
 120 frames a second into the first stage and the visible stage is asked for 33. Settings has a

@@ -224,7 +224,7 @@ and every stage is clipped with `SetWindowRgn` to the left of it. Two things abo
   governor is told to ignore its counters for a few seconds around the toggle, because the
   clip shows up as black in the visible stage's capture.
 
-The fullscreen chain keeps its pass count and settled rate in `lens-state-fullscreen.txt`,
+The fullscreen chain keeps its pass count and best held rate in `lens-state-fullscreen.txt`,
 because the windowed state file is what the way back restores, and a rate that suits a
 1400x1000 lens is far too high for eight million pixels.
 
@@ -398,13 +398,40 @@ shimmered at 37. Once a second the governor reads:
   of that halves the rate.
 - while the source is still (its own sampled change under 0.5), the frame to frame change of
   the output. Either more than 3 percent of frames jumping above three times the median, or a
-  median above 1.5, marks the level as failed. Just over the knee the shimmer is continuous
-  rather than spiky: one pass at 83 on a loaded 4070 changed by about 3 every frame.
+  median above 1.5, marks the level as failed, but only when the reading repeats a second
+  later. Another process taking the GPU spiked the median to 1.51 and 1.77 for four seconds
+  and then settled to between 0.12 and 0.46 while it was still running, so a single reading is
+  an event rather than a level. Just over the knee the shimmer is continuous rather than
+  spiky: one pass at 83 on a loaded 4070 changed by about 3 every frame.
 
 A failed level falls back to the last level a probe departed from, since a level near the knee
 can take fifteen seconds to show its shimmer and cannot be trusted sooner. Probes go halfway to
 the lowest failed level, only while the source is still, and stop when the step is under a
-twentieth of the rate. The settled rate is the sixth field of the state file.
+twentieth of the rate.
+
+The lowest failed level expires. It clears once the output has been clean for twenty seconds and
+the level is at least thirty seconds old, and the wait before the next clearing doubles to a ten
+minute cap, so a real limit is re-tested less and less often while a stale one is gone inside a
+minute. Without this, one load event capped the chain for the rest of the session: a session
+that held 94 for 165 seconds cascaded to 34 and never exceeded 39 again, and a deliberate
+reproduction converged to 77 of a possible 99. With expiry, a 5090 at one pass under 45 seconds
+of GPU load went 100, down to 62, back to 99 about thirty seconds after the load stopped. A
+synthetic ceiling at 70, imposed with the input left intact, converged to exactly 70 and
+returned to 99 once lifted.
+
+Telling a passing load apart from a real limit by watching the rate frames arrive into stage 1
+was tried and dropped. Arrival holds at the pump rate while the chain alone collapses and falls
+when another process takes the GPU, which separates the two cleanly at one pass: 120 alone, 60
+while sharing, 120 again within seconds. At four passes the lens is itself the heavy process.
+Arrival averaged 98 against a line of 114, so every shortfall looked like somebody else's load,
+no limit was ever recorded, and the rate hunted over a 19 fps range with runaways and output
+floors of 13.8 and 82.7. With the rule removed and expiry alone, the same test settles to a
+4 fps spread at a visible 41.7.
+
+The sixth field of the state file is the highest rate the chain actually held, not the rate it
+was running when it closed. Saving the instantaneous rate meant a lens closed during a load
+event reopened at the depressed rate: two runs that each held 99 for over two minutes saved 97
+and 91.
 
 Measurement traps that cost time here: F6 is persisted by the add-on as `NeuralUplift=0` in
 ReShade.ini, so one toggle turns Neural Rendering off for every later launch; a full frame

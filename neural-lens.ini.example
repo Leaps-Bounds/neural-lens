@@ -43,6 +43,6 @@ mpv_dir = C:\Games\_mpv
 # max_passes = 4
 
 # Cover the whole monitor the lens is on. The Settings dialog has a checkbox
-# for this and writes it here. Pass count and settled rate for the fullscreen
+# for this and writes it here. Pass count and best held rate for the fullscreen
 # chain are kept apart from the windowed ones.
 # fullscreen = 0

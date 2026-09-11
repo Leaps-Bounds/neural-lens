@@ -42,6 +42,11 @@ mpv_dir = C:\Games\_mpv
 # Highest number of neural passes the plus button will go to.
 # max_passes = 4
 
+# What the title bar shows beside the size: fps, the frame rate the visible
+# pass actually presents; detail, the capture rate in and the rate asked out;
+# or size. The Settings dialog has this too.
+# readout = fps
+
 # Experimental. Cover the whole monitor the lens is on. This is the least
 # tested part of the lens, so try it rather than rely on it. The Settings
 # dialog has a checkbox for this and writes it here. Pass count and best held

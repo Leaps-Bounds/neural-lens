@@ -11,7 +11,8 @@ Features:
 
 - A floating see-through window that applies DLSS Neural Rendering to whatever is behind it.
   The viewport is click-through, so the mouse reaches the application underneath.
-- One to four neural passes, changeable while running from the title bar.
+- The lens starts at one neural pass. Plus and minus on the title bar change the count while it
+  runs, up to three; the Settings dialog sets that ceiling and will allow four.
 - Resize from the menu, applied by relaunching at the new size and position.
 - Before and after screenshots, saved as three PNGs: the captured source, the neural rendered
   result, and the two joined side by side. Both halves come from the same frame.
@@ -24,8 +25,9 @@ Features:
 - A Windows installer, and a stack setup inside the lens. The installer is per user with no
   administrator prompt, installs to a folder you choose, and contains only the lens. On first
   start, or from a Start Menu entry, the lens fetches the neural stack from the projects that
-  publish each part, about 230 MB, into that same folder: mpv, ReShade taken out of its setup
-  without running it, NVIDIA's two runtimes with the Neural Rendering model, checked against
+  publish each part, about 230 MB to download and about 540 MB on disk when it is done, into
+  that same folder: mpv, ReShade taken out of its setup without running it, NVIDIA's two
+  runtimes with the Neural Rendering model, checked against
   known hashes, the DLSS 5 Feeder, the RenoDX add-on, and motion vectors from
   ReshadeMotionEstimation, chosen by measurement over every estimator that may be fetched, with
   VORT as the alternative from the command line. ReShade is
@@ -46,12 +48,13 @@ Features:
   RTX 20 through 50, so there is nothing to choose: the installer no longer asks which card
   you have, and the only question left is whether an NVIDIA RTX card is present at all, which
   it answers itself and says plainly when the answer is no.
-- Three neural passes by default, and the Settings dialog says that going above three is
-  experimental. Four is still available, but how it behaves depends on the card. Measured at
-  four passes over a detailed still, over 90 seconds: on an RTX 4070 the rate settled within a
-  spread of 4 fps, from 35 to 39, while on an RTX 5090 the rate search hunted across a spread
-  of 40 fps, so the frame rate can swing and the picture can wander. Three passes is the
-  default because it is the highest count that behaved consistently on both.
+- The most passes the title bar will go to now defaults to three, and the Settings dialog says
+  that going above three is experimental. The lens itself still starts at one pass. Four
+  remains available, but how it behaves depends on the card. Measured at four passes over a
+  detailed still, over 90 seconds: on an RTX 4070 the rate settled within a spread of 4 fps,
+  from 35 to 39, while on an RTX 5090 the rate search hunted across a spread of 40 fps, so the
+  frame rate can swing and the picture can wander. Three is the ceiling because it is the
+  highest count that behaved consistently on both.
 - The window the governor waits after a rate change grows with the pass count. The brightness
   ripple of a change through four stages outlasted the fixed wait and read as a collapse, and a
   retake of a remembered level never steps past that level, which had two rates alternating
@@ -124,6 +127,8 @@ Known limits:
 - The visible stage starts at five sixths of the display's refresh rate, divided by the number
   of passes, and is adjusted from there. A slower GPU, a larger
   lens or a busy GPU lands well below those numbers: a 1400x1000 lens at two passes settled at
-  34 on an RTX 4070 SUPER, and a 2000x1400 lens at one pass at 41. The rate only probes upward
+  34 on an RTX 4070 SUPER, and a 2000x1400 lens at one pass at 41. On an RTX 5090 the same
+  1400x1000 lens at one pass held 100, the ceiling for that display, and 62 while the GPU was
+  busy with something else. The rate only probes upward
   while the content under the lens is still, so on moving content it stays where it last
   settled. See `docs/NOTES.md`.

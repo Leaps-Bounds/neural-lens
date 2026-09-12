@@ -3,7 +3,7 @@
 Versions follow semantic versioning. While the major version is 0 the project is beta, and
 settings, the state file format and behaviour may change between releases.
 
-## 0.1.0, 2026-09-10
+## 0.1.0, 2026-09-12
 
 First numbered release. Licensed under the GNU General Public License, version 3 or later.
 
@@ -25,8 +25,7 @@ Features:
   administrator prompt, installs to a folder you choose, and contains only the lens. On first
   start, or from a Start Menu entry, the lens fetches the neural stack from the projects that
   publish each part, about 230 MB, into that same folder: mpv, ReShade taken out of its setup
-  without running it, NVIDIA's
-  two runtimes with the model chosen for the card by compute capability and checked against
+  without running it, NVIDIA's two runtimes with the Neural Rendering model, checked against
   known hashes, the DLSS 5 Feeder, the RenoDX add-on, and motion vectors from
   ReshadeMotionEstimation, chosen by measurement over every estimator that may be fetched, with
   VORT as the alternative from the command line. ReShade is
@@ -47,17 +46,16 @@ Features:
   RTX 20 through 50, so there is nothing to choose: the installer no longer asks which card
   you have, and the only question left is whether an NVIDIA RTX card is present at all, which
   it answers itself and says plainly when the answer is no.
-- Three neural passes by default, raised from four, and the Settings dialog says that going
-  above three is experimental. Four is still available. On an RTX 5090 over a detailed still
-  the rate search at four passes was measured hunting across a 40 fps spread in ninety
-  seconds, so the frame rate can swing and the picture can wander.
-- Correction to the note below: "four passes settles, a spread of 4 fps" was measured on an
-  RTX 4070 and does not hold on every card. See the paragraph above.
-- Four passes settles. The window the governor waits after a rate change grows with the pass
-  count, since the brightness ripple of a change through four stages outlasted the fixed wait
-  and read as a collapse, and a retake of a remembered level never steps past that level,
-  which had two rates alternating every ten seconds. Measured at four passes over a still: a
-  spread of 4 fps over 90 seconds, from 35 to 39.
+- Three neural passes by default, and the Settings dialog says that going above three is
+  experimental. Four is still available, but how it behaves depends on the card. Measured at
+  four passes over a detailed still, over 90 seconds: on an RTX 4070 the rate settled within a
+  spread of 4 fps, from 35 to 39, while on an RTX 5090 the rate search hunted across a spread
+  of 40 fps, so the frame rate can swing and the picture can wander. Three passes is the
+  default because it is the highest count that behaved consistently on both.
+- The window the governor waits after a rate change grows with the pass count. The brightness
+  ripple of a change through four stages outlasted the fixed wait and read as a collapse, and a
+  retake of a remembered level never steps past that level, which had two rates alternating
+  every ten seconds.
 - Startup checks for a misconfigured install. A folder without `mpv.exe` is named, with the
   four ways to point the lens elsewhere. An mpv that lacks the Neural Rendering stack warns
   which files are missing, since it would otherwise start and quietly show the screen back

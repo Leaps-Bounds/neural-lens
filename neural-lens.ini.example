@@ -7,9 +7,11 @@
 # as the Vulkan layer plus dlss5-feed.addon64, renodx-dlss5.addon64,
 # nvngx_dlss.dll and NVIDIA's nvngx_dlssnr.dll.
 #
-# If this is not set, the lens looks for an "mpv" folder beside the script,
-# then C:\Games\_mpv.
-mpv_dir = C:\Games\_mpv
+# If this is not set, the lens looks for an "mpv" folder beside the program and
+# then the "stack" folder its own setup writes into the install. Nothing else on
+# the machine is guessed at, so leave this commented out unless your stack lives
+# somewhere of your own choosing.
+# mpv_dir = D:\path\to\mpv
 
 # Where the lens keeps its window position and its archived logs.
 # Defaults to the data folder beside the program

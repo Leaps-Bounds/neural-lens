@@ -53,8 +53,8 @@ How it works. Every piece below was measured before it was built:
      swapchain, which forces the NR add-on to release the DLSS feature and crash
      with 0xC0000005. So the menu's resize saves the new geometry and relaunches
      the process at that size instead. That handover must not use os.execv: on
-     Windows it does not quote arguments containing spaces, and this project's
-     own path has one in "DLSS 5".
+     Windows it does not quote arguments containing spaces, so any install path
+     with a space in it would break the restart.
 
 Configuration: see neural-lens.ini.example. State, logs and screenshots live
 in a data folder beside the program by default, so an install is one folder.

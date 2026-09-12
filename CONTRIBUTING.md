@@ -21,7 +21,9 @@ Crop tightly, or skip the screenshot and send the log instead.
 ## Building the installer
 
 Two tools, both free: PyInstaller (`pip install pyinstaller`) and Inno Setup 6
-(`winget install --id JRSoftware.InnoSetup --scope user`). From the repository root:
+(`winget install --id JRSoftware.InnoSetup --scope user`), plus the lens's own requirements
+installed where PyInstaller can import them, `numpy` and `windows-capture`, which brings in
+`opencv-python`. From the repository root:
 
 ```
 python -m PyInstaller --noconfirm --clean --noconsole --onedir --name NeuralLens ^
@@ -34,9 +36,10 @@ python -m PyInstaller --noconfirm --clean --noconsole --onedir --name NeuralLens
 
 The result is `build\installer\NeuralLens-Setup-<version>.exe`. It contains the lens and
 nothing of the neural stack; setup fetches that during installation, and `neural_stack.py`
-runs the same fetch later from the Start Menu entry or the command line. The icon is
-committed; `assets\make_icon.py` only regenerates it from the PNG. Bump the version in
-`neural_lens.py`, `neural_stack.py`, `CHANGELOG.md` and `installer\NeuralLens.iss` together.
+runs the same fetch later from the Start Menu entry or the command line. The icon and its PNG
+are committed; `assets\make_icon.py` draws both from scratch with Pillow and is only needed to
+change them. Bump the version in `neural_lens.py`, `neural_stack.py`, `README.md`,
+`CHANGELOG.md` and `installer\NeuralLens.iss` together.
 
 ## Before proposing a change to the capture path
 

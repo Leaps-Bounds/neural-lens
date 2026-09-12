@@ -13,19 +13,107 @@ integrates DLSS. This puts it on anything that can be drawn on your screen: a br
 an emulator, a photo, a remote desktop session. Nothing is injected into the target application,
 and the target does not need to know anything about DLSS.
 
-It can also apply **several neural passes**, adjustable while it runs with plus and minus in
-the title bar.
+It can also apply **several neural passes**, chosen with plus and minus in the title bar and
+applied with Set, while it runs.
+
+## Requirements
+
+- Windows 10 build 19041 or later, 64 bit, which is what the installer requires. The capture
+  path uses Windows.Graphics.Capture. It has only ever been tested here on Windows 11 25H2.
+- An NVIDIA RTX card with a driver new enough for DLSS Neural Rendering. The setup reads the
+  compute capability from `nvidia-smi` and stops below 7.5, which is the RTX 20 series and newer.
+- Room on disk for about 540 MB once the stack is in place, of which about 230 MB is downloaded
+  during installation.
+
+The installed lens does not need Python. That is only for running from source, below.
+
+## Install
+
+**The installer.** Download `NeuralLens-Setup-<version>.exe` from
+[the releases page](https://github.com/Leaps-Bounds/neural-lens/releases) and run it.
+
+**Windows will warn you before it runs.** The installer is not code-signed, so Microsoft Defender
+SmartScreen shows "Windows protected your PC" and gives the publisher as Unknown. Click More info
+if it is offered, then Run anyway. Every release publishes the installer's sha256; check the file
+you downloaded against it first, with `Get-FileHash NeuralLens-Setup-<version>.exe` in
+PowerShell, rather than taking the warning's word in either direction.
+
+It needs no administrator prompt: it installs for your user alone, into a folder you choose, and
+adds two Start Menu entries, the lens and its stack setup, an uninstaller, and a desktop shortcut
+if you tick that. The installer itself contains only the lens.
+
+Setup offers to fetch the neural stack as part of the installation, as a checkbox that is
+already ticked. Left ticked, it downloads about 230 MB and assembles the stack before setup
+finishes, reporting each step as it goes. **A small mpv window opens for about nine seconds
+near the end**: that is the self test checking that Neural Rendering really ran, and it closes
+itself. If that step fails, setup still completes and tells you which log to read, and you can
+run it again afterwards from the Start Menu's stack setup entry. Untick the box and nothing is
+downloaded, and that same entry is how you set it up later.
+
+Everything the lens has lives in its one folder: the program, the stack in `stack`, the layer in
+`ReShade`, and its state, logs and screenshots in `data`. ReShade is registered as a Vulkan layer
+for your user only, under its own name with its own allow list, so an existing ReShade on the
+machine is neither touched nor doubled. Uninstalling removes that folder and that one registry
+value, and nothing else: a DLL you pointed the setup at was copied in, so the original stays
+where it was, and a `data_dir` you moved outside the install is left alone.
+
+What it fetches, and from where:
+
+| part | from |
+|---|---|
+| mpv | shinchiro's mpv-winbuild-cmake, the current release |
+| ReShade 6.8.0 with add-on support | reshade.me, the DLL taken out of the setup without running it |
+| `nvngx_dlss.dll` 310.8.0 and the `310.8.SF-v2` Neural Rendering model | the RHI project's manifest, sha256 checked against the hashes held in `neural_stack.py`; the model's are listed below |
+| `dlss5-feed.addon64` and `DLSS5_Feed.fx` | DLSS5-Feeder, the current release |
+| `renodx-dlss5.addon64` | the RHI repository |
+| ReshadeMotionEstimation (CC BY-NC 4.0), VORT (MIT) and ReShade's two shader headers | their repositories |
+
+Only NVIDIA's two runtimes are verified against a published hash, the ones listed above. The
+rest are taken from the current release each project publishes, with the RenoDX add-on pinned to
+a version and ReshadeMotionEstimation pinned to a commit.
+
+If you already have NVIDIA's two DLLs, the Start Menu's stack setup entry has a field for each,
+and `neural_stack.py` takes `--dlssnr` and `--dlss` on the command line; the installer's own page
+does not ask. A DLL you point at is hash checked and copied in, and only the two `310.8.SF-v2`
+builds listed under [The Neural Rendering model](#the-neural-rendering-model) are accepted.
+
+Motion vectors come from ReshadeMotionEstimation by Jakob Wapenhensch, CC BY-NC 4.0, which
+measured crisper on scrolling text than every other estimator that may be fetched, and a little
+crisper than LumeniteFX. With it, the setup is for personal, non-commercial use, which is what
+that licence allows. VORT (MIT) is fetched too and carries no such limit; it can be chosen only
+from the command line, with `NeuralLens.exe --install-stack --provider vort` from an install or
+`python neural_stack.py --provider vort` from source, since the Start Menu entry always uses the
+default. The setup ends with a self test that opens an mpv window for about nine seconds and
+reads ReShade's log, and says plainly whether Neural Rendering ran. The Start Menu also has a
+"stack setup" entry to fetch or repair the stack later.
+
+### From source
+
+If you would rather run it from the repository:
+
+1. Put this folder anywhere you like. It runs in place.
+2. Python 3 with tkinter, then `pip install numpy windows-capture`.
+3. Get a stack. `python neural_stack.py` fetches and assembles one into a `stack` folder beside
+   the script, the same as the installer does, and the lens finds it there. Or point the lens at
+   an mpv install of your own that already carries the stack, whichever way suits you:
+   - `Launch-LensNR.cmd --mpv-dir "D:\path\to\mpv"`
+   - `set NEURAL_LENS_MPV_DIR=D:\path\to\mpv`
+   - copy `neural-lens.ini.example` to `neural-lens.ini` and set `mpv_dir`
+   - or put an `mpv` folder beside `neural_lens.py`
+4. Run `Launch-LensNR.cmd`. No console window opens. Everything the lens prints goes to
+   `data\logs\lens.log` beside the script, and anything that stops it from starting is shown
+   as a dialog. To watch it live instead, run `python neural_lens.py`.
+
+Window position, pass count, screenshots and archived logs live in the `data` folder beside
+the program. Redirect all of it with `data_dir` in the ini, or the `NEURAL_LENS_DATA` variable.
+Screenshots can also be pointed somewhere else on their own, from the menu's Settings.
 
 ## What makes the picture
 
 **The lens is the window. It does not do the neural rendering itself.** That is done by an
-experimental community stack, and none of it is included or redistributed here.
-
-Assembling that stack by hand is the hard part, so the installer does it for you while it
-installs: it fetches each piece from the project that publishes it, configures them, and runs a
-self test. See [Install](#install). If you would rather, you can point the lens at an mpv install
-of your own that already carries the stack, see [From source](#from-source). Either way, what has
-to be present is:
+experimental community stack, and none of it is included or redistributed here. The installer
+fetches each piece from the project that publishes it, see [Install](#install), and from source
+`neural_stack.py` does the same. What has to be present is:
 
 | component | what it does | comes from |
 |---|---|---|
@@ -58,92 +146,14 @@ an earlier community build
                        8270B350CD82DE5CE89806872CDD6B6A9249B80836B91BBEB3573470744CC206   165,840,496 bytes, version 310.8.0.0
 ```
 
-None is included or redistributed here. The setup fetches the model from the RHI project's
-repository and refuses it unless it matches one of these hashes. If you already hold one, point
-the setup at it and it is hash checked and copied in rather than downloaded.
+None is included or redistributed here. The setup fetches the `310.8.SF-v2` model from the RHI
+project's repository and refuses a download that matches neither of its two hashes, the first
+and the last above. A DLL you point the setup at is checked the same way, so NVIDIA's stock
+310.8 is listed here so you can identify it, and is not accepted: the SF-v2 build is what runs on
+every card.
 
 If you are bringing an mpv install of your own, the test is simple: open a video in it and see
 whether Neural Rendering is applied. If it is not, fix that first.
-
-You also need:
-
-- Windows 10 build 19041 or later, 64 bit, which is what the installer requires. The capture
-  path uses Windows.Graphics.Capture. It has only ever been tested here on Windows 11 25H2.
-- An NVIDIA RTX card with a driver new enough for DLSS Neural Rendering. The setup reads the
-  compute capability from `nvidia-smi` and stops below 7.5, which is the RTX 20 series and newer.
-- Room on disk for about 540 MB once the stack is in place, of which about 230 MB is downloaded.
-
-The installed lens does not need Python. That is only for running from source, below.
-
-## Install
-
-**The installer.** Run `NeuralLens-Setup-<version>.exe` from the releases page. It needs no
-administrator prompt: it installs for your user alone, into a folder you choose, and adds a
-Start Menu entry and an uninstaller. The installer itself contains only the lens.
-
-Setup offers to fetch the neural stack as part of the installation, as a checkbox that is
-already ticked. Left ticked, it downloads about 230 MB and assembles the stack before setup
-finishes, reporting each step as it goes. **A small mpv window opens for about nine seconds
-near the end**: that is the self test checking that Neural Rendering really ran, and it closes
-itself. If that step fails, setup still completes and tells you which log to read, and you can
-run it again afterwards from the Start Menu's stack setup entry. Untick the box and nothing is
-downloaded, and that same entry is how you set it up later.
-
-Everything the lens has lives in its one folder: the program, the stack in `stack`, the layer in
-`ReShade`, and its state, logs and screenshots in `data`. ReShade is registered as a Vulkan layer
-for your user only, under its own name with its own allow list, so an existing ReShade on the
-machine is neither touched nor doubled. Uninstalling removes that folder and that one registry
-value, and nothing else: a DLL you pointed the setup at was copied in, so the original stays
-where it was, and a `data_dir` you moved outside the install is left alone.
-
-**Windows will warn you before it runs.** The installer is not code-signed, so Microsoft Defender
-SmartScreen shows "Windows protected your PC" and gives the publisher as Unknown. Click More info
-if it is offered, then Run anyway. Every release publishes the installer's sha256, so you can
-check the file you downloaded against it rather than taking the warning's word in either
-direction.
-
-What it fetches, and from where:
-
-| part | from |
-|---|---|
-| mpv | shinchiro's mpv-winbuild-cmake, the current release |
-| ReShade 6.8.0 with add-on support | reshade.me, the DLL taken out of the setup without running it |
-| `nvngx_dlss.dll` 310.8.0 and the `310.8.SF-v2` Neural Rendering model | the RHI project's manifest, sha256 checked against this README |
-| `dlss5-feed.addon64` and `DLSS5_Feed.fx` | DLSS5-Feeder, the current release |
-| `renodx-dlss5.addon64` | the RHI repository |
-| ReshadeMotionEstimation (CC BY-NC 4.0), VORT (MIT) and ReShade's two shader headers | their repositories |
-
-Only NVIDIA's two runtimes are verified against a published hash, the ones listed above. The
-rest are taken from the current release each project publishes, with the RenoDX add-on pinned to
-a version and ReshadeMotionEstimation pinned to a commit.
-
-If you already have NVIDIA's two DLLs, point the setup at them and it uses those instead, once
-their hashes check out. Motion vectors come from ReshadeMotionEstimation by Jakob Wapenhensch,
-CC BY-NC 4.0, which measured crisper on scrolling text than every other estimator that may be
-fetched, and a little crisper than LumeniteFX. VORT (MIT) is fetched too and can be chosen
-instead from the command line. The setup is for personal, non-commercial use, which is what
-that licence allows. The setup ends with a self test that opens an mpv window for a few
-seconds and reads ReShade's log, and says plainly whether Neural Rendering ran. The Start Menu
-also has a "stack setup" entry to fetch or repair it later.
-
-### From source
-
-If you would rather run it from the repository:
-
-1. Put this folder anywhere you like. It runs in place.
-2. `pip install numpy windows-capture`
-3. Tell it where your mpv install is, whichever way suits you:
-   - `Launch-LensNR.cmd --mpv-dir "D:\path\to\mpv"`
-   - `set NEURAL_LENS_MPV_DIR=D:\path\to\mpv`
-   - copy `neural-lens.ini.example` to `neural-lens.ini` and set `mpv_dir`
-   - or put an `mpv` folder beside `neural_lens.py`
-4. Run `Launch-LensNR.cmd`. No console window opens. Everything the lens prints goes to
-   `data\logs\lens.log` beside the script, and anything that stops it from starting is shown
-   as a dialog. To watch it live instead, run `python neural_lens.py`.
-
-Window position, pass count, screenshots and archived logs live in the `data` folder beside
-the program. Redirect all of it with `data_dir` in the ini, or the `NEURAL_LENS_DATA` variable.
-Screenshots can also be pointed somewhere else on their own, from the menu's Settings.
 
 ## Using it
 
@@ -247,8 +257,8 @@ Two passes is usually the sweet spot. Three is visibly heavy on most content.
 The rate the lens asks for is adjusted while it runs, because what a chain can deliver depends
 on the GPU, the size of the lens, the number of passes and whatever else the GPU is doing at the
 time. Measured on an RTX 4070 SUPER, a 1400x1000 lens at one pass held 100 with the GPU idle and
-about 60 with a video playing beside it; the same lens at two passes held 35; a 2000x1400 lens
-held 41. On an RTX 5090 the same 1400x1000 lens held 100 at one pass.
+about 60 with a video playing beside it; the same lens at two passes held about 35; a 2000x1400
+lens held 41. On an RTX 5090 the same 1400x1000 lens held 100 at one pass.
 
 Once a second the lens compares three things: the frames the visible stage presents against the
 rate it was asked for, the brightness of what comes out against the range of brightness that has
@@ -313,8 +323,8 @@ unless it is set to 0. See [docs/NOTES.md](docs/NOTES.md).
 ## Troubleshooting
 
 **The lens warned at startup that Neural Rendering will probably not run.** It checks the mpv
-folder for `dlss5-feed.addon64`, `renodx-dlss5.addon64` and `nvngx_dlssnr.dll`, and names any
-that are missing. Finding the folder only proves `mpv.exe` is in it, so an ordinary mpv install
+folder for `dlss5-feed.addon64`, `renodx-dlss5.addon64`, `nvngx_dlss.dll` and
+`nvngx_dlssnr.dll`, and names any that are missing. Finding the folder only proves `mpv.exe` is in it, so an ordinary mpv install
 is accepted and the lens opens normally: it simply shows the screen back to you unchanged, which
 looks like the app doing nothing rather than an install that is incomplete. See
 [What makes the picture](#what-makes-the-picture) for what the mpv install has to carry. None of

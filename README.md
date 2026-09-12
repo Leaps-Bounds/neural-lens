@@ -78,9 +78,8 @@ does not ask. A DLL you point at is hash checked and copied in, and only the two
 builds listed under [The Neural Rendering model](#the-neural-rendering-model) are accepted.
 
 Motion vectors come from ReshadeMotionEstimation by Jakob Wapenhensch, CC BY-NC 4.0, which
-measured crisper on scrolling text than every other estimator that may be fetched, and a little
-crisper than LumeniteFX. With it, the setup is for personal, non-commercial use, which is what
-that licence allows. VORT (MIT) is fetched too and carries no such limit; it can be chosen only
+measured crisper on scrolling text than every other estimator that may be fetched. With it, the
+setup is for personal, non-commercial use, which is what that licence allows. VORT (MIT) is fetched too and carries no such limit; it can be chosen only
 from the command line, with `NeuralLens.exe --install-stack --provider vort` from an install or
 `python neural_stack.py --provider vort` from source, since the Start Menu entry always uses the
 default. The setup ends with a self test that opens an mpv window for about nine seconds and

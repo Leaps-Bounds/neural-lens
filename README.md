@@ -376,7 +376,9 @@ ship inside the installer. Each keeps its own licence:
 | windows-capture, the screen capture binding | NiiightmareXD | MIT |
 | OpenCV, which windows-capture requires, and which is most of the installer's size | the OpenCV team | Apache 2.0 |
 | NumPy | the NumPy developers | BSD 3-Clause |
-| Python 3.12, with the OpenSSL and Tcl/Tk libraries its Windows build carries, bundled by PyInstaller | the Python Software Foundation; the OpenSSL Project; the Tcl core team | PSF; Apache 2.0; Tcl/Tk licence |
+| Python 3.12, with the libffi and Tcl/Tk libraries its Windows build carries, bundled by PyInstaller; its licence text is installed as `licenses\PYTHON-LICENSE.txt` | the Python Software Foundation; the Tcl core team | PSF; Tcl/Tk licence |
+| OpenSSL, the `libcrypto` and `libssl` libraries Python's build carries; its licence text is installed as `licenses\OPENSSL-LICENSE.txt` | the OpenSSL Project | Apache 2.0 |
+| zlib, the `zlib1.dll` Python's build carries; its licence text is installed as `licenses\ZLIB-LICENSE.txt` | Jean-loup Gailly and Mark Adler | zlib licence |
 | 7-Zip's `7zr`, fetched to unpack mpv | Igor Pavlov | LGPL |
 | PyInstaller and Inno Setup, which build the installer | their authors | GPL with exception; Inno Setup licence |
 

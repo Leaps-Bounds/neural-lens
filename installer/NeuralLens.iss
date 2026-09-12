@@ -14,9 +14,12 @@
 ;   python -m PyInstaller --noconfirm --clean --noconsole --onedir --name NeuralLens ^
 ;       --icon ..\assets\neural-lens.ico --add-data "..\assets\neural-lens.ico;assets" ^
 ;       --collect-all windows_capture --copy-metadata opencv-python --hidden-import neural_stack ^
+;       --exclude-module charset_normalizer ^
 ;       --distpath build\dist --workpath build\work --specpath build neural_lens.py
 ;   The icon and add-data paths are relative to the spec folder, build, hence the ..
 ;   copy-metadata carries OpenCV's licence texts into the bundle; its hook does not.
+;   exclude-module drops charset_normalizer, an optional import of numpy's f2py that
+;   nothing in the lens uses.
 ;   "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" installer\NeuralLens.iss
 ; Output: build\installer\NeuralLens-Setup-<version>.exe
 
@@ -64,6 +67,7 @@ Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\CHANGELOG.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\neural-lens.ini.example"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"

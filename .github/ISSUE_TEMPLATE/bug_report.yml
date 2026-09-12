@@ -97,7 +97,7 @@ body:
     id: stack
     attributes:
       label: Neural Rendering stack
-      description: Versions of ReShade, dlss5-feed, renodx-dlss5 and nvngx_dlssnr.dll.
+      description: Versions of ReShade, dlss5-feed, renodx-dlss5 and nvngx_dlssnr.dll. Most are recorded in stack\install-record.json in the lens folder.
     validations:
       required: true
 

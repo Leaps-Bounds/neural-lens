@@ -527,8 +527,8 @@ the input's own range and is not caught; a crush toward white over a scene that 
 still is, and the presented shortfall test is unaffected. That is no worse than before, when the
 test fired constantly on motion and so was useless there.
 
-At four passes the governor used to hunt over a detailed still, for two separate reasons on two
-cards. On the 5090 the pinned measurement showed it was not capacity: stage 1 pinned at 43, 60,
+At four passes the governor hunted over a detailed still, for two separate reasons on two
+cards, and the fixes below settled the 4070 but not the 5090. On the 5090 the pinned measurement showed it was not capacity: stage 1 pinned at 43, 60,
 72 and 85, which is visible 25 to 49, left the picture intact at every one, brightness 48 in and
 48 out, floor 0.19, with only a mild shortfall at the top, while the runaway verdicts in the
 governed run all fired within seconds of a probe step. A speed change at four passes ripples
@@ -541,7 +541,9 @@ lowered that level by one, and the next retake step of two overshot straight bac
 that had just failed. A retake now never goes past the level it is retaking. Measured on the
 4070 at four passes over the still: rate 35 to 39 over the last 90 seconds, a spread of 4, where
 it had been 32 to 37 on a ten second cycle. What moves is the recorded limit being re-tested on
-its doubling interval, a brief shortfall each time that falls straight back.
+its doubling interval, a brief shortfall each time that falls straight back. Measured again on
+the 5090 after the settle window change, four passes over the same still hunted across a 40 fps
+spread in 90 seconds, so three is the default ceiling and four is experimental.
 
 Measurement traps that cost time here: F6 is persisted by the add-on as `NeuralUplift=0` in
 ReShade.ini, so one toggle turns Neural Rendering off for every later launch; a full frame
@@ -618,8 +620,8 @@ uninstall never reaches the original.
 
 Nothing is bundled, and licences force that rather than taste. mpv's `Copyright` file makes
 the build GPL, since it carries the `direct3d` output; bundling would oblige us to provide
-source for a binary we did not build. The motion vector shader the author's own setup uses,
-LumeniteFX, publishes no licence and no releases, so a new install gets ReshadeMotionEstimation,
+source for a binary we did not build. LumeniteFX publishes no licence and no releases, so a new
+install gets ReshadeMotionEstimation,
 CC BY-NC 4.0, provider 0 in `DLSS5_Feed.fx`, chosen by the measurement below, with VORT, MIT,
 provider 2 with `V_MV_MODE=1`, as the alternative. NVIDIA's runtimes come from
 the RHI project's manifest, which carries no hashes, so the hashes live in `neural_stack.py`
@@ -741,7 +743,7 @@ was the best of all, but its licence requires the author's explicit permission t
 part of another project, so it was only ever run privately here; that permission is worth
 asking for. qUINT is all rights reserved and no longer ships a motion shader. The setup still
 takes a LumeniteFX copy the user already holds and configures provider 3 from it, which
-distributes nothing; the author's own setup stays on LumeniteFX.
+distributes nothing.
 
 The washed out frames seen in the first, governed run over motion at 85 fps were the rate, not
 the provider: at a fixed 30 no stack showed them, and the brightness of that run sat 8 percent

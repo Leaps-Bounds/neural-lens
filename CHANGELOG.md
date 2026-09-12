@@ -15,7 +15,8 @@ Features:
   runs, up to three; the Settings dialog sets that ceiling and will allow four.
 - Resize from the menu, applied by relaunching at the new size and position.
 - Before and after screenshots, saved as three PNGs: the captured source, the neural rendered
-  result, and the two joined side by side. Both halves come from the same frame.
+  result, and the two joined side by side. Both halves come from the same live pipeline a
+  fraction of a second apart, so on still content they line up pixel for pixel.
 - A settings dialog with every setting the lens has: the screenshot folder, fullscreen, the
   automatic frame rate switch, sliders for the lowest rate, the ceiling, the capture refresh
   and the most passes allowed, and the mpv and data folders, each with an explanation. It
@@ -26,9 +27,9 @@ Features:
   administrator prompt, installs to a folder you choose, and contains only the lens. Setup
   fetches the neural stack during the installation itself, offered as a checkbox that is already
   ticked, from the projects that publish each part, about 230 MB to download and about 540 MB on
-  disk when it is done, into that same folder: mpv, ReShade taken out of its setup without running it, NVIDIA's two
-  runtimes with the Neural Rendering model, checked against
-  known hashes, the DLSS 5 Feeder, the RenoDX add-on, and motion vectors from
+  disk when it is done, into that same folder: mpv, ReShade taken out of its setup without
+  running it, NVIDIA's two runtimes, the DLSS runtime and the Neural Rendering model, checked
+  against known hashes, the DLSS 5 Feeder, the RenoDX add-on, and motion vectors from
   ReshadeMotionEstimation, chosen by measurement over every estimator that may be fetched, with
   VORT as the alternative from the command line. ReShade is
   registered as a Vulkan layer for the user only, under its own name with its own allow list,
@@ -122,15 +123,15 @@ Features:
 
 Known limits:
 
-- Requires an existing mpv install with a working DLSS Neural Rendering stack. None of that
-  stack is included or redistributed here.
+- The neural stack is fetched, not included. None of it is redistributed here, so setup needs
+  the network to assemble it, and the lens does nothing until it has.
 - Exclusive fullscreen applications are invisible to the Magnification API. Borderless
   windowed works.
 - Resizing relaunches the lens, and changing the pass count respawns every stage.
 - The visible stage starts at five sixths of the display's refresh rate, divided by the number
   of passes, and is adjusted from there. A slower GPU, a larger
   lens or a busy GPU lands well below those numbers: a 1400x1000 lens at two passes settled at
-  34 on an RTX 4070 SUPER, and a 2000x1400 lens at one pass at 41. On an RTX 5090 the same
+  about 35 on an RTX 4070 SUPER, and a 2000x1400 lens at one pass at 41. On an RTX 5090 the same
   1400x1000 lens at one pass held 100, the ceiling for that display, and 62 while the GPU was
   busy with something else. The rate only probes upward
   while the content under the lens is still, so on moving content it stays where it last

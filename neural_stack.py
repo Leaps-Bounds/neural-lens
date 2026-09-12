@@ -134,8 +134,8 @@ HASHES = {
 # to be 40 series only until it was measured running on a 5090 on 2026-09-12:
 # feature 18 created and evaluated, and the in-to-out difference matched the
 # stock model to within 0.01 at two pinned rates. Its author states it covers
-# RTX 20, 30 and 40 and runs identically on 50. The stock 310.8.0 hash stays in
-# HASHES so installs made before this change still verify when repaired.
+# RTX 20, 30 and 40 and runs identically on 50. The stock 310.8.0 hash is listed
+# for identification only: step_nvidia accepts the MODEL's builds and nothing else.
 MODEL = "310.8.SF-v2"
 
 MPV_CONF = """# written by the Neural Lens stack setup

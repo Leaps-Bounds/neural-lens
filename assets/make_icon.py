@@ -2,7 +2,7 @@
 # see the LICENSE file at the repository root.
 """Draw the lens icon: a round lens with the app's green ring over a dark
 field, a highlight, and a small pass indicator. Writes neural-lens.ico with
-every size Windows asks for, and a 256 px PNG for the README.
+every size Windows asks for, and a 256 px PNG of the same drawing.
 
     python assets/make_icon.py
 """

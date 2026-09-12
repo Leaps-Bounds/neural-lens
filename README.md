@@ -264,6 +264,10 @@ unless it is set to 0. See [docs/NOTES.md](docs/NOTES.md).
   menu's resize therefore takes the size you drag out, saves it, and relaunches at that size and
   position with the same number of passes. It takes a second or two. Pass count is unaffected by
   any of this and still changes live.
+- **Over fast moving content the picture can wash out at a rate the chain cannot carry**, going
+  pale for a few seconds and recovering, without the automatic frame rate noticing, because the
+  brightness stays inside the margin it watches. Seen once at 85 fps over a scrolling page on a
+  4070; at 30 it did not happen. Lowering the frame rate ceiling in Settings avoids it.
 - **Exclusive fullscreen games are invisible to it**, because the Magnification API cannot see
   them. Borderless windowed works. Games with real DLSS support can usually take Neural
   Rendering directly through the add-on anyway, without this.

@@ -28,10 +28,13 @@ Features:
   two runtimes with the model chosen for the card by compute capability and checked against
   known hashes, the DLSS 5 Feeder, the RenoDX add-on, and motion vectors from
   ReshadeMotionEstimation, chosen by measurement over every estimator that may be fetched, with
-  VORT as the alternative and a LumeniteFX copy of your own accepted. ReShade is
+  VORT as the alternative from the command line. ReShade is
   registered as a Vulkan layer for the user only, under its own name with its own allow list,
   so an existing ReShade on the machine is neither touched nor doubled. It ends with a self
   test that says whether Neural Rendering ran. The uninstaller offers to remove all of it.
+  The setup window opens laid out, its folder field is filled in and editable at every
+  entry point, and the lens relaunched after a setup points at the new stack ahead of any
+  `--mpv-dir` or ini `mpv_dir` that led to the offer.
 - The lens is per monitor DPI aware, so a lens on a monitor whose scaling differs from the one
   the session logged on with is the size it says it is. Before, a 1400x760 lens on such a
   monitor ran a 1680x912 chain, rescaled by Windows on the way, and the lens could not tell.

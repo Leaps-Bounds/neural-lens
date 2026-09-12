@@ -65,6 +65,7 @@ import zipfile
 __version__ = "0.1.0"
 
 LOCAL = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+NO_WINDOW = 0x08000000        # CREATE_NO_WINDOW, for console children of a windowless lens
 DEFAULT_TARGET = os.path.join(LOCAL, "NeuralLens", "stack")
 LAYER_DIR = os.path.join(LOCAL, "NeuralLens", "ReShade")
 CACHE_DIR = os.path.join(LOCAL, "NeuralLens", "downloads")
@@ -260,8 +261,12 @@ def gpu_generation():
     if not os.path.isfile(smi):
         smi = "nvidia-smi"
     try:
+        # no console window for the child: without this the first console
+        # program started while a shown topmost Tk window is up took 5 seconds
+        # under pythonw and the frozen exe, which showed as a blank setup window
         out = subprocess.run([smi, "--query-gpu=compute_cap", "--format=csv,noheader"],
-                             capture_output=True, text=True, timeout=20).stdout
+                             capture_output=True, text=True, timeout=20,
+                             stdin=subprocess.DEVNULL, creationflags=NO_WINDOW).stdout
     except Exception:
         return None
     caps = [c.strip() for c in out.splitlines() if c.strip()]
@@ -357,7 +362,8 @@ class Install:
                         self.log, "mpv " + rel.get("tag_name", ""))
         sevenzr = fetch(SOURCES["7zr"], os.path.join(CACHE_DIR, "7zr.exe"), self.log, "7zr")
         self.say("mpv: unpacking")
-        r = subprocess.run([sevenzr, "x", "-y", "-o" + self.target, archive], capture_output=True, text=True)
+        r = subprocess.run([sevenzr, "x", "-y", "-o" + self.target, archive], capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
         if r.returncode != 0 or not os.path.isfile(os.path.join(self.target, "mpv.exe")):
             raise StackError("unpacking mpv failed: %s" % (r.stderr or r.stdout)[-400:])
         for root, dirs, files in os.walk(self.target):
@@ -672,7 +678,8 @@ def uninstall(target=DEFAULT_TARGET, log=None):
 def wizard(parent=None, target=DEFAULT_TARGET):
     """A window that runs the install and shows what it is doing.
 
-    Returns True when the stack installed and passed the self test. The
+    Returns the folder the stack was installed into when it installed and
+    passed the self test, otherwise False. The
     install runs on a thread; the window only ever appends to its log from the
     mainloop, so it stays responsive while 230 MB come down.
     """
@@ -681,6 +688,7 @@ def wizard(parent=None, target=DEFAULT_TARGET):
     from tkinter import filedialog
 
     BG, FG, DIM, ACCENT, WARN = "#1b2430", "#cbd5e1", "#64748b", "#4ade80", "#fbbf24"
+    gen = gpu_generation()
     root = tk.Toplevel(parent) if parent else tk.Tk()
     root.title("Neural Lens: set up the neural stack")
     try:
@@ -691,7 +699,6 @@ def wizard(parent=None, target=DEFAULT_TARGET):
     root.configure(bg=BG)
     root.attributes("-topmost", True)
     root.resizable(False, False)
-    gen = gpu_generation()
     card = {"ada": "an RTX 40 series card", "blackwell": "an RTX 50 series card"}.get(gen)
     intro = ("The lens needs an mpv with NVIDIA's DLSS Neural Rendering stack. Nothing is bundled: "
              "about 230 MB is downloaded from the projects that publish each part, into a folder "
@@ -704,7 +711,11 @@ def wizard(parent=None, target=DEFAULT_TARGET):
              font=("Segoe UI", 10)).grid(row=0, column=0, columnspan=3, sticky="w", padx=14, pady=(14, 8))
     tk.Label(root, text="Install into", bg=BG, fg=FG, font=("Segoe UI", 10)).grid(
         row=1, column=0, sticky="w", padx=14)
-    where = tk.StringVar(value=target)
+    # every variable is made on this window's own Tk. At the offer that follows
+    # a found but bare mpv the lens's root already exists and is the default
+    # root, so a variable without a master lived there while the entries lived
+    # here: the folder showed empty and anything typed was never seen
+    where = tk.StringVar(master=root, value=target)
     tk.Entry(root, textvariable=where, width=64, bg="#0b1220", fg=FG, insertbackground=FG,
              relief="flat").grid(row=1, column=1, sticky="we", padx=(6, 6))
 
@@ -715,7 +726,7 @@ def wizard(parent=None, target=DEFAULT_TARGET):
 
     tk.Button(root, text="Browse", command=browse, relief="flat", bg="#334155", fg=FG).grid(
         row=1, column=2, padx=(0, 14))
-    have = {"nvngx_dlssnr.dll": tk.StringVar(), "nvngx_dlss.dll": tk.StringVar()}
+    have = {"nvngx_dlssnr.dll": tk.StringVar(master=root), "nvngx_dlss.dll": tk.StringVar(master=root)}
     tk.Label(root, text="If you already have NVIDIA's DLLs, point at them and they are used instead "
                         "of downloaded, once their hashes check out. Otherwise leave these empty.",
              bg=BG, fg=DIM, justify="left", wraplength=620, font=("Segoe UI", 9)).grid(
@@ -732,23 +743,10 @@ def wizard(parent=None, target=DEFAULT_TARGET):
 
         tk.Button(root, text="Browse", command=pick, relief="flat", bg="#334155", fg=FG).grid(
             row=3 + i, column=2, padx=(0, 14))
-    lum = tk.StringVar()
     tk.Label(root, text="Motion vectors come from ReshadeMotionEstimation by Jakob Wapenhensch (CC BY-NC "
-                        "4.0). If you already have LumeniteFX and prefer it, point at its reshade-shaders "
-                        "folder and your copy is used instead. It cannot be downloaded for you.",
+                        "4.0), fetched with the rest.",
              bg=BG, fg=DIM, justify="left", wraplength=620, font=("Segoe UI", 9)).grid(
         row=5, column=0, columnspan=3, sticky="w", padx=14, pady=(10, 2))
-    tk.Label(root, text="LumeniteFX", bg=BG, fg=FG, font=("Consolas", 9)).grid(row=6, column=0, sticky="w", padx=14)
-    tk.Entry(root, textvariable=lum, width=64, bg="#0b1220", fg=FG, insertbackground=FG,
-             relief="flat").grid(row=6, column=1, sticky="we", padx=(6, 6), pady=2)
-
-    def pick_lum():
-        d = filedialog.askdirectory(title="Where is the reshade-shaders folder holding LumeniteFX?")
-        if d:
-            lum.set(os.path.normpath(d))
-
-    tk.Button(root, text="Browse", command=pick_lum, relief="flat", bg="#334155", fg=FG).grid(
-        row=6, column=2, padx=(0, 14))
     log = tk.Text(root, width=88, height=14, bg="#0b1220", fg=FG, relief="flat", font=("Consolas", 9),
                   state="disabled", wrap="word")
     log.grid(row=7, column=0, columnspan=3, padx=14, pady=(10, 6), sticky="we")
@@ -778,11 +776,12 @@ def wizard(parent=None, target=DEFAULT_TARGET):
             pass
         root.after(100, pump)
 
-    def work():
+    def work(target, dlssnr, dlss):
+        # plain strings only: Tk may be touched from the main thread alone, and
+        # at the first run offer the main thread is in wait_window, not mainloop,
+        # so a .get() here raised "main thread is not in main loop"
         try:
-            ok = Install(where.get(), gen, have["nvngx_dlssnr.dll"].get() or None,
-                         have["nvngx_dlss.dll"].get() or None, log=q.put,
-                         lumenite=lum.get() or None).run()
+            ok = Install(target, gen, dlssnr or None, dlss or None, log=q.put).run()
             result["ok"] = ok
         except StackError as exc:
             q.put("")
@@ -799,7 +798,8 @@ def wizard(parent=None, target=DEFAULT_TARGET):
         result["done"] = False
         go.config(state="disabled", text="Installing...")
         status.config(text="", fg=DIM)
-        threading.Thread(target=work, daemon=True).start()
+        threading.Thread(target=work, daemon=True,
+                         args=(where.get(), have["nvngx_dlssnr.dll"].get(), have["nvngx_dlss.dll"].get())).start()
         root.after(100, pump)
 
     go = tk.Button(root, text="Set it up", command=start, relief="flat", bg=ACCENT, fg="#0b1220",
@@ -812,7 +812,9 @@ def wizard(parent=None, target=DEFAULT_TARGET):
         parent.wait_window(root)
     else:
         root.mainloop()
-    return result["ok"]
+    # the folder it installed into, so a caller can point the lens straight at
+    # it; a string is truthy, so callers that only ask whether it worked are fine
+    return os.path.abspath(where.get()) if result["ok"] else False
 
 
 # ---------------------------------------------------------------- entry

@@ -609,8 +609,9 @@ Start Menu entry, or from the command line, into `%LOCALAPPDATA%\NeuralLens\stac
 Nothing is bundled, and licences force that rather than taste. mpv's `Copyright` file makes
 the build GPL, since it carries the `direct3d` output; bundling would oblige us to provide
 source for a binary we did not build. The motion vector shader the author's own setup uses,
-LumeniteFX, publishes no licence and no releases, so a new install gets VORT, MIT, provider 2
-in `DLSS5_Feed.fx`, with `V_MV_MODE=1` so its motion pass runs. NVIDIA's runtimes come from
+LumeniteFX, publishes no licence and no releases, so a new install gets ReshadeMotionEstimation,
+CC BY-NC 4.0, provider 0 in `DLSS5_Feed.fx`, chosen by the measurement below, with VORT, MIT,
+provider 2 with `V_MV_MODE=1`, as the alternative. NVIDIA's runtimes come from
 the RHI project's manifest, which carries no hashes, so the hashes live in `neural_stack.py`
 and a download matching none is refused. ReShade's DLL comes straight out of its setup exe,
 which is a zip, with nothing of ReShade's executed.
@@ -639,6 +640,28 @@ and `evaluation succeeded`; `0xbad00001` is reported as the wrong model for the 
 `install-record.json` in the stack folder lists every file written and the registry value
 set, and `--uninstall-stack` removes exactly that. The Inno uninstaller asks before calling it,
 defaulting to keep, so a silent uninstall never deletes the download.
+
+Four things the first run offer did that the Start Menu entry did not, found by driving the
+offer end to end against the built exe:
+
+- **The setup window was blank for five seconds.** The first console program started while a
+  shown topmost Tk window is up took 5.2 seconds under pythonw and the exe, 0.1 seconds with
+  the window hidden or from a console, measured with `nvidia-smi` alone. Console children now
+  run with `CREATE_NO_WINDOW` and a null stdin, and the card is identified before the window
+  exists: laid out in 0.6 seconds from the exe.
+- **The install folder showed empty, and typing into it changed nothing.** At the offer that
+  follows a found but bare mpv, the lens's own Tk root already exists and is tkinter's default
+  root, so a `StringVar()` without a master lived in that interpreter while the entries lived
+  in the setup window's. Every variable in the wizard is now made on the window's own Tk. The
+  Start Menu entry, which has one Tk, never showed it.
+- **Set it up failed with "main thread is not in main loop".** The install thread read the
+  fields with `.get()`, which Tk allows from another thread only while the main thread is in
+  `mainloop`; at the offer it is in `wait_window`. The fields are read on the main thread when
+  the button is pressed and the thread gets strings.
+- **A relaunch after the setup found the bare mpv again.** The relaunch reused the arguments
+  it was started with, so an `--mpv-dir` or ini `mpv_dir` that led to the offer was found
+  first and the offer came back. The wizard now returns the folder it installed into and the
+  relaunch names it first.
 
 ### VORT against LumeniteFX, measured before publishing VORT
 

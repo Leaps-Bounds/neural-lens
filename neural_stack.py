@@ -16,8 +16,7 @@ user only, so no elevation is needed and nothing shared with other software is
 touched. Licences force most of this: mpv is GPL and must come from upstream,
 NVIDIA's runtimes are NVIDIA's, and a new install gets ReshadeMotionEstimation
 (CC BY-NC 4.0) for motion vectors, chosen by measurement, with VORT (MIT) as
-the alternative. LumeniteFX publishes no licence, so it is never fetched; a
-copy the user already holds can be pointed at instead.
+the alternative.
 
 What ends up where. APP is the lens's own folder, and TARGET defaults to APP\\stack:
 
@@ -49,7 +48,6 @@ Command line, for testing and for people who prefer it:
     python neural_stack.py --target D:\\nr   install somewhere else
     python neural_stack.py --dlssnr X --dlss Y   use NVIDIA DLLs you already have (hash checked)
     python neural_stack.py --provider vort  estimate motion vectors with VORT instead of DRME
-    python neural_stack.py --lumenite DIR   use a LumeniteFX copy you already have instead
     python neural_stack.py --verify         only run the self test on an existing stack
     python neural_stack.py --uninstall      remove what the record says was installed
 
@@ -102,8 +100,8 @@ SOURCES = {
 DRME_FILES = ["MotionEstimation.fx", "MotionEstimation.fxh", "MotionEstimationUI.fxh", "MotionVectors.fxh"]
 # Which shader estimates motion vectors for the Feed. Measured on scrolling
 # text as the partial ink fraction of the page, lower is crisper, at a slow,
-# a reading and a fast scroll: DRME 0.075, 0.096, 0.102; LumeniteFX 0.092,
-# 0.097, 0.104; VORT 0.099, 0.109, 0.106; no provider 0.114, 0.123. DRME is
+# a reading and a fast scroll: DRME 0.075, 0.096, 0.102; VORT 0.099, 0.109,
+# 0.106; no provider 0.114, 0.123. DRME is
 # CC BY-NC 4.0, so it may be fetched and used with credit in a free tool and
 # is the default; VORT is MIT and stays as the alternative.
 PROVIDERS = {"drme": 0, "vort": 2}
@@ -311,31 +309,12 @@ def write_text(path, text):
 
 
 # ---------------------------------------------------------------- steps
-LUMENITE_FILES = ["Shaders/lumenite_Kernel.fx", "Shaders/include/lumenite_ColorManagement.fxh",
-                  "Shaders/include/lumenite_Compute.fxh", "Shaders/include/lumenite_Helpers.fxh",
-                  "Shaders/include/lumenite_Projections.fxh", "Textures/lumenite_bluenoise256.png"]
-
-
-def find_lumenite(folder):
-    """The reshade-shaders folder holding LumeniteFX, given it or its parent."""
-    for root in (folder, os.path.join(folder, "reshade-shaders")):
-        if all(os.path.isfile(os.path.join(root, f)) for f in LUMENITE_FILES):
-            return root
-    return None
-
-
 class Install:
-    def __init__(self, target=DEFAULT_TARGET, dlssnr=None, dlss=None, log=None, lumenite=None,
-                 provider="drme"):
+    def __init__(self, target=DEFAULT_TARGET, dlssnr=None, dlss=None, log=None, provider="drme"):
         self.target = os.path.abspath(target)
         self.given = {"nvngx_dlssnr.dll": dlssnr, "nvngx_dlss.dll": dlss}
         self.log = log
         self.provider = provider if provider in PROVIDERS else "drme"
-        # LumeniteFX cannot be fetched or shipped, but a copy the user already
-        # holds can be used in place of the fetched estimators
-        self.lumenite = find_lumenite(lumenite) if lumenite else None
-        if lumenite and not self.lumenite:
-            raise StackError("no LumeniteFX under %s: it needs %s" % (lumenite, ", ".join(LUMENITE_FILES)))
         self.record = {"version": __version__, "target": self.target, "layer_dir": LAYER_DIR,
                        "files": [], "registry": [], "components": {}}
 
@@ -528,27 +507,15 @@ class Install:
         for name in DRME_FILES:
             self.add(fetch(SOURCES["drme"] + name, os.path.join(base, name), self.log, name))
         self.say("shaders: ReshadeMotionEstimation by Jakob Wapenhensch (CC BY-NC 4.0)")
-        if self.lumenite:
-            for rel_path in LUMENITE_FILES:
-                dest = os.path.join(self.target, "reshade-shaders", rel_path.replace("/", os.sep))
-                os.makedirs(os.path.dirname(dest), exist_ok=True)
-                shutil.copy2(os.path.join(self.lumenite, rel_path), dest)
-                self.add(dest)
-            self.record["components"]["motion_vectors"] = "LumeniteFX, the user's own copy"
-            self.say("shaders: your LumeniteFX copied in; it will provide the motion vectors")
-        else:
-            self.record["components"]["motion_vectors"] = {"drme": "ReshadeMotionEstimation", "vort": "VORT"}[self.provider]
-            self.say("motion vectors: %s will provide them" % self.record["components"]["motion_vectors"])
+        self.record["components"]["motion_vectors"] = {"drme": "ReshadeMotionEstimation", "vort": "VORT"}[self.provider]
+        self.say("motion vectors: %s will provide them" % self.record["components"]["motion_vectors"])
 
     def step_config(self):
         self.add(write_text(os.path.join(self.target, "portable_config", "mpv.conf"), MPV_CONF))
         self.add(write_text(os.path.join(self.target, "portable_config", "input.conf"), INPUT_CONF))
         # the templates are written for VORT; the chosen provider is substituted
         ini, preset = RESHADE_INI, RESHADE_PRESET
-        if self.lumenite:
-            ini = ini.replace("DLSS5_MV_PROVIDER=2,V_MV_MODE=1", "DLSS5_MV_PROVIDER=3")
-            preset = preset.replace("vort_MotionEffects@vort_Motion.fx", "Lumenite_Kernel@lumenite_Kernel.fx")
-        elif self.provider == "drme":
+        if self.provider == "drme":
             ini = ini.replace("DLSS5_MV_PROVIDER=2,V_MV_MODE=1", "DLSS5_MV_PROVIDER=0")
             preset = preset.replace("vort_MotionEffects@vort_Motion.fx", "DRME@MotionEstimation.fx")
         self.add(write_text(os.path.join(self.target, "ReShade.ini"), ini))
@@ -881,8 +848,6 @@ def main(argv=None):
                     help="the folder to install the stack into (default: stack, beside the lens)")
     ap.add_argument("--dlssnr", help="an nvngx_dlssnr.dll you already have; its hash is checked")
     ap.add_argument("--dlss", help="an nvngx_dlss.dll you already have; its hash is checked")
-    ap.add_argument("--lumenite", help="a reshade-shaders folder holding LumeniteFX you already have; "
-                                       "its motion vectors are used instead")
     ap.add_argument("--provider", choices=sorted(PROVIDERS), default="drme",
                     help="which fetched shader estimates motion vectors (default drme)")
     ap.add_argument("--verify", action="store_true", help="only run the self test")
@@ -897,7 +862,7 @@ def main(argv=None):
             ok, detail = verify(a.target)
             print(detail)
             return 0 if ok else 1
-        ok = Install(a.target, a.dlssnr, a.dlss, lumenite=a.lumenite, provider=a.provider).run()
+        ok = Install(a.target, a.dlssnr, a.dlss, provider=a.provider).run()
         print("")
         print("OK: the stack works in %s. The lens finds its default stack folder on its own; "
               "use --mpv-dir for any other." % a.target if ok else

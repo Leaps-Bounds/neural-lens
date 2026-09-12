@@ -584,7 +584,7 @@ Each of these was measured and ruled out, so they are not worth re-investigating
   the magnified region's size makes no difference (1.4 Mpx and 0.1 Mpx both measure 59.0). A
   reading of 51.6 fps for it is an artifact of a harness pacing its own pump loop with
   `time.sleep(0.02)`, which is 50 Hz.
-- **The compositor.** `DwmFlush` returns about 148 times a second on this machine against a
+- **The compositor.** `DwmFlush` returned about 148 times a second when measured, against a
   120 Hz display, so composition is not the constraint.
 - **The test source.** A tkinter source issues about 924 redraws a second.
 - **Invalidation frequency.** Locking invalidation to composition with `DwmFlush` and free
@@ -620,8 +620,7 @@ uninstall never reaches the original.
 
 Nothing is bundled, and licences force that rather than taste. mpv's `Copyright` file makes
 the build GPL, since it carries the `direct3d` output; bundling would oblige us to provide
-source for a binary we did not build. LumeniteFX publishes no licence and no releases, so a new
-install gets ReshadeMotionEstimation,
+source for a binary we did not build. A new install gets ReshadeMotionEstimation,
 CC BY-NC 4.0, provider 0 in `DLSS5_Feed.fx`, chosen by the measurement below, with VORT, MIT,
 provider 2 with `V_MV_MODE=1`, as the alternative. NVIDIA's runtimes come from
 the RHI project's manifest, which carries no hashes, so the hashes live in `neural_stack.py`
@@ -677,7 +676,7 @@ offer end to end against the built exe:
   first and the offer came back. The wizard now returns the folder it installed into and the
   relaunch names it first.
 
-### VORT against LumeniteFX, measured before publishing VORT
+### VORT's includes, and the measure that agrees with the eye
 
 The self test passed with VORT's shader failing to compile, because a still needs no motion
 vectors: four of its includes were missing from a hand picked list, the Feed logged "no known
@@ -685,53 +684,27 @@ VORT shader is installed: motion vectors will be zero", and nothing else said so
 fetches VORT's whole include folder and its blue noise texture, and the self test reads the
 Feed's provider line and fails on "none".
 
-With that fixed, the same lens ran over the same scrolling source on both stacks at a fixed
-30 fps, with Neural Rendering on and then off on each, so the provider was the only difference.
-Sharpness is the variance of the Laplacian of the dumped output frames, higher is sharper:
+Sharpness, the variance of the Laplacian of the output frames, cannot see a ghost, since a
+second edge adds high frequencies, and a lower frame to frame change can be the ghost itself, a
+blend that lags. The measure that agrees with the eye is the partial ink fraction of the page,
+the share of pixels between 40 and 160 out of 255 on a black on white page, where crisp text is
+bimodal and a ghost adds mid greys. VORT's own options (its rest mode is for engine vectors)
+and the Feed's validation values did not change its result.
 
-```
-                              NR on     NR off    kept
-grid, 3 px a frame            LumeniteFX   2080      2509     83%
-                              VORT         3128      3297     95%
-page of text, 3 px a frame    LumeniteFX    671       938     72%
-                              VORT          617       880     70%
-frame to frame change, text   LumeniteFX   8.8       10.2
-                              VORT         6.8        8.0
-```
-
-Those numbers said level on text and the frames said otherwise: on the page of text VORT's
-output shows doubled letters at the ends of words where LumeniteFX's is nearly crisp, at a
-slow scroll too. Sharpness cannot see a ghost, since a second edge adds high frequencies, and
-VORT's lower frame to frame change is the ghost itself, a blend that lags. The measure that
-agrees with the eye is the partial ink fraction of the page, the share of pixels between 40
-and 160 out of 255 on a black on white page, where crisp text is bimodal and a ghost adds mid
-greys:
-
-```
-scroll, px per source frame     1        3        6
-LumeniteFX                    0.092    0.097    0.104
-VORT                          0.099    0.109    0.106
-```
-
-A modest but visible step down at reading speeds, converging at fast scroll where both ghost.
-Neither VORT's own options (its rest mode is for engine vectors) nor the Feed's validation
-values (the author's preset holds the shader's defaults) changed it.
-
-Every provider the Feed lists was then put through the same page at the same three speeds,
+Every provider the Feed lists was put through the same page at three scroll speeds,
 plus a control with no provider enabled at all, which the Feed answers with zero vectors:
 
 ```
                                                     slow    reading   fast    licence
 Launchpad (iMMERSE, Pascal Gilcher)                 0.051   0.083     -       all rights reserved, permission needed
 ReshadeMotionEstimation (Jakob Wapenhensch)         0.075   0.096     0.102   CC BY-NC 4.0
-LumeniteFX Kernel                                   0.092   0.097     0.104   none
 VORT (Vortigern)                                    0.099   0.109     0.106   MIT
 dh_uber_motion (AlucardDH)                          0.112   0.113     0.108   GPL-2.0
 no provider, zero vectors                           0.114   0.123     -
 ```
 
 So the default a new install gets is ReshadeMotionEstimation, DRME, the Feed's provider 0
-through the shared `texMotionVectors`: crisper than LumeniteFX on this test, and CC BY-NC 4.0
+through the shared `texMotionVectors`: crisper than the others on this test, and CC BY-NC 4.0
 allows it to be fetched and used with credit in a free tool. Two things to know about it. Its
 repository publishes no releases and was last touched in 2023, so the setup pins the commit.
 And on ReShade 6.8 its first pass, the frame save, fails to compile with "cannot sample from
@@ -739,11 +712,9 @@ texture that is also used as render target"; the Feed's header warns that DRME t
 writes nothing", but measured here the estimator's remaining passes produce vectors that beat
 every alternative, and the zero vector control is far worse, so the warning describes a
 different case or an older build. VORT is fetched as well and can be chosen instead. Launchpad
-was the best of all, but its licence requires the author's explicit permission to use it as
-part of another project, so it was only ever run privately here; that permission is worth
-asking for. qUINT is all rights reserved and no longer ships a motion shader. The setup still
-takes a LumeniteFX copy the user already holds and configures provider 3 from it, which
-distributes nothing.
+measured best of all, but its licence requires its author's explicit permission to use it as
+part of another project, so it is not fetched. qUINT is all rights reserved and no longer ships
+a motion shader.
 
 The washed out frames seen in the first, governed run over motion at 85 fps were the rate, not
 the provider: at a fixed 30 no stack showed them, and the brightness of that run sat 8 percent

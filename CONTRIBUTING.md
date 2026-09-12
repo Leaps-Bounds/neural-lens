@@ -24,7 +24,9 @@ Two tools, both free: PyInstaller (`pip install pyinstaller`) and Inno Setup 6
 (`winget install --id JRSoftware.InnoSetup --scope user`). From the repository root:
 
 ```
+python assets\make_icon.py
 python -m PyInstaller --noconfirm --clean --noconsole --onedir --name NeuralLens ^
+    --icon ..\assets\neural-lens.ico --add-data "..\assets\neural-lens.ico;assets" ^
     --collect-all windows_capture --hidden-import neural_stack ^
     --distpath build\dist --workpath build\work --specpath build neural_lens.py
 "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" installer\NeuralLens.iss

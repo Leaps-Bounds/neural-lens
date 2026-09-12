@@ -673,6 +673,11 @@ def wizard(parent=None, target=DEFAULT_TARGET):
     BG, FG, DIM, ACCENT, WARN = "#1b2430", "#cbd5e1", "#64748b", "#4ade80", "#fbbf24"
     root = tk.Toplevel(parent) if parent else tk.Tk()
     root.title("Neural Lens: set up the neural stack")
+    try:
+        base = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__))
+        root.iconbitmap(os.path.join(base, "assets", "neural-lens.ico"))
+    except Exception:
+        pass
     root.configure(bg=BG)
     root.attributes("-topmost", True)
     root.resizable(False, False)

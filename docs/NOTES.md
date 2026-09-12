@@ -7,13 +7,16 @@ chain.
 
 ## The multi-pass chain
 
-The add-on that works in mpv, `renodx-dlss5` v4.7, has **no pass control**. Its complete set of
-settings is `EnableHooks, NRAutoMask, NRColorStrength, NRDepthMode, NREnableUpscaling,
-NRIntensity, NRLocalStructure, NRLocalTone, NRMVecScaleX, NRMVecScaleY, NRPaperWhiteScale,
-NRPreset, NRScreenshotKey, NRSkinStructure, NRStyle, NRToggleKey, NRTransferStrength,
-NRUICorrection, NeuralUplift`. The newer `renodx-dlss` add-on does have
-`DirectNeuralRenderingPassCount`, but it will not inject into mpv at all (see Dead ends), so it
-is not an option here.
+The add-on that works in mpv has **no pass control**. Its complete set of settings is
+`EnableHooks, NRAutoMask, NRColorStrength, NRDepthMode, NREnableUpscaling, NRIntensity,
+NRLocalStructure, NRLocalTone, NRMVecScaleX, NRMVecScaleY, NRPaperWhiteScale, NRPreset,
+NRScreenshotKey, NRSkinStructure, NRStyle, NRToggleKey, NRTransferStrength, NRUICorrection,
+NeuralUplift`. The newer `renodx-dlss` add-on does have `DirectNeuralRenderingPassCount`, but
+it will not inject into mpv at all (see Dead ends), so it is not an option here.
+
+Every build in this add-on line reports the same version resource, `0.2026.0828.0517`, so only
+size and hash tell them apart. The setup fetches `renodx-dlss5` 4.70 from the RHI repository.
+The measurements above were taken on v4.1.5, 1,694,720 bytes, sha256 `9150097c`.
 
 Passes are therefore made by chaining: stage N captures stage N-1's mpv window with WGC and
 renders it again. Cumulative change from the raw source, as mean absolute difference out of 255:

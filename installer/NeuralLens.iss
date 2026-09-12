@@ -45,6 +45,8 @@ SetupIconFile=..\assets\neural-lens.ico
 WizardStyle=modern
 SetupLogging=yes
 
+LicenseFile=..\LICENSE
+
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
@@ -54,6 +56,7 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 [Files]
 Source: "..\build\dist\NeuralLens\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\CHANGELOG.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\neural-lens.ini.example"; DestDir: "{app}"; Flags: ignoreversion
 

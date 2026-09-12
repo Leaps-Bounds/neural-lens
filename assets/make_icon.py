@@ -1,3 +1,5 @@
+# DLSS 5 Neural Lens: the icon. Copyright (C) 2026 Leaps-Bounds. GPL-3.0-or-later,
+# see the LICENSE file at the repository root.
 """Draw the lens icon: a round lens with the app's green ring over a dark
 field, a highlight, and a small pass indicator. Writes neural-lens.ico with
 every size Windows asks for, and a 256 px PNG for the README.

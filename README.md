@@ -33,28 +33,32 @@ for you, see Install below, or you can bring an mpv install of your own that alr
 | `nvngx_dlss.dll` | NVIDIA's DLSS runtime | NVIDIA |
 | `nvngx_dlssnr.dll` | NVIDIA's Neural Rendering model | NVIDIA |
 
-### Which Neural Rendering model, by card generation
+### The Neural Rendering model
 
-`nvngx_dlssnr.dll` is NVIDIA's model, and the version this was built against is **310.8**. Which
-build of it you need depends on your card:
+`nvngx_dlssnr.dll` is NVIDIA's model, and the version this was built against is **310.8**. One
+build covers every RTX card, so there is nothing to choose and the setup does not ask. It checks
+only that an NVIDIA RTX card is present, meaning compute capability 7.5 or higher, which is the
+RTX 20 series and newer, and says so plainly when there is not one.
 
-| card | model |
-|---|---|
-| RTX 50 series (Blackwell) | NVIDIA's stock 310.8 model, unmodified |
-| RTX 40 series (Ada) | a community modified build of the same 310.8 model |
+The build used is `310.8.SF-v2`. It was published for the RTX 40 series and its author states it
+also covers RTX 20 and 30 and runs identically on RTX 50. It was measured here creating and
+evaluating Neural Rendering on an RTX 5090, matching the stock model's effect on the image to
+within 0.01 at two pinned rates.
 
-All carry the same `NVIDIA DLSSNR - DVS PRODUCTION` description, so identify them by hash. Three
-builds are known to run:
+All these builds carry the same `NVIDIA DLSSNR - DVS PRODUCTION` description, so identify them by
+hash rather than by version string. Three are known to run:
 
 ```
-stock, RTX 50          E16BCF15E16E13F527491CDF7845B2FE6521A738D8F7C9C721866A8496E1FC8E   165,840,496 bytes, version 310.8.0.0
-40 series, current     6EB209E764F39872625DEBD6ABAF45E2BB6322F6F270F781F70C059AE30B3927   165,830,144 bytes, version 310.8.SF.0
-40 series, earlier     8270B350CD82DE5CE89806872CDD6B6A9249B80836B91BBEB3573470744CC206   165,840,496 bytes, version 310.8.0.0
+310.8.SF-v2, what the setup fetches
+                       6EB209E764F39872625DEBD6ABAF45E2BB6322F6F270F781F70C059AE30B3927   165,830,144 bytes, version 310.8.SF.0
+NVIDIA's stock 310.8   E16BCF15E16E13F527491CDF7845B2FE6521A738D8F7C9C721866A8496E1FC8E   165,840,496 bytes, version 310.8.0.0
+an earlier community build
+                       8270B350CD82DE5CE89806872CDD6B6A9249B80836B91BBEB3573470744CC206   165,840,496 bytes, version 310.8.0.0
 ```
 
-None is included or redistributed here. The setup fetches the one for your card from the RHI
-project's repository and refuses it unless it matches one of these hashes. If Neural Rendering
-never engages on a 40 series card with the stock model, this is the first thing to check.
+None is included or redistributed here. The setup fetches the model from the RHI project's
+repository and refuses it unless it matches one of these hashes. If you already hold one, point
+the setup at it and it is hash checked and copied in rather than downloaded.
 
 The test is simple: if you can open a video in that mpv and see Neural Rendering applied to it,
 you have everything you need. If you cannot, fix that first.
@@ -195,7 +199,10 @@ the untouched source, as mean absolute difference out of 255:
 
 Running the same chain with Neural Rendering switched off changes the image by only 0.24, so
 the round trip through capture and mpv is very nearly lossless, and what accumulates really is
-neural work. The maximum is 4, changeable with `max_passes` in the ini.
+neural work. Three is the default ceiling and the highest that is tested, changeable with
+`max_passes` in the ini or in the Settings dialog. Going above three is experimental: at four
+passes the rate search has been measured hunting across a 40 fps spread on a still image, so the
+frame rate can swing and the picture can wander.
 
 **Each pass lowers the frame rate on purpose.** Every pass is another full capture and present
 stage, so the chain delivers fewer frames per second, and each stage is asked for a little less

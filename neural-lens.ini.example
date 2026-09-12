@@ -41,8 +41,14 @@
 # adaptive = 1
 # min_fps = 12
 
-# Highest number of neural passes the plus button will go to.
-# max_passes = 4
+# Highest number of neural passes the plus button will go to. Three is the
+# default and the highest that is tested.
+#
+# Beyond three is experimental and may not work properly. At four passes the
+# rate search has been measured hunting over a 40 fps spread on a still image,
+# so the frame rate can swing and the picture can wander. Raising this is
+# allowed because the ceiling is yours to set, not because four is ready.
+# max_passes = 3
 
 # What the title bar shows beside the size: fps, the frame rate the visible
 # pass actually presents; detail, the capture rate in and the rate asked out;

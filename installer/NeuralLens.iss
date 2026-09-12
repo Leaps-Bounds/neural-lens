@@ -78,7 +78,6 @@ Type: filesandordirs; Name: "{app}"
 [Code]
 var
   DownloadPage: TInputOptionWizardPage;
-  CardPage: TInputOptionWizardPage;
 
 procedure InitializeWizard();
 begin
@@ -95,90 +94,11 @@ begin
     False, False);
   DownloadPage.Add('Download the Neural Rendering stack now (about 230 MB)');
   DownloadPage.Values[0] := True;
-
-  CardPage := CreateInputOptionPage(DownloadPage.ID,
-    'Graphics card',
-    'Which NVIDIA card does this computer have?',
-    'Neural Rendering uses a different model on each generation, and the wrong one fails to' + #13#10 +
-    'start. If you are not sure, leave the last option selected and Setup will identify the' + #13#10 +
-    'card itself and choose for you.',
-    True, False);
-  CardPage.Add('RTX 40 series (Ada)');
-  CardPage.Add('RTX 50 series (Blackwell)');
-  CardPage.Add('I don''t know: identify the card and choose automatically');
-  CardPage.SelectedValueIndex := 2;
 end;
 
-{ 'ada', 'blackwell', or '' when the card cannot be identified. Setup runs
-  nvidia-smi itself, because the lens is not installed yet when these pages are
-  shown. Compute capability is used rather than the marketing name, which
-  fragments into "RTX 4090 Laptop GPU" and similar. }
-function DetectedGeneration(): String;
-var
-  Res: Integer;
-  Caps: AnsiString;
-  Tmp: String;
-begin
-  { Caps, not Out: "out" is a reserved word in Pascal, and using it here failed
-    the whole [Code] section with "'BEGIN' expected" pointing at the var block }
-  Result := '';
-  Tmp := ExpandConstant('{tmp}\computecap.txt');
-  if not FileExists(ExpandConstant('{sys}\nvidia-smi.exe')) then
-    Exit;
-  if Exec(ExpandConstant('{cmd}'),
-          '/c ""' + ExpandConstant('{sys}\nvidia-smi.exe') +
-          '" --query-gpu=compute_cap --format=csv,noheader > "' + Tmp + '""',
-          '', SW_HIDE, ewWaitUntilTerminated, Res) then
-  begin
-    if LoadStringFromFile(Tmp, Caps) then
-    begin
-      if Pos('8.9', Caps) > 0 then
-        Result := 'ada'
-      else if Pos('12.', Caps) > 0 then
-        Result := 'blackwell';
-    end;
-  end;
-end;
-
-function ShouldSkipPage(PageID: Integer): Boolean;
-begin
-  { no card to choose if nothing is being downloaded }
-  Result := (PageID = CardPage.ID) and (not DownloadPage.Values[0]);
-end;
-
-function NextButtonClick(CurPageID: Integer): Boolean;
-var
-  Detected, Chosen, Human: String;
-begin
-  Result := True;
-  if CurPageID <> CardPage.ID then
-    Exit;
-  if CardPage.SelectedValueIndex = 2 then
-    Exit;
-  if CardPage.SelectedValueIndex = 0 then
-  begin
-    Chosen := 'ada';
-    Human := 'RTX 40 series';
-  end
-  else
-  begin
-    Chosen := 'blackwell';
-    Human := 'RTX 50 series';
-  end;
-  Detected := DetectedGeneration();
-  { warn on a disagreement, but do as asked: the user may be installing for a
-    card that is not fitted yet, and it is their machine }
-  if (Detected <> '') and (Detected <> Chosen) then
-  begin
-    Result := MsgBox('You chose ' + Human + ', but this computer looks like a ' +
-      'different generation.' + #13#10 + #13#10 +
-      'Setup can carry on with your choice. If it turns out to be wrong, Neural ' +
-      'Rendering will refuse to start and the lens will show the screen back ' +
-      'unchanged. You can rerun the stack setup from the Start Menu at any time ' +
-      'to put it right.' + #13#10 + #13#10 +
-      'Carry on with ' + Human + '?', mbConfirmation, MB_YESNO) = IDYES;
-  end;
-end;
+{ There is no card page any more. One Neural Rendering model serves every RTX
+  card, so there is nothing to choose and nothing to get wrong. The stack setup
+  checks for an RTX card itself and says so plainly if there is not one. }
 
 { ExecAndLogOutput calls this once per line the stack setup prints, and pumps
   the message queue itself, so the wizard stays alive without a busy wait. }
@@ -209,10 +129,6 @@ var
 begin
   LogPath := ExpandConstant('{app}\data\logs\stack-setup.log');
   Args := '--install-stack';
-  if CardPage.SelectedValueIndex = 0 then
-    Args := Args + ' --gpu ada'
-  else if CardPage.SelectedValueIndex = 1 then
-    Args := Args + ' --gpu blackwell';
 
   WizardForm.StatusLabel.Caption := 'Starting the Neural Rendering stack download...';
   Res := -1;

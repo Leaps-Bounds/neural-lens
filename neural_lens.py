@@ -137,7 +137,14 @@ def _find_mpv_dir():
 
     Checked in order: --mpv-dir on the command line, the NEURAL_LENS_MPV_DIR
     environment variable, mpv_dir in neural-lens.ini, an "mpv" folder beside
-    this script, and finally C:/Games/_mpv.
+    this script, and the "stack" folder the lens's own setup writes.
+
+    Every candidate is either named by the user or inside the install. Nothing
+    elsewhere on the machine is guessed at. An earlier version ended this list
+    with a hardcoded absolute path, one developer's own folder layout. On that
+    machine it silently satisfied the search, so the first run offer never
+    appeared and the lens drove a stack it had not installed and could not
+    account for; on every other machine it was a probe that could only fail.
     """
     cands = []
     for i, a in enumerate(sys.argv):
@@ -146,8 +153,7 @@ def _find_mpv_dir():
     cands += [os.environ.get("NEURAL_LENS_MPV_DIR"), _INI.get("mpv_dir"),
               os.path.join(_script_dir(), "mpv"),
               # where the lens's own stack setup puts it
-              os.path.join(_script_dir(), "stack"),
-              r"C:\Games\_mpv"]
+              os.path.join(_script_dir(), "stack")]
     for d in cands:
         if d and os.path.isfile(os.path.join(d, "mpv.exe")):
             return os.path.abspath(d)
@@ -2591,8 +2597,67 @@ def _offer_setup(reason):
 
 
 def main():
-    # two entry points the installer uses: the Start Menu's stack setup, and
-    # the uninstaller's removal of what the setup registered and wrote
+    # Three entry points the installer uses. This one runs DURING setup, so it
+    # must never open a window of its own: the whole point is that the user
+    # meets one installer and not a second surprise afterwards. Everything goes
+    # to its own log, which the installer tails to show progress on its own
+    # page, and the last line is a sentinel carrying the exit code, because
+    # Inno's Exec gives no process handle to wait on when it does not block.
+    if "--install-stack" in sys.argv:
+        import neural_stack
+        argv = [a for a in sys.argv[1:] if a != "--install-stack"]
+        class _Tee:
+            """Write to every stream that exists, ignoring the ones that do not.
+
+            The installer reads this process's stdout to show progress on its
+            own page, and the log file has to survive for a post mortem. An
+            earlier version replaced stdout with the file, which meant the
+            installer read nothing and sat frozen for the whole download while
+            the log filled up where nobody could see it.
+            """
+
+            def __init__(self, *streams):
+                self.streams = [s for s in streams if s is not None]
+
+            def write(self, text):
+                for s in self.streams:
+                    try:
+                        s.write(text)
+                        s.flush()
+                    except Exception:
+                        pass
+                return len(text)
+
+            def flush(self):
+                for s in self.streams:
+                    try:
+                        s.flush()
+                    except Exception:
+                        pass
+
+        handle = None
+        try:
+            os.makedirs(LOGDIR, exist_ok=True)
+            handle = open(os.path.join(LOGDIR, "stack-setup.log"), "w",
+                          encoding="utf-8", errors="replace", buffering=1)
+        except OSError:
+            pass
+        # __stdout__ is None in a windowed build launched with no pipe; when the
+        # installer runs us it supplies one, and that is what it reads back
+        sys.stdout = sys.stderr = _Tee(handle, getattr(sys, "__stdout__", None))
+        try:
+            rc = neural_stack.main(argv)
+        except Exception as exc:                  # never die silently mid-setup
+            print("FAILED: %r" % (exc,), flush=True)
+            rc = 3
+        print("__STACK_SETUP_EXIT__ %d" % rc, flush=True)
+        try:
+            sys.stdout.flush()
+        except Exception:
+            pass
+        sys.exit(rc)
+    # the Start Menu's stack setup, which is the repair path and may show its
+    # own window, and the uninstaller's removal of what the setup wrote
     if "--setup-stack" in sys.argv:
         import neural_stack
         neural_stack.wizard()

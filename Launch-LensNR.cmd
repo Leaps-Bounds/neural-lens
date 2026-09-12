@@ -11,12 +11,13 @@ rem    Launch-LensNR.cmd --mpv-dir "D:\path\to\mpv"
 rem    set NEURAL_LENS_MPV_DIR=D:\path\to\mpv
 rem    copy neural-lens.ini.example to neural-lens.ini, set mpv_dir
 rem    or put an "mpv" folder beside this script
+rem    (a "stack" folder beside it, written by neural_stack.py, is found too)
 rem
-rem  Requires python 3 with numpy and windows-capture:
+rem  Requires python 3 with tkinter, numpy and windows-capture:
 rem    pip install numpy windows-capture
 rem
 rem  The lens runs without a console. Everything it prints goes to
-rem  %LOCALAPPDATA%\NeuralLens\logs\lens.log, and anything that stops it
+rem  data\logs\lens.log beside this script, and anything that stops it
 rem  from starting is shown as a dialog. To run it with a console instead,
 rem  for example to watch the rate decisions live:
 rem    python neural_lens.py

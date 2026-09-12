@@ -16,14 +16,16 @@ and the target does not need to know anything about DLSS.
 It can also apply **several neural passes**, adjustable while it runs with plus and minus in
 the title bar.
 
-## Before you start, the honest prerequisite
+## What makes the picture
 
-**This project is the window, not the neural rendering.** It drives an existing mpv install
-that already has a working DLSS Neural Rendering setup, and it does nothing without one.
+**The lens is the window. It does not do the neural rendering itself.** That is done by an
+experimental community stack, and none of it is included or redistributed here.
 
-That setup is an experimental community stack, and assembling it is genuinely the hard part.
-None of it is included or redistributed here. The installer's setup can fetch and assemble it
-for you, see Install below, or you can bring an mpv install of your own that already contains:
+Assembling that stack by hand is the hard part, so the installer does it for you while it
+installs: it fetches each piece from the project that publishes it, configures them, and runs a
+self test. See [Install](#install). If you would rather, you can point the lens at an mpv install
+of your own that already carries the stack, see [From source](#from-source). Either way, what has
+to be present is:
 
 | component | what it does | comes from |
 |---|---|---|
@@ -60,27 +62,45 @@ None is included or redistributed here. The setup fetches the model from the RHI
 repository and refuses it unless it matches one of these hashes. If you already hold one, point
 the setup at it and it is hash checked and copied in rather than downloaded.
 
-The test is simple: if you can open a video in that mpv and see Neural Rendering applied to it,
-you have everything you need. If you cannot, fix that first.
+If you are bringing an mpv install of your own, the test is simple: open a video in it and see
+whether Neural Rendering is applied. If it is not, fix that first.
 
 You also need:
 
-- Windows 11. The capture path uses Windows.Graphics.Capture. Developed on 25H2.
-- An NVIDIA RTX GPU with a driver new enough for DLSS Neural Rendering.
-- Python 3 with `numpy` and `windows-capture`.
+- Windows 10 build 19041 or later, 64 bit, which is what the installer requires. The capture
+  path uses Windows.Graphics.Capture. It has only ever been tested here on Windows 11 25H2.
+- An NVIDIA RTX card with a driver new enough for DLSS Neural Rendering. The setup reads the
+  compute capability from `nvidia-smi` and stops below 7.5, which is the RTX 20 series and newer.
+- Room on disk for about 540 MB once the stack is in place, of which about 230 MB is downloaded.
+
+The installed lens does not need Python. That is only for running from source, below.
 
 ## Install
 
 **The installer.** Run `NeuralLens-Setup-<version>.exe` from the releases page. It needs no
-administrator prompt: it puts the lens in a folder you choose, under your own user folder by
-default, adds a Start Menu entry and an uninstaller, and that is all it contains. On first
-start the lens offers to set up the neural stack. Nothing of the stack is bundled; about 230 MB
-is downloaded from the projects that publish each part into that same folder, and ReShade is
-registered as a Vulkan layer for your user only, under its own name, so an existing ReShade on
-the machine is left alone. Everything the lens has lives in its one folder: the program, the
-stack in `stack`, the layer in `ReShade`, and its state, logs and screenshots in `data`.
-Uninstalling removes that folder and the layer registration, and nothing else. A DLL you
-pointed the setup at is copied in, so the original stays where it was.
+administrator prompt: it installs for your user alone, into a folder you choose, and adds a
+Start Menu entry and an uninstaller. The installer itself contains only the lens.
+
+Setup offers to fetch the neural stack as part of the installation, as a checkbox that is
+already ticked. Left ticked, it downloads about 230 MB and assembles the stack before setup
+finishes, reporting each step as it goes. **A small mpv window opens for about nine seconds
+near the end**: that is the self test checking that Neural Rendering really ran, and it closes
+itself. If that step fails, setup still completes and tells you which log to read, and you can
+run it again afterwards from the Start Menu's stack setup entry. Untick the box and nothing is
+downloaded, and that same entry is how you set it up later.
+
+Everything the lens has lives in its one folder: the program, the stack in `stack`, the layer in
+`ReShade`, and its state, logs and screenshots in `data`. ReShade is registered as a Vulkan layer
+for your user only, under its own name with its own allow list, so an existing ReShade on the
+machine is neither touched nor doubled. Uninstalling removes that folder and that one registry
+value, and nothing else: a DLL you pointed the setup at was copied in, so the original stays
+where it was, and a `data_dir` you moved outside the install is left alone.
+
+**Windows will warn you before it runs.** The installer is not code-signed, so Microsoft Defender
+SmartScreen shows "Windows protected your PC" and gives the publisher as Unknown. Click More info
+if it is offered, then Run anyway. Every release publishes the installer's sha256, so you can
+check the file you downloaded against it rather than taking the warning's word in either
+direction.
 
 What it fetches, and from where:
 
@@ -88,10 +108,14 @@ What it fetches, and from where:
 |---|---|
 | mpv | shinchiro's mpv-winbuild-cmake, the current release |
 | ReShade 6.8.0 with add-on support | reshade.me, the DLL taken out of the setup without running it |
-| `nvngx_dlss.dll` 310.8.0 and the Neural Rendering model for your card | the RHI project's manifest, hash checked against this README |
+| `nvngx_dlss.dll` 310.8.0 and the `310.8.SF-v2` Neural Rendering model | the RHI project's manifest, sha256 checked against this README |
 | `dlss5-feed.addon64` and `DLSS5_Feed.fx` | DLSS5-Feeder, the current release |
 | `renodx-dlss5.addon64` | the RHI repository |
 | ReshadeMotionEstimation (CC BY-NC 4.0), VORT (MIT) and ReShade's two shader headers | their repositories |
+
+Only NVIDIA's two runtimes are verified against a published hash, the ones listed above. The
+rest are taken from the current release each project publishes, with the RenoDX add-on pinned to
+a version and ReshadeMotionEstimation pinned to a commit.
 
 If you already have NVIDIA's two DLLs, point the setup at them and it uses those instead, once
 their hashes check out. Motion vectors come from ReshadeMotionEstimation by Jakob Wapenhensch,
@@ -102,7 +126,9 @@ that licence allows. The setup ends with a self test that opens an mpv window fo
 seconds and reads ReShade's log, and says plainly whether Neural Rendering ran. The Start Menu
 also has a "stack setup" entry to fetch or repair it later.
 
-**From source**, if you would rather:
+### From source
+
+If you would rather run it from the repository:
 
 1. Put this folder anywhere you like. It runs in place.
 2. `pip install numpy windows-capture`
@@ -291,8 +317,8 @@ folder for `dlss5-feed.addon64`, `renodx-dlss5.addon64` and `nvngx_dlssnr.dll`, 
 that are missing. Finding the folder only proves `mpv.exe` is in it, so an ordinary mpv install
 is accepted and the lens opens normally: it simply shows the screen back to you unchanged, which
 looks like the app doing nothing rather than an install that is incomplete. See
-[Before you start, the honest prerequisite](#before-you-start-the-honest-prerequisite) for what
-the mpv install has to carry. None of it is included or redistributed here.
+[What makes the picture](#what-makes-the-picture) for what the mpv install has to carry. None of
+it is included or redistributed here.
 
 **Neural Rendering looks like it is doing nothing.** If the startup check above said nothing,
 the install is fine and this is almost certainly the content. Its strength depends heavily on the
@@ -345,7 +371,6 @@ setup time from the project that publishes it, and each keeps its own licence:
 | mpv, and the Windows builds the setup fetches | the mpv project; builds by shinchiro | GPL |
 | ReshadeMotionEstimation, the default motion vector estimator | Jakob Wapenhensch | CC BY-NC 4.0 |
 | vort_Shaders, the alternative estimator | Vortigern | MIT |
-| LumeniteFX, used only from a copy you already have | Afzaal | no licence published |
 | DLSS, the DLSS runtime and the Neural Rendering model | NVIDIA | NVIDIA's terms |
 | windows-capture, the screen capture binding | NiiightmareXD | MIT |
 | NumPy | the NumPy developers | BSD 3-Clause |

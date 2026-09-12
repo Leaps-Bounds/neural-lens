@@ -45,7 +45,7 @@ body:
     id: passes
     attributes:
       label: How many passes
-      options: ["1", "2", "3", "4"]
+      options: ["1", "2", "3", "4 or more (experimental, needs max_passes raised in Settings)"]
     validations:
       required: true
 
@@ -71,8 +71,8 @@ body:
     id: size
     attributes:
       label: Lens size and display
-      description: The first line of %LOCALAPPDATA%\NeuralLens\lens-state.txt, plus your display resolution.
-      placeholder: 1400 1000 500 400 2, on a 3840x2160 display
+      description: The first line of lens-state.txt in the data folder beside the lens, plus your display resolution.
+      placeholder: 1400 1000 500 400 2 100, on a 3840x2160 display
     validations:
       required: true
 
@@ -106,8 +106,8 @@ body:
     attributes:
       label: Logs from the failing run
       description: |
-        Every launch archives the previous session's logs to
-        `%LOCALAPPDATA%\NeuralLens\logs`. So launch once more after the problem, then attach
+        Every launch archives the previous session's logs to `data\logs` beside the lens, or
+        wherever `data_dir` points. So launch once more after the problem, then attach
         the newest archived `ReShade.log`. The line that confirms Neural Rendering was
         running is `feature=18 (DLSSNR`.
 
@@ -128,7 +128,7 @@ body:
       label: Things worth checking first
       options:
         - label: The lens did not warn me at startup that Neural Rendering will probably not run.
-        - label: I tried the menu's Toggle NR on/off (F6). With NR live the picture changes clearly.
+        - label: I tried the menu's Turn NR off and Turn NR back on (F6). With NR on the picture changes clearly.
         - label: I checked the archived ReShade.log for `feature=18 (DLSSNR`.
         - label: I read the Limits section of the README, in case this is a known constraint.
         - label: My screenshots, if any, do not show anything I mind being public.

@@ -22,8 +22,8 @@ the title bar.
 that already has a working DLSS Neural Rendering setup, and it does nothing without one.
 
 That setup is an experimental community stack, and assembling it is genuinely the hard part.
-None of it is included here, none of it is redistributed here, and this README cannot walk you
-through it. You need an mpv install that already contains:
+None of it is included or redistributed here. The installer's setup can fetch and assemble it
+for you, see Install below, or you can bring an mpv install of your own that already contains:
 
 | component | what it does | comes from |
 |---|---|---|
@@ -52,9 +52,9 @@ stock, RTX 50          E16BCF15E16E13F527491CDF7845B2FE6521A738D8F7C9C721866A849
 40 series, earlier     8270B350CD82DE5CE89806872CDD6B6A9249B80836B91BBEB3573470744CC206   165,840,496 bytes, version 310.8.0.0
 ```
 
-Neither is included or redistributed here, and this project does not host the 40 series build
-or point at a source for it. If Neural Rendering never engages on a 40 series card with the
-stock model, this is the first thing to check.
+None is included or redistributed here. The setup fetches the one for your card from the RHI
+project's repository and refuses it unless it matches one of these hashes. If Neural Rendering
+never engages on a 40 series card with the stock model, this is the first thing to check.
 
 The test is simple: if you can open a video in that mpv and see Neural Rendering applied to it,
 you have everything you need. If you cannot, fix that first.
@@ -116,9 +116,6 @@ can also be pointed somewhere else on their own, from the menu's Settings.
 
 - **Move it** by dragging the title bar. The viewport is click-through, so clicking inside it
   reaches whatever is underneath rather than the lens.
-- **Add or remove a pass** with plus and minus in the title bar, while it runs. There is a
-  brief pause while it does, because every stage restarts: the frame rate each one is given
-  depends on how many stages there are.
 - **Close it** with the X. Because the viewport can never take keyboard focus, mpv's usual `q`
   will not reach it, which is why the X is there.
 - The **menu** at the left opens the ReShade overlay in place so you can adjust Neural

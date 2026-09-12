@@ -1,10 +1,11 @@
 ; Inno Setup script for the DLSS 5 Neural Lens.
 ;
 ; Wraps the PyInstaller build (build\dist\NeuralLens) into a per user installer:
-; no administrator prompt, a Start Menu entry, Add or remove programs, and an
-; uninstaller. The neural stack itself is not in here. The lens fetches it on
-; first run, into the user's own folder, from the projects that publish each
-; part; see neural_stack.py and docs\NOTES.md for why nothing is bundled.
+; no administrator prompt, a folder of the user's choosing, a Start Menu entry,
+; Add or remove programs, and an uninstaller. The neural stack itself is not in
+; here. The lens fetches it on first run, into subfolders of that same folder,
+; from the projects that publish each part; see neural_stack.py and
+; docs\NOTES.md for why nothing is bundled.
 ;
 ; Build, from the repository root:
 ;   python -m PyInstaller --noconfirm --clean --noconsole --onedir --name NeuralLens ^
@@ -72,21 +73,15 @@ Filename: "{app}\{#AppExe}"; Description: "Start the lens now (it offers to set 
 Type: filesandordirs; Name: "{app}"
 
 [Code]
-// The neural stack lives under %LOCALAPPDATA%\NeuralLens, about 230 MB the user
-// downloaded, plus the lens's own state and logs. Ask before removing any of it,
-// and do it through the exe's own uninstall so the registry entry goes with it.
+// Everything the lens has is inside {app}: the program, the stack it downloaded,
+// the ReShade layer and its data. The one thing outside is the registry value
+// that names the layer, which the exe's own uninstall removes; the folder itself
+// goes with [UninstallDelete]. A DLL the user pointed the setup at was copied in,
+// so nothing outside {app} is touched.
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   R: Integer;
 begin
   if CurUninstallStep = usUninstall then
-  begin
-    // suppressible, so a silent uninstall never asks and never deletes: it keeps
-    if SuppressibleMsgBox('Also remove the Neural Rendering stack the lens downloaded (mpv, ReShade, the NVIDIA runtimes) and the lens''s saved state and logs?' + #13#10 + #13#10 +
-              'Choose No to keep them for a later install.', mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) = IDYES then
-    begin
-      Exec(ExpandConstant('{app}\{#AppExe}'), '--uninstall-stack', '', SW_HIDE, ewWaitUntilTerminated, R);
-      DelTree(ExpandConstant('{localappdata}\NeuralLens'), True, True, True);
-    end;
-  end;
+    Exec(ExpandConstant('{app}\{#AppExe}'), '--uninstall-stack', '', SW_HIDE, ewWaitUntilTerminated, R);
 end;

@@ -56,8 +56,8 @@ How it works. Every piece below was measured before it was built:
      Windows it does not quote arguments containing spaces, and this project's
      own path has one in "DLSS 5".
 
-Configuration: see neural-lens.ini.example. State and logs live in
-%LOCALAPPDATA%/NeuralLens by default.
+Configuration: see neural-lens.ini.example. State, logs and screenshots live
+in a data folder beside the program by default, so an install is one folder.
 """
 import collections
 import ctypes
@@ -146,7 +146,7 @@ def _find_mpv_dir():
     cands += [os.environ.get("NEURAL_LENS_MPV_DIR"), _INI.get("mpv_dir"),
               os.path.join(_script_dir(), "mpv"),
               # where the lens's own stack setup puts it
-              os.path.join(os.environ.get("LOCALAPPDATA") or "", "NeuralLens", "stack"),
+              os.path.join(_script_dir(), "stack"),
               r"C:\Games\_mpv"]
     for d in cands:
         if d and os.path.isfile(os.path.join(d, "mpv.exe")):
@@ -214,7 +214,7 @@ TITLE = "LensNR %d" % os.getpid()
 __version__ = "0.1.0"        # beta; see CHANGELOG.md
 
 DATA_DIR = (os.environ.get("NEURAL_LENS_DATA") or _INI.get("data_dir")
-            or os.path.join(os.environ.get("LOCALAPPDATA") or _script_dir(), "NeuralLens"))
+            or os.path.join(_script_dir(), "data"))
 STATE = os.path.join(DATA_DIR, "lens-state.txt")
 LOGDIR = os.path.join(DATA_DIR, "logs")
 
@@ -2557,8 +2557,8 @@ def _offer_setup(reason):
 
     Returns True when the lens has been relaunched and this process should
     simply return. The stack setup lives in neural_stack.py and puts everything
-    under LOCALAPPDATA by default; the relaunch is told the folder, so no ini
-    change is needed and nothing that pointed at a bare mpv gets in the way.
+    beside the program; the relaunch is told the folder, so no ini change is
+    needed and nothing that pointed at a bare mpv gets in the way.
     """
     try:
         import neural_stack
@@ -2571,7 +2571,7 @@ def _offer_setup(reason):
     want = messagebox.askyesno(
         "Neural Lens",
         reason + "\n\nSet up the Neural Rendering stack now? About 230 MB is downloaded from "
-        "the projects that publish each part into a folder of your own, registered for your "
+        "the projects that publish each part into the lens's own folder, registered for your "
         "user only, with no administrator prompt. It takes a few minutes.")
     where = False
     if want:
@@ -2633,7 +2633,7 @@ def main():
             "  %s" % exc,
             "",
             "Set data_dir in neural-lens.ini to a folder that exists, or delete",
-            "that line to use the default under LOCALAPPDATA.",
+            "that line to use the data folder beside the program.",
         ]))
         return
     cw, ch, x, y, passes, rate = 1400, 1000, 500, 400, 1, None

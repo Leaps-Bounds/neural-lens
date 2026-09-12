@@ -6,7 +6,7 @@ Open an issue. The bug report form asks for the things that actually make a repo
 diagnosable, so please fill it in rather than opening a blank issue.
 
 The single most useful attachment is the archived `ReShade.log`. Every launch copies the
-previous session's logs into `%LOCALAPPDATA%\NeuralLens\logs`, so if something goes wrong,
+previous session's logs into `data\logs` in the lens folder, so if something goes wrong,
 launch the lens once more and attach the newest archived log.
 
 If the lens never opened at all, there will be no `ReShade.log` to send, because ReShade

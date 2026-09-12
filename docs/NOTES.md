@@ -602,9 +602,15 @@ the frame rate.
 ## The installer and the stack setup
 
 The lens is frozen with PyInstaller and wrapped by Inno Setup into a per user installer,
-`PrivilegesRequired=lowest`, under `%LOCALAPPDATA%\Programs\NeuralLens`. The installer holds
-the lens and nothing else. `neural_stack.py` fetches the neural stack on first run, or from a
-Start Menu entry, or from the command line, into `%LOCALAPPDATA%\NeuralLens\stack`.
+`PrivilegesRequired=lowest`, into a folder the user chooses, `%LOCALAPPDATA%\Programs\NeuralLens`
+by default. The installer holds the lens and nothing else. `neural_stack.py` fetches the neural
+stack on first run, or from a Start Menu entry, or from the command line, into `stack` in that
+same folder, with the Vulkan layer in `ReShade` beside it and the downloads in `downloads`
+until the self test passes. The lens keeps its state, logs and screenshots in `data` there
+too. So an install is one folder plus one registry value naming the layer, and the uninstaller
+runs the exe's own `--uninstall-stack` for the value and deletes the folder. A DLL the user
+points the setup at is copied in after its hash check and only the copy is recorded, so an
+uninstall never reaches the original.
 
 Nothing is bundled, and licences force that rather than taste. mpv's `Copyright` file makes
 the build GPL, since it carries the `direct3d` output; bundling would oblige us to provide

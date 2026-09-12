@@ -255,9 +255,12 @@ SHOT_DIR = (os.environ.get("NEURAL_LENS_SHOTS") or _INI.get("screenshot_dir")
             or os.path.join(DATA_DIR, "screenshots"))
 
 try:
-    MAX_PASSES = max(1, min(8, int(_INI.get("max_passes", 4))))
+    # Three by default. Four measurably hunts on a 5090 over a detailed still,
+    # a spread of 40 fps over ninety seconds, so it is available but not the
+    # setting anyone lands on without choosing it.
+    MAX_PASSES = max(1, min(8, int(_INI.get("max_passes", 3))))
 except ValueError:
-    MAX_PASSES = 4
+    MAX_PASSES = 3
 
 BAR, EDGE = 34, 2
 DIVIDER = 14                 # grab width of the A/B divider; the line drawn is 4
@@ -2407,9 +2410,12 @@ class Lens:
                 "restarts the lens.")
         most = tk.IntVar(value=MAX_PASSES)
         slider("Most neural passes the plus button allows", most, 1, 8)
-        explain("Each pass renders the previous pass again. Two is usually the sweet spot, "
-                "three is visibly heavy, and every pass costs a share of the frame rate. "
-                "Applies straight away.")
+        explain("Each pass renders the previous pass again, and every pass costs a share of "
+                "the frame rate. Two is usually the sweet spot and three is the highest that "
+                "is tested. Applies straight away.\n\n"
+                "Above three is experimental and may not work properly: at four passes the "
+                "rate search has been measured hunting over a 40 fps spread on a still "
+                "image, so the frame rate can swing and the picture can wander.")
 
         # ---- title bar
         section("Title bar")
@@ -2454,7 +2460,7 @@ class Lens:
                 restart = True
             if int(most.get()) != MAX_PASSES:
                 MAX_PASSES = int(most.get())
-                _save_ini("max_passes", None if MAX_PASSES == 4 else MAX_PASSES)
+                _save_ini("max_passes", None if MAX_PASSES == 3 else MAX_PASSES)
                 self.update_info()
                 if len(self.stages) > MAX_PASSES:
                     self.set_passes(MAX_PASSES)

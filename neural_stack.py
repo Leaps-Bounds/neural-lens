@@ -46,7 +46,7 @@ Command line, for testing and for people who prefer it:
     python neural_stack.py                  install into the default folder
     python neural_stack.py --target D:\\nr   install somewhere else
     python neural_stack.py --dlssnr X --dlss Y   use NVIDIA DLLs you already have (hash checked)
-    python neural_stack.py --gpu ada        override the card generation (ada or blackwell)
+    python neural_stack.py --verify         only run the self test on an existing stack
     python neural_stack.py --verify         only run the self test on an existing install
     python neural_stack.py --uninstall      remove what the record says was installed
 
@@ -126,8 +126,13 @@ HASHES = {
                         "8270b350cd82de5ce89806872cdd6b6a9249b80836b91bbeb3573470744cc206"],
     },
 }
-# which Neural Rendering model each card generation needs, by compute capability
-GENERATIONS = {"blackwell": "310.8.0", "ada": "310.8.SF-v2"}
+# One Neural Rendering model serves every RTX card. The SF-v2 build was thought
+# to be 40 series only until it was measured running on a 5090 on 2026-09-12:
+# feature 18 created and evaluated, and the in-to-out difference matched the
+# stock model to within 0.01 at two pinned rates. Its author states it covers
+# RTX 20, 30 and 40 and runs identically on 50. The stock 310.8.0 hash stays in
+# HASHES so installs made before this change still verify when repaired.
+MODEL = "310.8.SF-v2"
 
 MPV_CONF = """# written by the Neural Lens stack setup
 gpu-api=vulkan
@@ -259,12 +264,15 @@ def fetch_json(url):
         return json.loads(r.read().decode("utf-8"))
 
 
-def gpu_generation():
-    """'blackwell', 'ada', or None, from the driver's own nvidia-smi.
+def gpu_supported():
+    """(True, capability) when Neural Rendering can run here, else (False, why).
 
-    Compute capability is steadier than marketing names, which fragment into
-    "RTX 4090 Laptop GPU" and "RTX 4000 Ada Generation": 8.9 is Ada, the RTX 40
-    series; 12.0 is Blackwell, the RTX 50 series.
+    One model now serves every generation, so the question is no longer which
+    card this is but whether it is one at all. Compute capability 7.5 is Turing,
+    the first RTX line and where Neural Rendering starts; a machine with no
+    nvidia-smi has no NVIDIA driver. Capability is steadier than marketing
+    names, which fragment into "RTX 4090 Laptop GPU" and "RTX 4000 Ada
+    Generation".
     """
     smi = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "nvidia-smi.exe")
     if not os.path.isfile(smi):
@@ -277,16 +285,18 @@ def gpu_generation():
                              capture_output=True, text=True, timeout=20,
                              stdin=subprocess.DEVNULL, creationflags=NO_WINDOW).stdout
     except Exception:
-        return None
+        return False, "no NVIDIA driver here (nvidia-smi would not run)"
     caps = [c.strip() for c in out.splitlines() if c.strip()]
     if not caps:
-        return None
-    major = int(float(caps[0]))
-    if major >= 12:
-        return "blackwell"
-    if caps[0].startswith("8.9"):
-        return "ada"
-    return None
+        return False, "the driver reported no compute capability"
+    try:
+        cap = float(caps[0])
+    except ValueError:
+        return False, "the driver reported %r, which is not a capability" % caps[0]
+    if cap < 7.5:
+        return False, ("compute capability %s is older than the RTX 20 series, and "
+                       "Neural Rendering needs the tensor cores an RTX card has" % caps[0])
+    return True, caps[0]
 
 
 def write_text(path, text):
@@ -311,10 +321,9 @@ def find_lumenite(folder):
 
 
 class Install:
-    def __init__(self, target=DEFAULT_TARGET, gpu=None, dlssnr=None, dlss=None, log=None, lumenite=None,
+    def __init__(self, target=DEFAULT_TARGET, dlssnr=None, dlss=None, log=None, lumenite=None,
                  provider="drme"):
         self.target = os.path.abspath(target)
-        self.gpu = gpu
         self.given = {"nvngx_dlssnr.dll": dlssnr, "nvngx_dlss.dll": dlss}
         self.log = log
         self.provider = provider if provider in PROVIDERS else "drme"
@@ -420,18 +429,16 @@ class Install:
         self.add(write_text(os.path.join(LAYER_DIR, "ReShadeApps.ini"),
                             "Apps=%s\n" % os.path.join(self.target, "mpv.exe")))
 
-    # NVIDIA: both runtimes, hash checked, the model chosen for this card
+    # NVIDIA: both runtimes, hash checked. One model serves every RTX card.
     def step_nvidia(self):
-        gen = self.gpu or gpu_generation()
-        if not gen:
-            raise StackError("could not tell which card this is. nvidia-smi reported no compute "
-                             "capability of 8.9 (RTX 40 series) or 12 (RTX 50 series). Pass --gpu.")
-        model = GENERATIONS[gen]
-        self.record["components"]["gpu"] = gen
+        ok, detail = gpu_supported()
+        if not ok:
+            raise StackError("Neural Rendering needs an NVIDIA RTX card: %s" % detail)
+        model = MODEL
+        self.record["components"]["gpu"] = detail
         self.record["components"]["dlssnr"] = model
         self.record["components"]["dlss"] = DLSS_VERSION
-        self.say("NVIDIA: %s card, Neural Rendering model %s" % (
-            {"ada": "RTX 40 series", "blackwell": "RTX 50 series"}[gen], model))
+        self.say("NVIDIA: compute capability %s, Neural Rendering model %s" % (detail, model))
         manifest = fetch_json(SOURCES["manifest"])
 
         def url_for(key, version):
@@ -706,7 +713,7 @@ def wizard(parent=None, target=DEFAULT_TARGET):
     from tkinter import filedialog
 
     BG, FG, DIM, ACCENT, WARN = "#1b2430", "#cbd5e1", "#64748b", "#4ade80", "#fbbf24"
-    gen = gpu_generation()
+    supported, detail = gpu_supported()
     root = tk.Toplevel(parent) if parent else tk.Tk()
     root.title("Neural Lens: set up the neural stack")
     try:
@@ -717,14 +724,12 @@ def wizard(parent=None, target=DEFAULT_TARGET):
     root.configure(bg=BG)
     root.attributes("-topmost", True)
     root.resizable(False, False)
-    card = {"ada": "an RTX 40 series card", "blackwell": "an RTX 50 series card"}.get(gen)
     intro = ("The lens needs an mpv with NVIDIA's DLSS Neural Rendering stack. Nothing is bundled: "
              "about 230 MB is downloaded from the projects that publish each part, into the lens's "
              "own folder, and registered for your user only. No administrator prompt.\n\n"
-             + ("This is %s, so it gets the %s Neural Rendering model." % (card, GENERATIONS[gen])
-                if gen else
-                "The card could not be identified as RTX 40 or 50 series. Neural Rendering runs "
-                "only on those, so the setup cannot choose a model here."))
+             + ("This card reports compute capability %s, so the %s model applies."
+                % (detail, MODEL) if supported else
+                "Neural Rendering cannot run on this machine: %s." % detail))
     tk.Label(root, text=intro, bg=BG, fg=FG, justify="left", wraplength=620,
              font=("Segoe UI", 10)).grid(row=0, column=0, columnspan=3, sticky="w", padx=14, pady=(14, 8))
     tk.Label(root, text="Goes into", bg=BG, fg=FG, font=("Segoe UI", 10)).grid(
@@ -790,7 +795,7 @@ def wizard(parent=None, target=DEFAULT_TARGET):
         # at the first run offer the main thread is in wait_window, not mainloop,
         # so a .get() here raised "main thread is not in main loop"
         try:
-            ok = Install(target, gen, dlssnr or None, dlss or None, log=q.put).run()
+            ok = Install(target, dlssnr or None, dlss or None, log=q.put).run()
             result["ok"] = ok
         except StackError as exc:
             q.put("")
@@ -812,7 +817,7 @@ def wizard(parent=None, target=DEFAULT_TARGET):
         root.after(100, pump)
 
     go = tk.Button(root, text="Set it up", command=start, relief="flat", bg=ACCENT, fg="#0b1220",
-                   font=("Segoe UI", 10, "bold"), state="normal" if gen else "disabled")
+                   font=("Segoe UI", 10, "bold"), state="normal" if supported else "disabled")
     go.grid(row=8, column=2, sticky="e", padx=14, pady=(4, 14))
     tk.Button(root, text="Not now", command=root.destroy, relief="flat", bg="#334155", fg=FG).grid(
         row=9, column=2, sticky="e", padx=14, pady=(0, 14))
@@ -831,7 +836,6 @@ def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(description="fetch and assemble the Neural Rendering stack for the lens")
     ap.add_argument("--target", default=DEFAULT_TARGET)
-    ap.add_argument("--gpu", choices=sorted(GENERATIONS))
     ap.add_argument("--dlssnr", help="an nvngx_dlssnr.dll you already have; its hash is checked")
     ap.add_argument("--dlss", help="an nvngx_dlss.dll you already have; its hash is checked")
     ap.add_argument("--lumenite", help="a reshade-shaders folder holding LumeniteFX you already have; "
@@ -849,7 +853,7 @@ def main(argv=None):
             ok, detail = verify(a.target)
             print(detail)
             return 0 if ok else 1
-        ok = Install(a.target, a.gpu, a.dlssnr, a.dlss, lumenite=a.lumenite, provider=a.provider).run()
+        ok = Install(a.target, a.dlssnr, a.dlss, lumenite=a.lumenite, provider=a.provider).run()
         print("")
         print("OK: the stack works. Point the lens at %s" % a.target if ok else
               "The stack was installed but the self test did not pass; see above.")

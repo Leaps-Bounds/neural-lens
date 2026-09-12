@@ -42,6 +42,17 @@ Features:
 - The lens is per monitor DPI aware, so a lens on a monitor whose scaling differs from the one
   the session logged on with is the size it says it is. Before, a 1400x760 lens on such a
   monitor ran a 1680x912 chain, rescaled by Windows on the way, and the lens could not tell.
+- One Neural Rendering model for every RTX card. The setup used to pick a model by card
+  generation and refuse to continue when it could not identify one. The SF-v2 model covers
+  RTX 20 through 50, so there is nothing to choose: the installer no longer asks which card
+  you have, and the only question left is whether an NVIDIA RTX card is present at all, which
+  it answers itself and says plainly when the answer is no.
+- Three neural passes by default, raised from four, and the Settings dialog says that going
+  above three is experimental. Four is still available. On an RTX 5090 over a detailed still
+  the rate search at four passes was measured hunting across a 40 fps spread in ninety
+  seconds, so the frame rate can swing and the picture can wander.
+- Correction to the note below: "four passes settles, a spread of 4 fps" was measured on an
+  RTX 4070 and does not hold on every card. See the paragraph above.
 - Four passes settles. The window the governor waits after a rate change grows with the pass
   count, since the brightness ripple of a change through four stages outlasted the fixed wait
   and read as a collapse, and a retake of a remembered level never steps past that level,

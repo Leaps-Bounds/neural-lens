@@ -17,7 +17,7 @@ touched. Licences force most of this: mpv is GPL and must come from upstream,
 NVIDIA's runtimes are NVIDIA's, and the motion vector shader the lens's own
 author uses cannot be redistributed at all, so a new install gets VORT (MIT).
 
-What ends up where, with TARGET defaulting to %LOCALAPPDATA%\\NeuralLens\\stack:
+What ends up where. APP is the lens's own folder, and TARGET defaults to APP\\stack:
 
     TARGET\\mpv.exe and the rest of the mpv build      shinchiro's mpv-winbuild-cmake
     TARGET\\nvngx_dlss.dll                             NVIDIA, via the RHI manifest
@@ -28,8 +28,12 @@ What ends up where, with TARGET defaulting to %LOCALAPPDATA%\\NeuralLens\\stack:
     TARGET\\portable_config\\mpv.conf, input.conf
     TARGET\\ReShade.ini, ReShadePreset.ini, dlss5-feed.cfg
     TARGET\\install-record.json                        everything above, for uninstall
-    LAYER\\ReShade64.dll, ReShade64.json, ReShadeApps.ini   LAYER = %LOCALAPPDATA%\\NeuralLens\\ReShade
-    HKCU\\SOFTWARE\\Khronos\\Vulkan\\ImplicitLayers\\<LAYER\\ReShade64.json> = 0
+    APP\\ReShade\\ReShade64.dll, ReShade64.json, ReShadeApps.ini
+    APP\\downloads\\...                                  while installing; removed once the self test passes
+    HKCU\\SOFTWARE\\Khronos\\Vulkan\\ImplicitLayers\\<APP\\ReShade\\ReShade64.json> = 0
+
+A DLL the user points at is hash checked and copied into TARGET; the record
+names the copy, so uninstalling never touches the original.
 
 The layer is registered under a name of its own, VK_LAYER_reshade_neural_lens,
 with its own allow list holding only this mpv. The Vulkan loader loads one
@@ -64,11 +68,16 @@ import zipfile
 
 __version__ = "0.1.0"
 
-LOCAL = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+# Everything lives in the lens's own folder, the one the installer put it in or
+# the one this script is in: the stack, the ReShade layer, the downloads while
+# they are needed, and (in neural_lens.py) the state and logs. Uninstalling is
+# then removing that one folder plus the registry value that names it.
+APP_DIR = (os.path.dirname(sys.executable) if getattr(sys, "frozen", False)
+           else os.path.dirname(os.path.abspath(__file__)))
 NO_WINDOW = 0x08000000        # CREATE_NO_WINDOW, for console children of a windowless lens
-DEFAULT_TARGET = os.path.join(LOCAL, "NeuralLens", "stack")
-LAYER_DIR = os.path.join(LOCAL, "NeuralLens", "ReShade")
-CACHE_DIR = os.path.join(LOCAL, "NeuralLens", "downloads")
+DEFAULT_TARGET = os.path.join(APP_DIR, "stack")
+LAYER_DIR = os.path.join(APP_DIR, "ReShade")
+CACHE_DIR = os.path.join(APP_DIR, "downloads")
 LAYER_NAME = "VK_LAYER_reshade_neural_lens"
 LAYER_KEY = r"SOFTWARE\Khronos\Vulkan\ImplicitLayers"
 
@@ -341,6 +350,10 @@ class Install:
         self.say("Installed. Running the self test.")
         ok, detail = verify(self.target, log=self.log)
         self.say(detail)
+        if ok:
+            # the downloads served their purpose; a failed run keeps them so a
+            # retry does not fetch 230 MB again
+            shutil.rmtree(CACHE_DIR, ignore_errors=True)
         return ok
 
     # mpv: the current build from shinchiro, which is the one mpv.io points at
@@ -655,11 +668,16 @@ def uninstall(target=DEFAULT_TARGET, log=None):
             os.remove(f)
         except OSError:
             pass
-    for extra in ("ReShade.log", "dlss5-feed.log", "ReShadePreset.ini", "ReShade.ini", "install-record.json"):
+    # what running the stack wrote: the logs and their rotations, and mpv's
+    # shader cache, none of which the record could know about
+    for extra in ("ReShadePreset.ini", "ReShade.ini", "install-record.json") + tuple(
+            f for f in os.listdir(target) if f.startswith(("ReShade.log", "dlss5-feed.log"))):
         try:
             os.remove(os.path.join(target, extra))
         except OSError:
             pass
+    shutil.rmtree(os.path.join(target, "portable_config", "cache"), ignore_errors=True)
+    shutil.rmtree(CACHE_DIR, ignore_errors=True)
     for d in (target, record.get("layer_dir", LAYER_DIR)):
         for root, dirs, files in os.walk(d, topdown=False):
             for sub in dirs:
@@ -701,33 +719,24 @@ def wizard(parent=None, target=DEFAULT_TARGET):
     root.resizable(False, False)
     card = {"ada": "an RTX 40 series card", "blackwell": "an RTX 50 series card"}.get(gen)
     intro = ("The lens needs an mpv with NVIDIA's DLSS Neural Rendering stack. Nothing is bundled: "
-             "about 230 MB is downloaded from the projects that publish each part, into a folder "
-             "of your own, and registered for your user only. No administrator prompt.\n\n"
+             "about 230 MB is downloaded from the projects that publish each part, into the lens's "
+             "own folder, and registered for your user only. No administrator prompt.\n\n"
              + ("This is %s, so it gets the %s Neural Rendering model." % (card, GENERATIONS[gen])
                 if gen else
                 "The card could not be identified as RTX 40 or 50 series. Neural Rendering runs "
                 "only on those, so the setup cannot choose a model here."))
     tk.Label(root, text=intro, bg=BG, fg=FG, justify="left", wraplength=620,
              font=("Segoe UI", 10)).grid(row=0, column=0, columnspan=3, sticky="w", padx=14, pady=(14, 8))
-    tk.Label(root, text="Install into", bg=BG, fg=FG, font=("Segoe UI", 10)).grid(
+    tk.Label(root, text="Goes into", bg=BG, fg=FG, font=("Segoe UI", 10)).grid(
         row=1, column=0, sticky="w", padx=14)
+    tk.Label(root, text=target, bg=BG, fg=FG, font=("Consolas", 9), anchor="w").grid(
+        row=1, column=1, columnspan=2, sticky="w", padx=(6, 14))
     # every variable is made on this window's own Tk. At the offer that follows
     # a found but bare mpv the lens's root already exists and is the default
     # root, so a variable without a master lived there while the entries lived
-    # here: the folder showed empty and anything typed was never seen
-    where = tk.StringVar(master=root, value=target)
-    tk.Entry(root, textvariable=where, width=64, bg="#0b1220", fg=FG, insertbackground=FG,
-             relief="flat").grid(row=1, column=1, sticky="we", padx=(6, 6))
-
-    def browse():
-        d = filedialog.askdirectory(initialdir=where.get(), title="Where should the stack go?")
-        if d:
-            where.set(os.path.normpath(d))
-
-    tk.Button(root, text="Browse", command=browse, relief="flat", bg="#334155", fg=FG).grid(
-        row=1, column=2, padx=(0, 14))
+    # here: the fields showed empty and anything typed was never seen
     have = {"nvngx_dlssnr.dll": tk.StringVar(master=root), "nvngx_dlss.dll": tk.StringVar(master=root)}
-    tk.Label(root, text="If you already have NVIDIA's DLLs, point at them and they are used instead "
+    tk.Label(root, text="If you already have NVIDIA's DLLs, point at them and copies are used instead "
                         "of downloaded, once their hashes check out. Otherwise leave these empty.",
              bg=BG, fg=DIM, justify="left", wraplength=620, font=("Segoe UI", 9)).grid(
         row=2, column=0, columnspan=3, sticky="w", padx=14, pady=(10, 2))
@@ -799,7 +808,7 @@ def wizard(parent=None, target=DEFAULT_TARGET):
         go.config(state="disabled", text="Installing...")
         status.config(text="", fg=DIM)
         threading.Thread(target=work, daemon=True,
-                         args=(where.get(), have["nvngx_dlssnr.dll"].get(), have["nvngx_dlss.dll"].get())).start()
+                         args=(target, have["nvngx_dlssnr.dll"].get(), have["nvngx_dlss.dll"].get())).start()
         root.after(100, pump)
 
     go = tk.Button(root, text="Set it up", command=start, relief="flat", bg=ACCENT, fg="#0b1220",
@@ -814,7 +823,7 @@ def wizard(parent=None, target=DEFAULT_TARGET):
         root.mainloop()
     # the folder it installed into, so a caller can point the lens straight at
     # it; a string is truthy, so callers that only ask whether it worked are fine
-    return os.path.abspath(where.get()) if result["ok"] else False
+    return os.path.abspath(target) if result["ok"] else False
 
 
 # ---------------------------------------------------------------- entry

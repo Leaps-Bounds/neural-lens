@@ -19,19 +19,23 @@ Features:
   automatic frame rate switch, sliders for the lowest rate, the ceiling, the capture refresh
   and the most passes allowed, and the mpv and data folders, each with an explanation. It
   writes `neural-lens.ini`; nothing needs editing by hand.
-- Per session log archiving into `%LOCALAPPDATA%\NeuralLens\logs`, so evidence from a failed
+- Per session log archiving into `data\logs` beside the program, so evidence from a failed
   run survives the next launch.
 - A Windows installer, and a stack setup inside the lens. The installer is per user with no
-  administrator prompt, and contains only the lens. On first start, or from a Start Menu entry,
-  the lens fetches the neural stack from the projects that publish each part, about 230 MB,
-  into a folder of your own: mpv, ReShade taken out of its setup without running it, NVIDIA's
+  administrator prompt, installs to a folder you choose, and contains only the lens. On first
+  start, or from a Start Menu entry, the lens fetches the neural stack from the projects that
+  publish each part, about 230 MB, into that same folder: mpv, ReShade taken out of its setup
+  without running it, NVIDIA's
   two runtimes with the model chosen for the card by compute capability and checked against
   known hashes, the DLSS 5 Feeder, the RenoDX add-on, and motion vectors from
   ReshadeMotionEstimation, chosen by measurement over every estimator that may be fetched, with
   VORT as the alternative from the command line. ReShade is
   registered as a Vulkan layer for the user only, under its own name with its own allow list,
   so an existing ReShade on the machine is neither touched nor doubled. It ends with a self
-  test that says whether Neural Rendering ran. The uninstaller offers to remove all of it.
+  test that says whether Neural Rendering ran. Everything the lens has is in its one folder,
+  the program, the stack, the layer and its data, and the uninstaller removes that folder and
+  the layer registration and nothing else; a DLL you pointed the setup at was copied in, so
+  the original is not touched.
   The setup window opens laid out, its folder field is filled in and editable at every
   entry point, and the lens relaunched after a setup points at the new stack ahead of any
   `--mpv-dir` or ini `mpv_dir` that led to the offer.

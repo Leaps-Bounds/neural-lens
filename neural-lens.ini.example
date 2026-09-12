@@ -12,11 +12,11 @@
 mpv_dir = C:\Games\_mpv
 
 # Where the lens keeps its window position and its archived logs.
-# Defaults to %LOCALAPPDATA%\NeuralLens
+# Defaults to the data folder beside the program
 # data_dir = D:\NeuralLens
 
 # Where the before and after screenshots go.
-# Defaults to %LOCALAPPDATA%\NeuralLens\screenshots
+# Defaults to data\screenshots beside the program
 # screenshot_dir = D:\Screenshots\NeuralLens
 
 # Frame pacing. Both default to the display's own refresh rate, so a 240 Hz

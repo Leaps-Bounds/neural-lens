@@ -68,11 +68,15 @@ You also need:
 ## Install
 
 **The installer.** Run `NeuralLens-Setup-<version>.exe` from the releases page. It needs no
-administrator prompt: it puts the lens under your own user folder, adds a Start Menu entry and
-an uninstaller, and that is all it contains. On first start the lens offers to set up the
-neural stack. Nothing of the stack is bundled; about 230 MB is downloaded from the projects
-that publish each part into a folder of your own, and ReShade is registered as a Vulkan layer
-for your user only, under its own name, so an existing ReShade on the machine is left alone.
+administrator prompt: it puts the lens in a folder you choose, under your own user folder by
+default, adds a Start Menu entry and an uninstaller, and that is all it contains. On first
+start the lens offers to set up the neural stack. Nothing of the stack is bundled; about 230 MB
+is downloaded from the projects that publish each part into that same folder, and ReShade is
+registered as a Vulkan layer for your user only, under its own name, so an existing ReShade on
+the machine is left alone. Everything the lens has lives in its one folder: the program, the
+stack in `stack`, the layer in `ReShade`, and its state, logs and screenshots in `data`.
+Uninstalling removes that folder and the layer registration, and nothing else. A DLL you
+pointed the setup at is copied in, so the original stays where it was.
 
 What it fetches, and from where:
 
@@ -104,12 +108,12 @@ also has a "stack setup" entry to fetch or repair it later.
    - copy `neural-lens.ini.example` to `neural-lens.ini` and set `mpv_dir`
    - or put an `mpv` folder beside `neural_lens.py`
 4. Run `Launch-LensNR.cmd`. No console window opens. Everything the lens prints goes to
-   `%LOCALAPPDATA%\NeuralLens\logs\lens.log`, and anything that stops it from starting is shown
+   `data\logs\lens.log` beside the script, and anything that stops it from starting is shown
    as a dialog. To watch it live instead, run `python neural_lens.py`.
 
-Window position, pass count, screenshots and archived logs live in `%LOCALAPPDATA%\NeuralLens`.
-Redirect all of it with `data_dir` in the ini, or the `NEURAL_LENS_DATA` variable. Screenshots
-can also be pointed somewhere else on their own, from the menu's Settings.
+Window position, pass count, screenshots and archived logs live in the `data` folder beside
+the program. Redirect all of it with `data_dir` in the ini, or the `NEURAL_LENS_DATA` variable.
+Screenshots can also be pointed somewhere else on their own, from the menu's Settings.
 
 ## Using it
 
@@ -296,11 +300,11 @@ detailed areas of the image.
 **The lens disappeared after you confirmed a resize.** Resizing relaunches the lens, so a
 relaunch that fails looks exactly like the app closing on its own. Nothing is lost: the size you
 chose was saved before the restart, so starting it again with the launcher brings it back at
-that size. If it happens repeatedly, `%LOCALAPPDATA%\NeuralLens\logs\restart.log` holds whatever
+that size. If it happens repeatedly, `data\logs\restart.log` in the lens folder holds whatever
 the replacement printed before it gave up.
 
 **Something went wrong and you want to know why.** Every launch copies the previous session's
-`ReShade.log` and `dlss5-feed.log` into `%LOCALAPPDATA%\NeuralLens\logs`, keeping the 80 most
+`ReShade.log` and `dlss5-feed.log` into `data\logs` in the lens folder, keeping the 80 most
 recent files, so evidence from a failed run survives restarting. Anything mpv itself wrote to
 its error stream is in `mpv-stderr.log` in the same folder, which is where to look when a stage
 never opened a window. The lens's own output, including every frame rate decision, is in

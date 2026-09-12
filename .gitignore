@@ -11,3 +11,9 @@ __pycache__/
 
 # PyInstaller and Inno Setup output
 build/
+
+# what the stack setup and the lens write beside the script when run from here
+stack/
+ReShade/
+downloads/
+data/

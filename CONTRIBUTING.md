@@ -24,7 +24,6 @@ Two tools, both free: PyInstaller (`pip install pyinstaller`) and Inno Setup 6
 (`winget install --id JRSoftware.InnoSetup --scope user`). From the repository root:
 
 ```
-python assets\make_icon.py
 python -m PyInstaller --noconfirm --clean --noconsole --onedir --name NeuralLens ^
     --icon ..\assets\neural-lens.ico --add-data "..\assets\neural-lens.ico;assets" ^
     --collect-all windows_capture --hidden-import neural_stack ^
@@ -33,8 +32,10 @@ python -m PyInstaller --noconfirm --clean --noconsole --onedir --name NeuralLens
 ```
 
 The result is `build\installer\NeuralLens-Setup-<version>.exe`. It contains the lens and
-nothing of the neural stack; `neural_stack.py` fetches that at first run. Bump the version in
-`neural_lens.py`, `CHANGELOG.md` and `installer\NeuralLens.iss` together.
+nothing of the neural stack; setup fetches that during installation, and `neural_stack.py`
+runs the same fetch later from the Start Menu entry or the command line. The icon is
+committed; `assets\make_icon.py` only regenerates it from the PNG. Bump the version in
+`neural_lens.py`, `neural_stack.py`, `CHANGELOG.md` and `installer\NeuralLens.iss` together.
 
 ## Before proposing a change to the capture path
 
@@ -50,8 +51,9 @@ so if a change claims to improve the image, measure it:
 
 - Use a **static** source. An animated one contaminates any before and after comparison.
 - Establish a **noise floor** by capturing the same state twice before trusting a difference.
-- Do not infer Neural Rendering's on or off state from the F6 toggle log, because the focus
-  step sometimes drops a keypress and inverts the reading. Measure absolutely: capture the
+- Do not infer Neural Rendering's on or off state from the lens's own toggle log. F6 is a real
+  keystroke that the add-on reads from the keyboard, so the state can change without the lens
+  having sent anything. Measure absolutely: capture the
   region with the lens absent, then with the lens over it.
 - Remember that Neural Rendering's strength scales with local detail, roughly 4.5x stronger on
   the most detailed tenth of an image than on the flattest half. Flat content barely changing

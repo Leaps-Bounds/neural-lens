@@ -6,16 +6,16 @@
 ;
 ; The neural stack is NOT bundled, because its parts are published by other
 ; projects under licences that make redistribution wrong or impossible. It is
-; fetched instead, and fetched HERE, during setup, on a page of this installer.
-; An earlier version left that to the first run of the lens, which met the user
-; with a second wizard they had not asked for after setup said it was finished.
+; fetched instead, during setup: a page of this installer offers it, ticked by
+; default, and the fetch runs after the files are copied with its progress on
+; the status line, so the user meets one installer and no second wizard after.
 ;
 ; Build, from the repository root:
 ;   python -m PyInstaller --noconfirm --clean --noconsole --onedir --name NeuralLens ^
 ;       --icon ..\assets\neural-lens.ico --add-data "..\assets\neural-lens.ico;assets" ^
-;   (icon and add-data paths are relative to the spec folder, build, hence the ..)
 ;       --collect-all windows_capture --hidden-import neural_stack ^
 ;       --distpath build\dist --workpath build\work --specpath build neural_lens.py
+;   The icon and add-data paths are relative to the spec folder, build, hence the ..
 ;   "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" installer\NeuralLens.iss
 ; Output: build\installer\NeuralLens-Setup-<version>.exe
 
@@ -83,7 +83,7 @@ procedure InitializeWizard();
 begin
   DownloadPage := CreateInputOptionPage(wpSelectTasks,
     'Neural Rendering stack',
-    'Setup needs to download about 230 MB.',
+    'Setup can download about 230 MB now.',
     'The lens drives NVIDIA''s DLSS Neural Rendering through mpv and ReShade. None of that is' + #13#10 +
     'included here, because those parts are published by other projects under licences that do' + #13#10 +
     'not allow this installer to carry copies. Setup fetches them from the projects themselves.' + #13#10 + #13#10 +

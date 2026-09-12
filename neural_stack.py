@@ -14,17 +14,19 @@ Nothing is bundled. Every component is downloaded from the project that
 publishes it, into a folder of the user's own, and registered for the current
 user only, so no elevation is needed and nothing shared with other software is
 touched. Licences force most of this: mpv is GPL and must come from upstream,
-NVIDIA's runtimes are NVIDIA's, and the motion vector shader the lens's own
-author uses cannot be redistributed at all, so a new install gets VORT (MIT).
+NVIDIA's runtimes are NVIDIA's, and a new install gets ReshadeMotionEstimation
+(CC BY-NC 4.0) for motion vectors, chosen by measurement, with VORT (MIT) as
+the alternative. LumeniteFX publishes no licence, so it is never fetched; a
+copy the user already holds can be pointed at instead.
 
 What ends up where. APP is the lens's own folder, and TARGET defaults to APP\\stack:
 
     TARGET\\mpv.exe and the rest of the mpv build      shinchiro's mpv-winbuild-cmake
     TARGET\\nvngx_dlss.dll                             NVIDIA, via the RHI manifest
-    TARGET\\nvngx_dlssnr.dll                           NVIDIA, the build for this card
+    TARGET\\nvngx_dlssnr.dll                           NVIDIA, the 310.8.SF-v2 model
     TARGET\\dlss5-feed.addon64                         DLSS5-Feeder
     TARGET\\renodx-dlss5.addon64                       RenoDX, via the RHI repository
-    TARGET\\reshade-shaders\\Shaders\\...               DLSS5_Feed.fx, VORT, ReShade headers
+    TARGET\\reshade-shaders\\Shaders\\...               DLSS5_Feed.fx, DRME, VORT, ReShade headers
     TARGET\\portable_config\\mpv.conf, input.conf
     TARGET\\ReShade.ini, ReShadePreset.ini, dlss5-feed.cfg
     TARGET\\install-record.json                        everything above, for uninstall
@@ -46,13 +48,14 @@ Command line, for testing and for people who prefer it:
     python neural_stack.py                  install into the default folder
     python neural_stack.py --target D:\\nr   install somewhere else
     python neural_stack.py --dlssnr X --dlss Y   use NVIDIA DLLs you already have (hash checked)
+    python neural_stack.py --provider vort  estimate motion vectors with VORT instead of DRME
+    python neural_stack.py --lumenite DIR   use a LumeniteFX copy you already have instead
     python neural_stack.py --verify         only run the self test on an existing stack
-    python neural_stack.py --verify         only run the self test on an existing install
     python neural_stack.py --uninstall      remove what the record says was installed
 
-The lens itself offers the same setup when it starts without a stack.
+The installer runs this during setup. The lens offers it again if it starts
+without a stack, and the Start Menu's stack setup entry runs it on demand.
 """
-import ctypes
 import hashlib
 import json
 import os
@@ -114,9 +117,10 @@ HEADER_FILES = ["ReShade.fxh", "ReShadeUI.fxh"]
 
 # The manifest carries no hashes, so these are held here. Every one was measured
 # on a working install and its file ran Neural Rendering; a download that
-# matches none is refused, not installed. The 40 series model has two known
-# builds: the one the repository serves (version 310.8.SF.0, 165,830,144 bytes)
-# and an earlier community build (165,840,496 bytes) many people already hold.
+# matches none is refused, not installed. The 310.8.SF-v2 entry accepts two
+# known builds: the one the repository serves (version 310.8.SF.0, 165,830,144
+# bytes) and an earlier community build (165,840,496 bytes, version 310.8.0.0)
+# that many people already hold.
 DLSS_VERSION = "310.8.0"
 HASHES = {
     "nvngx_dlss.dll": ["c85f971ce023c9f3492fc7455f0b01a24ba18ea39636407a846902c4360b0b7e"],
@@ -328,7 +332,7 @@ class Install:
         self.log = log
         self.provider = provider if provider in PROVIDERS else "drme"
         # LumeniteFX cannot be fetched or shipped, but a copy the user already
-        # holds can be used: its motion vectors ghost less on scrolling text
+        # holds can be used in place of the fetched estimators
         self.lumenite = find_lumenite(lumenite) if lumenite else None
         if lumenite and not self.lumenite:
             raise StackError("no LumeniteFX under %s: it needs %s" % (lumenite, ", ".join(LUMENITE_FILES)))
@@ -392,8 +396,8 @@ class Install:
             for f in files:
                 self.add(os.path.join(root, f))
 
-    # ReShade: the DLL and its layer manifest come straight out of the setup
-    # exe, which is a zip, so nothing of ReShade's is executed here
+    # ReShade: the DLL is read straight out of the setup exe, which is a zip, so
+    # nothing of ReShade's is executed here. The layer manifest is written below.
     def step_reshade(self):
         dll = os.path.join(LAYER_DIR, "ReShade64.dll")
         if os.path.isfile(dll):
@@ -519,8 +523,8 @@ class Install:
             self.add(fetch(SOURCES["vort"] + "Textures/" + name, os.path.join(textures, name), self.log, name))
         for name in HEADER_FILES:
             self.add(fetch(SOURCES["headers"] + name, os.path.join(base, name), self.log, name))
-        self.say("shaders: VORT motion vectors (MIT), %d includes and its texture, and ReShade's headers"
-                 % len(includes))
+        self.say("shaders: VORT (MIT) fetched as the alternative estimator, %d includes and its texture, "
+                 "and ReShade's headers" % len(includes))
         for name in DRME_FILES:
             self.add(fetch(SOURCES["drme"] + name, os.path.join(base, name), self.log, name))
         self.say("shaders: ReshadeMotionEstimation by Jakob Wapenhensch (CC BY-NC 4.0)")
@@ -534,6 +538,7 @@ class Install:
             self.say("shaders: your LumeniteFX copied in; it will provide the motion vectors")
         else:
             self.record["components"]["motion_vectors"] = {"drme": "ReshadeMotionEstimation", "vort": "VORT"}[self.provider]
+            self.say("motion vectors: %s will provide them" % self.record["components"]["motion_vectors"])
 
     def step_config(self):
         self.add(write_text(os.path.join(self.target, "portable_config", "mpv.conf"), MPV_CONF))
@@ -637,7 +642,7 @@ def verify(target, log=None, seconds=9.0):
         last = prov[-1].split("DLSS5_MV_PROVIDER=", 1)[-1] if prov else ""
         if not prov or "-> none" in last:
             lines.append("    motion vectors: NO PROVIDER, so anything that moves would smear. "
-                         "The VORT shader did not compile or was not found: %s" % (last[:90] or "no Feed log"))
+                         "The motion vector shader did not compile or was not found: %s" % (last[:90] or "no Feed log"))
             return False, "\n".join(lines)
         lines.append("    motion vectors: %s" % last.split(",", 1)[0][:90])
     except OSError:
@@ -646,8 +651,8 @@ def verify(target, log=None, seconds=9.0):
     if failed:
         lines.append("    Neural Rendering: FAILED to start, %s" % failed.group(1))
         if failed.group(1).lower() == "0xbad00001":
-            lines.append("    that code means the model does not support this card; the stock model "
-                         "runs only on RTX 50, the 40 series needs the community build")
+            lines.append("    that code means the model refused to run on this card. The 310.8.SF-v2 "
+                         "build in use is meant to cover RTX 20 through 50.")
         return False, "\n".join(lines)
     if created and evaluated:
         lines.append("    Neural Rendering: running, %d evaluations" % evaluated)
@@ -657,12 +662,48 @@ def verify(target, log=None, seconds=9.0):
 
 
 # ---------------------------------------------------------------- uninstall
+def _unregister_stray(log=None):
+    """Delete any layer value that points inside this install's layer folder,
+    whether or not a record names it. The value name is the manifest path, so
+    everything under LAYER_DIR is ours and nothing else is touched."""
+    removed = []
+    prefix = os.path.normcase(LAYER_DIR) + os.sep
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, LAYER_KEY, 0,
+                            winreg.KEY_READ | winreg.KEY_SET_VALUE) as k:
+            names = []
+            i = 0
+            while True:
+                try:
+                    names.append(winreg.EnumValue(k, i)[0])
+                except OSError:
+                    break
+                i += 1
+            for name in names:
+                if os.path.normcase(name).startswith(prefix):
+                    try:
+                        winreg.DeleteValue(k, name)
+                        removed.append(name)
+                        say(log, "unregistered %s" % name)
+                    except OSError:
+                        pass
+    except OSError:
+        pass
+    return removed
+
+
 def uninstall(target=DEFAULT_TARGET, log=None):
     path = os.path.join(target, "install-record.json")
     try:
         record = json.load(open(path, encoding="utf-8"))
     except OSError:
-        raise StackError("no install record in %s, nothing known to remove" % target)
+        # No record, so no files are known. The layer value can still be there:
+        # an install stopped after step_layer and before write_record registered
+        # it and never recorded it, and left alone it would point the Vulkan
+        # loader at a manifest the uninstaller is about to delete.
+        stray = _unregister_stray(log)
+        raise StackError("no install record in %s, nothing known to remove%s" % (
+            target, "; removed %d layer value(s) it left behind" % len(stray) if stray else ""))
     for value in record.get("registry", []):
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, LAYER_KEY, 0, winreg.KEY_SET_VALUE) as k:
@@ -670,6 +711,7 @@ def uninstall(target=DEFAULT_TARGET, log=None):
             say(log, "unregistered %s" % value)
         except OSError:
             pass
+    _unregister_stray(log)
     for f in record.get("files", []):
         try:
             os.remove(f)
@@ -704,9 +746,9 @@ def wizard(parent=None, target=DEFAULT_TARGET):
     """A window that runs the install and shows what it is doing.
 
     Returns the folder the stack was installed into when it installed and
-    passed the self test, otherwise False. The
-    install runs on a thread; the window only ever appends to its log from the
-    mainloop, so it stays responsive while 230 MB come down.
+    passed the self test, otherwise False. The install runs on a thread; the
+    window only ever appends to its log from the mainloop, so it stays
+    responsive while 230 MB come down.
     """
     import queue
     import tkinter as tk
@@ -727,7 +769,7 @@ def wizard(parent=None, target=DEFAULT_TARGET):
     intro = ("The lens needs an mpv with NVIDIA's DLSS Neural Rendering stack. Nothing is bundled: "
              "about 230 MB is downloaded from the projects that publish each part, into the lens's "
              "own folder, and registered for your user only. No administrator prompt.\n\n"
-             + ("This card reports compute capability %s, so the %s model applies."
+             + ("This card reports compute capability %s, which is supported. The %s model is used for every RTX card."
                 % (detail, MODEL) if supported else
                 "Neural Rendering cannot run on this machine: %s." % detail))
     tk.Label(root, text=intro, bg=BG, fg=FG, justify="left", wraplength=620,
@@ -835,7 +877,8 @@ def wizard(parent=None, target=DEFAULT_TARGET):
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(description="fetch and assemble the Neural Rendering stack for the lens")
-    ap.add_argument("--target", default=DEFAULT_TARGET)
+    ap.add_argument("--target", default=DEFAULT_TARGET,
+                    help="the folder to install the stack into (default: stack, beside the lens)")
     ap.add_argument("--dlssnr", help="an nvngx_dlssnr.dll you already have; its hash is checked")
     ap.add_argument("--dlss", help="an nvngx_dlss.dll you already have; its hash is checked")
     ap.add_argument("--lumenite", help="a reshade-shaders folder holding LumeniteFX you already have; "
@@ -843,7 +886,8 @@ def main(argv=None):
     ap.add_argument("--provider", choices=sorted(PROVIDERS), default="drme",
                     help="which fetched shader estimates motion vectors (default drme)")
     ap.add_argument("--verify", action="store_true", help="only run the self test")
-    ap.add_argument("--uninstall", action="store_true")
+    ap.add_argument("--uninstall", action="store_true",
+                    help="remove what the install record lists, and the layer registration")
     a = ap.parse_args(argv)
     try:
         if a.uninstall:
@@ -855,7 +899,8 @@ def main(argv=None):
             return 0 if ok else 1
         ok = Install(a.target, a.dlssnr, a.dlss, lumenite=a.lumenite, provider=a.provider).run()
         print("")
-        print("OK: the stack works. Point the lens at %s" % a.target if ok else
+        print("OK: the stack works in %s. The lens finds its default stack folder on its own; "
+              "use --mpv-dir for any other." % a.target if ok else
               "The stack was installed but the self test did not pass; see above.")
         return 0 if ok else 1
     except StackError as exc:

@@ -34,7 +34,7 @@ How it works. Every piece below was measured before it was built:
      extra passes are made by running the whole thing again: stage N captures
      stage N-1's mpv window with WGC and neural-renders it a second time. All
      stages stack on the lens rect and only the last one is visible. Measured
-     cumulative change from the raw source: 7.71, 14.06, 19.52 for one, two and
+     cumulative change from the raw source: 7.71, 14.05, 19.45 for one, two and
      three passes, against a round-trip cost of only 0.24 with NR disabled.
 
      EVERY stage must be on the magnifier's exclude list. Miss one and the
@@ -140,11 +140,9 @@ def _find_mpv_dir():
     this script, and the "stack" folder the lens's own setup writes.
 
     Every candidate is either named by the user or inside the install. Nothing
-    elsewhere on the machine is guessed at. An earlier version ended this list
-    with a hardcoded absolute path, one developer's own folder layout. On that
-    machine it silently satisfied the search, so the first run offer never
-    appeared and the lens drove a stack it had not installed and could not
-    account for; on every other machine it was a probe that could only fail.
+    elsewhere on the machine is guessed at: a path that exists on one machine
+    only would satisfy the search there, hide the setup offer, and be a probe
+    that can only fail everywhere else.
     """
     cands = []
     for i, a in enumerate(sys.argv):
@@ -690,7 +688,7 @@ class Lens:
         self.x_btn.bind("<Leave>", lambda e: self.x_btn.config(bg=BG))
 
         # plus and minus only choose a number; Set rebuilds the chain at it, so
-        # going from one pass to four is one rebuild rather than three
+        # going from one pass to three is one rebuild rather than two
         self.set_btn = tk.Label(bar, text=" Set ", bg=BG, fg=DIM, font=("Segoe UI", 10, "bold"))
         self.set_btn.pack(side="right", padx=(2, 6))
         self.set_btn.bind("<Button-1>", lambda e: self.apply_passes())
@@ -2247,8 +2245,8 @@ class Lens:
             #
             # What has to drain is a number of FRAMES, not an interval, and a fixed
             # wait gets that wrong in exactly one direction. Over a still at 100 fps
-            # half a second is fifty frames and the chain is long clear; over a fast
-            # moving game, where the lens falls to fifteen or twenty, the same half
+            # half a second is fifty frames and the chain is long clear; over fast
+            # moving content, where the lens falls to fifteen or twenty, the same half
             # second is eight frames and the menu was still in the saved "after"
             # image. That is why it only ever showed up over moving content.
             #
@@ -2415,9 +2413,9 @@ class Lens:
                 "modest GPU can need the bottom of the range. Applies straight away.")
         ceiling = tk.IntVar(value=BASE_FPS)
         slider("Frame rate ceiling", ceiling, 24, max(240, DISPLAY_HZ))
-        explain("Your display reports %d Hz, which is the default. The lens never asks for "
-                "more than five sixths of this. Lower it to spend less GPU on the lens. "
-                "Changing it restarts the lens." % DISPLAY_HZ)
+        explain("Your display reports %d Hz, which is the default. The lens asks for at most "
+                "five sixths of this, and never less than 24. Lower it to spend less GPU on "
+                "the lens. Changing it restarts the lens." % DISPLAY_HZ)
         pump = tk.IntVar(value=PUMP_HZ)
         slider("Capture refresh", pump, 24, max(240, DISPLAY_HZ))
         explain("How often the picture under the lens is captured, per second. The display's "
@@ -2624,6 +2622,8 @@ def main():
     # to its own log, which the installer tails to show progress on its own
     # page, and the last line is a sentinel carrying the exit code, because
     # Inno's Exec gives no process handle to wait on when it does not block.
+    # The fourth flag the lens accepts, --mpv-dir, is read by _find_mpv_dir at
+    # import time; the lens passes it to itself when it relaunches after a setup.
     if "--install-stack" in sys.argv:
         import neural_stack
         argv = [a for a in sys.argv[1:] if a != "--install-stack"]
@@ -2696,13 +2696,15 @@ def main():
         _fatal("\n".join([
             "Could not find mpv.exe.",
             "",
-            "Point the lens at your mpv install (the one carrying the DLSS 5",
-            "Neural Rendering stack) in any of these ways:",
+            "The lens looks in the 'stack' folder its own setup writes beside the",
+            "program, and for an mpv install pointed at in any of these ways:",
             "",
-            '  Launch-LensNR.cmd --mpv-dir "D:\\path\\to\\mpv"',
+            '  --mpv-dir "D:\\path\\to\\mpv" on the command line',
             "  set NEURAL_LENS_MPV_DIR=D:\\path\\to\\mpv",
             "  copy neural-lens.ini.example to neural-lens.ini and set mpv_dir",
-            "  or put an 'mpv' folder beside neural_lens.py",
+            "  or put an 'mpv' folder beside the program",
+            "",
+            "The Start Menu's stack setup entry fetches and assembles the stack.",
         ]))
         return
     try:
@@ -2812,7 +2814,7 @@ def main():
         #
         # Not os.execv. On Windows that goes through the CRT, which does not quote
         # arguments containing spaces, so a script path such as
-        # "...\\Coding\\DLSS 5\\neural-lens\\neural_lens.py" reaches the replacement
+        # "C:\\Some Folder\\neural-lens\\neural_lens.py" reaches the replacement
         # process split at the space. It does not raise either: it starts something
         # broken while this process is already gone, so the lens never comes back
         # and nothing is reported. subprocess quotes correctly through list2cmdline.

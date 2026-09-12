@@ -23,20 +23,23 @@ Features:
 - Per session log archiving into `data\logs` beside the program, so evidence from a failed
   run survives the next launch.
 - A Windows installer, and a stack setup inside the lens. The installer is per user with no
-  administrator prompt, installs to a folder you choose, and contains only the lens. On first
-  start, or from a Start Menu entry, the lens fetches the neural stack from the projects that
-  publish each part, about 230 MB to download and about 540 MB on disk when it is done, into
-  that same folder: mpv, ReShade taken out of its setup without running it, NVIDIA's two
+  administrator prompt, installs to a folder you choose, and contains only the lens. Setup
+  fetches the neural stack during the installation itself, offered as a checkbox that is already
+  ticked, from the projects that publish each part, about 230 MB to download and about 540 MB on
+  disk when it is done, into that same folder: mpv, ReShade taken out of its setup without running it, NVIDIA's two
   runtimes with the Neural Rendering model, checked against
   known hashes, the DLSS 5 Feeder, the RenoDX add-on, and motion vectors from
   ReshadeMotionEstimation, chosen by measurement over every estimator that may be fetched, with
   VORT as the alternative from the command line. ReShade is
   registered as a Vulkan layer for the user only, under its own name with its own allow list,
   so an existing ReShade on the machine is neither touched nor doubled. It ends with a self
-  test that says whether Neural Rendering ran. Everything the lens has is in its one folder,
+  test, which opens an mpv window for about nine seconds, and says whether Neural Rendering ran.
+  If the box is unticked, or the stack step fails, the install still completes and a Start Menu
+  entry runs it later. Everything the lens has is in its one folder,
   the program, the stack, the layer and its data, and the uninstaller removes that folder and
   the layer registration and nothing else; a DLL you pointed the setup at was copied in, so
-  the original is not touched.
+  the original is not touched. The layer registration is removed even when the install record
+  is missing, as after a setup that was interrupted.
   The setup window opens laid out, its folder field is filled in and editable at every
   entry point, and the lens relaunched after a setup points at the new stack ahead of any
   `--mpv-dir` or ini `mpv_dir` that led to the offer.

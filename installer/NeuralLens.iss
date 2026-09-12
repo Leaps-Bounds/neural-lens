@@ -13,9 +13,10 @@
 ; Build, from the repository root:
 ;   python -m PyInstaller --noconfirm --clean --noconsole --onedir --name NeuralLens ^
 ;       --icon ..\assets\neural-lens.ico --add-data "..\assets\neural-lens.ico;assets" ^
-;       --collect-all windows_capture --hidden-import neural_stack ^
+;       --collect-all windows_capture --copy-metadata opencv-python --hidden-import neural_stack ^
 ;       --distpath build\dist --workpath build\work --specpath build neural_lens.py
 ;   The icon and add-data paths are relative to the spec folder, build, hence the ..
+;   copy-metadata carries OpenCV's licence texts into the bundle; its hook does not.
 ;   "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" installer\NeuralLens.iss
 ; Output: build\installer\NeuralLens-Setup-<version>.exe
 

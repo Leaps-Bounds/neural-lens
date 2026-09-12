@@ -360,7 +360,8 @@ several of the discarded approaches look perfectly reasonable until measured.
 ## Credits
 
 The lens is the window. Everything that makes the picture is someone else's work, fetched at
-setup time from the project that publishes it, and each keeps its own licence:
+setup time from the project that publishes it, and the lens itself is built on libraries that
+ship inside the installer. Each keeps its own licence:
 
 | what | by | licence |
 |---|---|---|
@@ -373,7 +374,9 @@ setup time from the project that publishes it, and each keeps its own licence:
 | vort_Shaders, the alternative estimator | Vortigern | MIT |
 | DLSS, the DLSS runtime and the Neural Rendering model | NVIDIA | NVIDIA's terms |
 | windows-capture, the screen capture binding | NiiightmareXD | MIT |
+| OpenCV, which windows-capture requires, and which is most of the installer's size | the OpenCV team | Apache 2.0 |
 | NumPy | the NumPy developers | BSD 3-Clause |
+| Python 3.12, with the OpenSSL and Tcl/Tk libraries its Windows build carries, bundled by PyInstaller | the Python Software Foundation; the OpenSSL Project; the Tcl core team | PSF; Apache 2.0; Tcl/Tk licence |
 | 7-Zip's `7zr`, fetched to unpack mpv | Igor Pavlov | LGPL |
 | PyInstaller and Inno Setup, which build the installer | their authors | GPL with exception; Inno Setup licence |
 

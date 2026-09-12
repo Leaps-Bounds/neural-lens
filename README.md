@@ -89,9 +89,8 @@ If you already have NVIDIA's two DLLs, point the setup at them and it uses those
 their hashes check out. Motion vectors come from ReshadeMotionEstimation by Jakob Wapenhensch,
 CC BY-NC 4.0, which measured crisper on scrolling text than every other estimator that may be
 fetched, and a little crisper than LumeniteFX. VORT (MIT) is fetched too and can be chosen
-instead. If you already have LumeniteFX and prefer it, point the setup at its folder and your
-copy is used; it cannot be downloaded for you. The setup is for personal, non-commercial use,
-which is what that licence allows. The setup ends with a self test that opens an mpv window for a few
+instead from the command line. The setup is for personal, non-commercial use, which is what
+that licence allows. The setup ends with a self test that opens an mpv window for a few
 seconds and reads ReShade's log, and says plainly whether Neural Rendering ran. The Start Menu
 also has a "stack setup" entry to fetch or repair it later.
 

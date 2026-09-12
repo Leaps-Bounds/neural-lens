@@ -2557,8 +2557,8 @@ def _offer_setup(reason):
 
     Returns True when the lens has been relaunched and this process should
     simply return. The stack setup lives in neural_stack.py and puts everything
-    under LOCALAPPDATA, which _find_mpv_dir already looks in, so the relaunch
-    finds it with no ini change.
+    under LOCALAPPDATA by default; the relaunch is told the folder, so no ini
+    change is needed and nothing that pointed at a bare mpv gets in the way.
     """
     try:
         import neural_stack
@@ -2573,16 +2573,20 @@ def _offer_setup(reason):
         reason + "\n\nSet up the Neural Rendering stack now? About 230 MB is downloaded from "
         "the projects that publish each part into a folder of your own, registered for your "
         "user only, with no administrator prompt. It takes a few minutes.")
-    ok = False
+    where = False
     if want:
-        ok = neural_stack.wizard(root)
+        where = neural_stack.wizard(root)
     try:
         root.destroy()
     except Exception:
         pass
-    if not ok:
+    if not where:
         return False
-    subprocess.Popen(_relaunch_cmd(), cwd=_script_dir())
+    # name the new stack first, ahead of whatever pointed at a bare mpv: an
+    # --mpv-dir or an ini mpv_dir that led here would otherwise be found
+    # again by the relaunch, which would offer the setup all over again
+    cmd = _relaunch_cmd()
+    subprocess.Popen(cmd[:1] + ["--mpv-dir", where] + cmd[1:], cwd=_script_dir())
     return True
 
 

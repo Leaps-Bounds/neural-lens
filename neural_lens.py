@@ -2243,9 +2243,24 @@ class Lens:
         try:
             # The menu that started this has closed, but frames containing it are
             # still moving through the chain, and the visible stage lags the source
-            # by the pipeline latency. Let both settle, or the saved pair shows the
-            # menu that was on screen a moment ago.
-            time.sleep(0.25 + 0.15 * len(self.stages))
+            # by the pipeline latency.
+            #
+            # What has to drain is a number of FRAMES, not an interval, and a fixed
+            # wait gets that wrong in exactly one direction. Over a still at 100 fps
+            # half a second is fifty frames and the chain is long clear; over a fast
+            # moving game, where the lens falls to fifteen or twenty, the same half
+            # second is eight frames and the menu was still in the saved "after"
+            # image. That is why it only ever showed up over moving content.
+            #
+            # So wait on the visible stage actually presenting frames, with a
+            # ceiling so a stalled chain cannot hang the save instead.
+            time.sleep(0.1)                     # let the menu finish closing
+            need = 8 + 6 * len(self.stages)
+            first = self.out_frames
+            limit = time.perf_counter() + 3.0
+            while (self.out_frames - first < need
+                   and time.perf_counter() < limit and not self.closing):
+                time.sleep(0.01)
             self.shot_ready = False
             self.shot_want = True
             t0 = time.perf_counter()

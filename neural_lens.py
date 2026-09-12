@@ -76,6 +76,21 @@ def _script_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def _asset(name):
+    """A file from the assets folder: beside the script, or inside the frozen
+    bundle's data folder."""
+    base = getattr(sys, "_MEIPASS", None) or _script_dir()
+    return os.path.join(base, "assets", name)
+
+
+def _set_icon(window):
+    """Give a Tk window the lens icon, which the taskbar button shows."""
+    try:
+        window.iconbitmap(_asset("neural-lens.ico"))
+    except Exception:
+        pass
+
+
 def _relaunch_cmd():
     """How to start another copy of this program with the same arguments.
 
@@ -2540,6 +2555,7 @@ def _offer_setup(reason):
     except ImportError:
         return False
     root = tk.Tk()
+    _set_icon(root)
     root.withdraw()
     root.attributes("-topmost", True)
     want = messagebox.askyesno(
@@ -2640,6 +2656,7 @@ def main():
     passes = max(1, min(MAX_PASSES, passes))
     archive_logs()
     root = tk.Tk()
+    _set_icon(root)
     root.withdraw()
     missing = _missing_stack()
     if missing:

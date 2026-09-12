@@ -8,6 +8,8 @@
 ;
 ; Build, from the repository root:
 ;   python -m PyInstaller --noconfirm --clean --noconsole --onedir --name NeuralLens ^
+;       --icon ..\assets\neural-lens.ico --add-data "..\assets\neural-lens.ico;assets" ^
+;   (icon and add-data paths are relative to the spec folder, build, hence the ..)
 ;       --collect-all windows_capture --hidden-import neural_stack ^
 ;       --distpath build\dist --workpath build\work --specpath build neural_lens.py
 ;   "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" installer\NeuralLens.iss
@@ -39,6 +41,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.19041
 UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName}
+SetupIconFile=..\assets\neural-lens.ico
 WizardStyle=modern
 SetupLogging=yes
 

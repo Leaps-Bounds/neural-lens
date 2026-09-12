@@ -62,7 +62,7 @@ body:
     id: behind
     attributes:
       label: What was behind the lens
-      description: The kind of window, for example a browser, a game in borderless mode, a still image, a video.
+      description: The kind of window, for example a browser, a still image, a video, a remote desktop session.
       placeholder: Firefox playing a video
     validations:
       required: true

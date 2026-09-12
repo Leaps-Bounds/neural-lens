@@ -8,9 +8,9 @@ content underneath appears inside it with **NVIDIA DLSS Neural Rendering** appli
 mouse passes straight through the viewport, so you can keep using whatever is beneath it, much
 like the Windows Magnifier lens.
 
-The point of it is that Neural Rendering normally exists only inside a game that integrates
-DLSS. This puts it on anything that can be drawn on your screen: a browser, a video, an
-emulator, a photo, a remote desktop session. Nothing is injected into the target application,
+The point of it is that Neural Rendering normally exists only inside an application that
+integrates DLSS. This puts it on anything that can be drawn on your screen: a browser, a video,
+an emulator, a photo, a remote desktop session. Nothing is injected into the target application,
 and the target does not need to know anything about DLSS.
 
 It can also apply **several neural passes**, adjustable while it runs with plus and minus in
@@ -133,7 +133,7 @@ Screenshots can also be pointed somewhere else on their own, from the menu's Set
   halves come from the same live pipeline a fraction of a second apart, so on still content they
   line up pixel for pixel. It pauses briefly first, so the menu you just used is not in the shot.
 - **Passes** are chosen with the plus and minus on the title bar and applied with **Set**, so
-  going from one pass to four is one rebuild rather than three. The number turns amber while
+  going from one pass to three is one rebuild rather than two. The number turns amber while
   it differs from what is running. The menu's add and remove entries apply at once.
 - **Live A/B split** from the menu puts a draggable divider across the lens, with Neural
   Rendering on the left of it and the untouched source on the right, both live. It costs
@@ -237,9 +237,9 @@ is retaken much faster, in a few steps a few seconds apart and over moving conte
 it is known to work: after a fifteen second knock down, a 4070 was back at its level in 16
 seconds.
 
-A rate that failed is not held against the lens for ever. Something else using the GPU, a game
-or a video, lowers what the chain can carry for as long as it runs, and a limit learned then is
-wrong once it stops. So a limit is tried again after the picture has been clean for a while, on
+A rate that failed is not held against the lens for ever. Something else using the GPU, a video
+or another application, lowers what the chain can carry for as long as it runs, and a limit
+learned then is wrong once it stops. So a limit is tried again after the picture has been clean for a while, on
 a wait that doubles each time the limit turns out to be real. Measured on an RTX 5090 at one
 pass: 100 with the GPU to itself, 62 under load, and back to 99 about half a minute after the
 load stopped. The highest rate the chain actually held is saved with the window position, so
@@ -278,9 +278,9 @@ unless it is set to 0. See [docs/NOTES.md](docs/NOTES.md).
   pale for a few seconds and recovering, without the automatic frame rate noticing, because the
   brightness stays inside the margin it watches. Seen once at 85 fps over a scrolling page on a
   4070; at 30 it did not happen. Lowering the frame rate ceiling in Settings avoids it.
-- **Exclusive fullscreen games are invisible to it**, because the Magnification API cannot see
-  them. Borderless windowed works. Games with real DLSS support can usually take Neural
-  Rendering directly through the add-on anyway, without this.
+- **Applications in exclusive fullscreen are invisible to it**, because the Magnification API
+  cannot see them. Borderless windowed works. An application with real DLSS support can usually
+  take Neural Rendering directly through the add-on anyway, without this.
 - **Never add `--untimed` to mpv.** It makes mpv present the same frame repeatedly, and Neural
   Rendering then processes its own output over and over until the picture collapses.
 

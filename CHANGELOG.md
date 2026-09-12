@@ -5,7 +5,7 @@ settings, the state file format and behaviour may change between releases.
 
 ## 0.1.0, 2026-09-10
 
-First numbered release.
+First numbered release. Licensed under the GNU General Public License, version 3 or later.
 
 Features:
 

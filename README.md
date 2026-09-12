@@ -319,3 +319,38 @@ Bug reports are welcome as GitHub issues. See [CONTRIBUTING.md](CONTRIBUTING.md)
 abandoned, each with the measurement that ruled it out, and the Windows API details that are
 easy to get wrong. Worth reading before changing how capture or the pass chain works, because
 several of the discarded approaches look perfectly reasonable until measured.
+
+## Credits
+
+The lens is the window. Everything that makes the picture is someone else's work, fetched at
+setup time from the project that publishes it, and each keeps its own licence:
+
+| what | by | licence |
+|---|---|---|
+| ReShade, whose add-on build hosts the two add-ons and whose Vulkan layer hooks mpv | crosire | BSD 3-Clause |
+| DLSS5-Feeder, the add-on that builds the inputs DLSS expects, and `DLSS5_Feed.fx` | Jean-Laurent Rouzies | MIT |
+| the `renodx-dlss5` add-on that runs the neural pass, built on RenoDX | the RenoDX community; RenoDX itself by Carlos Lopez Jr. | the add-on has no published licence; RenoDX is MIT |
+| RHI and its repository, which publish the DLSS manifest and host the add-on and runtimes | RankFTW | GPL-3.0 |
+| mpv, and the Windows builds the setup fetches | the mpv project; builds by shinchiro | GPL |
+| ReshadeMotionEstimation, the default motion vector estimator | Jakob Wapenhensch | CC BY-NC 4.0 |
+| vort_Shaders, the alternative estimator | Vortigern | MIT |
+| LumeniteFX, used only from a copy you already have | Afzaal | no licence published |
+| DLSS, the DLSS runtime and the Neural Rendering model | NVIDIA | NVIDIA's terms |
+| windows-capture, the screen capture binding | NiiightmareXD | MIT |
+| NumPy | the NumPy developers | BSD 3-Clause |
+| 7-Zip's `7zr`, fetched to unpack mpv | Igor Pavlov | LGPL |
+| PyInstaller and Inno Setup, which build the installer | their authors | GPL with exception; Inno Setup licence |
+
+The installer's shape, one small program that bundles nothing and fetches every part from
+upstream, follows FeedKit by ntqueryinformation (MIT).
+
+This project is not affiliated with, endorsed by or supported by NVIDIA. DLSS is NVIDIA's
+trademark, and the name here says what the lens applies, not who made it.
+
+## License
+
+The lens itself, meaning everything in this repository, is free software under the GNU General
+Public License, version 3 or, at your option, any later version. See [LICENSE](LICENSE). The
+parts the setup fetches are not part of this repository and keep the licences above. Because
+the default motion vector estimator is licensed for non-commercial use only, the stack the
+setup assembles is for personal, non-commercial use.

@@ -30,8 +30,10 @@ How it works. Every piece below was measured before it was built:
      decode. mpv's NR stack (ReShade + dlss5-feed + renodx-dlss5) does the
      neural rendering.
 
-  4. MULTI-PASS by chaining. The add-on that mpv can use has no pass count, so
-     extra passes are made by running the whole thing again: stage N captures
+  4. MULTI-PASS. The v5 line of the RenoDX add-on runs the passes itself, from
+     NRPasses in ReShade.ini, which the lens writes before its one stage starts.
+     Add-ons before that line have no pass count, so with those the extra passes
+     are made by chaining, running the whole thing again: stage N captures
      stage N-1's mpv window with WGC and neural-renders it a second time. All
      stages stack on the lens rect and only the last one is visible. Measured
      cumulative change from the raw source: 7.71, 14.05, 19.45 for one, two and
@@ -194,8 +196,8 @@ def _read_nr_enabled():
     The add-on persists its F6 toggle there as NeuralUplift and reads it at
     start: measured, a session begun with NeuralUplift=0 ran as a passthrough,
     an in-to-out difference of 1.2 against 2.2 with it on, same image. It is
-    written only at exit, so this is the starting state and nothing more. The
-    running state is tracked from the key itself, see Lens.watch_f6.
+    written back within about a second of the toggle (measured: 1.3 s), but
+    the running state is tracked from the key itself, see Lens.watch_f6.
     """
     if not MPV_DIR:
         return True
@@ -209,6 +211,234 @@ def _read_nr_enabled():
     except OSError:
         pass
     return True
+
+
+def _addon_stack_passes():
+    """Whether the add-on in the mpv folder runs the passes itself.
+
+    From its v5 line the RenoDX DLSS 5 add-on applies several neural passes
+    inside one process, the count set by NRPasses in its section of
+    ReShade.ini and read when the process starts. Before that line the only
+    way to a second pass was a second mpv capturing the first, see
+    Lens.set_passes, and that chain is kept for those add-ons. The key's name
+    is looked for in the add-on file itself, which is what decides whether the
+    key means anything. passes_mode in neural-lens.ini forces either answer,
+    addon or chain.
+    """
+    mode = str(_INI.get("passes_mode", "auto")).strip().lower()
+    if mode == "chain":
+        return False
+    if mode == "addon":
+        return True
+    if not MPV_DIR:
+        return False
+    try:
+        with open(os.path.join(MPV_DIR, "renodx-dlss5.addon64"), "rb") as fh:
+            return b"NRPasses" in fh.read()
+    except OSError:
+        return False
+
+
+ADDON_PASSES = _addon_stack_passes()
+ADDON_MAX_PASSES = 4        # the add-on's own choice stops at four
+
+
+def _pass_limit():
+    """The most passes the bar allows: the add-on's own four when it runs the
+    passes itself, otherwise the chain's ceiling from the ini. The presenter
+    cannot chain, since a chained stage would have to capture a window the
+    presenter excludes from capture, so with an older add-on it is one pass."""
+    if HOST == "presenter" and not ADDON_PASSES:
+        return 1
+    return ADDON_MAX_PASSES if ADDON_PASSES else MAX_PASSES
+
+
+def _write_nr_passes(n):
+    """Set NRPasses in the add-on's section of ReShade.ini, keeping the rest.
+
+    The add-on reads it only when its process starts: measured, an edit while
+    a stage ran had changed nothing twelve seconds later, and a stage that is
+    stopped (terminated, not asked to exit) does not write the file back. So
+    this runs after the old stages are gone and before the new one spawns,
+    inside the rebuild Set already does. Returns whether the file was written;
+    when it was not, the passes are chained as stages instead.
+    """
+    if not MPV_DIR:
+        return False
+    path = os.path.join(MPV_DIR, "ReShade.ini")
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            lines = fh.read().splitlines(True)
+    except OSError:
+        return False
+    out, inside, done = [], False, False
+    for line in lines:
+        bare = line.strip()
+        if bare.startswith("["):
+            if inside and not done:
+                out.append("NRPasses=%d\n" % n)
+                done = True
+            inside = bare.lower() == "[renodx.dlss5]"
+        elif inside and bare.lower().startswith("nrpasses="):
+            if not done:
+                out.append("NRPasses=%d\n" % n)
+                done = True
+            continue
+        out.append(line)
+    if not done:
+        if out and not out[-1].endswith("\n"):
+            out[-1] += "\n"
+        if not inside:
+            out.append("\n[RenoDX.DLSS5]\n")
+        out.append("NRPasses=%d\n" % n)
+    try:
+        with open(path + ".tmp", "w", encoding="utf-8") as fh:
+            fh.writelines(out)
+        os.replace(path + ".tmp", path)
+        return True
+    except OSError:
+        return False
+
+
+def _read_nr_passes():
+    """NRPasses as the add-on's section of ReShade.ini holds it now, or None.
+
+    The add-on writes its settings back within about a second of a change in
+    its overlay (measured with F6: NeuralUplift was on disk 1.3 s after the
+    press), so while the overlay is open this is how a pass count chosen there
+    reaches the title bar. See Lens.follow_overlay.
+    """
+    if not MPV_DIR:
+        return None
+    try:
+        with open(os.path.join(MPV_DIR, "ReShade.ini"), encoding="utf-8",
+                  errors="replace") as fh:
+            inside = False
+            for line in fh:
+                bare = line.strip()
+                if bare.startswith("["):
+                    inside = bare.lower() == "[renodx.dlss5]"
+                elif inside and bare.lower().startswith("nrpasses="):
+                    return int(bare.split("=", 1)[1].strip())
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+# ---- the Cost Scaler proxy
+# DLSSNR-Cost-Scaler is a proxy nvngx_dlssnr.dll that runs the neural model at
+# a fraction of the frame's resolution and composites the result back onto the
+# full frame. It is in the stack when the model has been renamed aside as
+# nvngx_dlssnr_real.dll and the proxy's ini sits beside it. It reads that ini
+# when it starts and again within a second of any change. Neural Rendering in
+# mpv runs as a D3D12 NGX session behind the Feed's Vulkan transport, which is
+# the API the proxy hooks, so it works here exactly as in a game.
+#
+# Measured on an RTX 5090 with the passes inside the add-on, governor frozen.
+# Windowed 2400x1800 at 0.75: one pass 97 to 88 fps, the proxy's own per frame
+# work showing where the neural pass was not the limit; two passes 69 to 86.
+# Fullscreen 6144x2558: one pass 30 off, 43 at 0.75, 43 at 0.50, 44 at 0.35;
+# two passes 23 off, 31 at 0.75, 43 at 0.50, 43 at 0.35. So one pass wants
+# about 0.7 on that panel and two passes 0.5, which is a working area of 8
+# megapixels over all the passes. The change to the image is about a fifth
+# smaller at 0.75 and almost half at 0.50, since the model sees fewer pixels
+# of what, under a lens, is all detail. So it is on for fullscreen and off
+# when windowed, unless cost_scaler in the ini says always, off, or manual,
+# which leaves its ini alone.
+COST_SCALER = str(_INI.get("cost_scaler", "fullscreen")).strip().lower()
+if COST_SCALER not in ("fullscreen", "always", "off", "manual"):
+    COST_SCALER = "fullscreen"
+try:
+    # the neural working area over all the passes, in megapixels. 8 is
+    # 6144x2560 at 0.70 for one pass and 0.50 for two, 3840x2160 at native for
+    # one pass and 0.65 for two, and 2560x1440 at native up to two passes,
+    # where the proxy would only add its own cost. A slower card can want less.
+    COST_SCALER_MPX = max(0.5, min(80.0, float(_INI.get("cost_scaler_mpx", 8))))
+except (TypeError, ValueError):
+    COST_SCALER_MPX = 8.0
+
+
+def _proxy_installed():
+    return bool(MPV_DIR) and all(os.path.isfile(os.path.join(MPV_DIR, n))
+                                 for n in ("nvngx_dlssnr_real.dll", "nvngx_dlssnr.ini"))
+
+
+def _proxy_scale(cw, ch, passes=1):
+    """The proxy's resolution scale for a lens this size and pass count, or
+    None for off.
+
+    Scaled so the model's work over all the passes comes to about
+    COST_SCALER_MPX megapixels, in the 5% steps the proxy uses, never below
+    0.35, where the picture has lost too much detail, and off rather than on
+    from 0.90 up, where too little is saved to pay for the proxy's own cost.
+    """
+    if cw <= 0 or ch <= 0:
+        return None
+    s = (COST_SCALER_MPX * 1e6 / float(cw * ch * max(1, passes))) ** 0.5
+    if s >= 0.90:
+        return None
+    return max(0.35, int(s * 20 + 1e-9) / 20.0)
+
+
+def _write_proxy(enabled, scale):
+    """Set EnableProxy, and when enabling also ResolutionScale, in the proxy's
+    ini, keeping the rest.
+
+    Anamorphic scaling is switched off with the scale, so the uniform scale is
+    what applies. Switching off touches nothing but the flag, so a scale of
+    the user's own survives. Returns whether the file was written.
+    """
+    if not _proxy_installed():
+        return False
+    path = os.path.join(MPV_DIR, "nvngx_dlssnr.ini")
+    keys = {"EnableProxy": "1" if enabled else "0"}
+    if enabled:
+        keys["ResolutionScale"] = "%.2f" % scale
+        keys["EnableAnamorphic"] = "0"
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            lines = fh.read().splitlines(True)
+    except OSError:
+        return False
+    out, inside, done = [], False, set()
+
+    def rest():
+        for k, v in keys.items():
+            if k not in done:
+                out.append("%s = %s\n" % (k, v))
+                done.add(k)
+
+    for line in lines:
+        bare = line.strip()
+        if bare.startswith("["):
+            if inside:
+                rest()
+            inside = bare.lower() == "[dlssnr_proxy]"
+        elif inside and "=" in bare and not bare.startswith(";"):
+            name = bare.split("=", 1)[0].strip().lower()
+            for k, v in keys.items():
+                if name == k.lower():
+                    if k not in done:
+                        out.append("%s = %s\n" % (k, v))
+                        done.add(k)
+                    break
+            else:
+                out.append(line)
+            continue
+        out.append(line)
+    if len(done) < len(keys):
+        if out and not out[-1].endswith("\n"):
+            out[-1] += "\n"
+        if not inside:
+            out.append("\n[DLSSNR_Proxy]\n")
+        rest()
+    try:
+        with open(path + ".tmp", "w", encoding="utf-8") as fh:
+            fh.writelines(out)
+        os.replace(path + ".tmp", path)
+        return True
+    except OSError:
+        return False
 
 
 # The stage windows are found by exact title, so the title carries the process
@@ -334,6 +564,28 @@ FULL_STATE = os.path.join(DATA_DIR, "lens-state-fullscreen.txt")
 READOUT = str(_INI.get("readout", "fps")).strip().lower()
 if READOUT not in ("fps", "detail", "size"):
     READOUT = "fps"
+# The delay meter on the title bar, off unless the ini says latency = 1. See
+# Lens.watch_latency for what it measures and what it leaves out.
+LATENCY = str(_INI.get("latency", "0")).strip().lower() in ("1", "yes", "on", "true")
+
+# The stage host. mpv is what shipped. presenter is lens_presenter.py, run by the
+# stack folder's own lens-presenter.exe: it captures the monitor itself, the
+# lens's own windows excluded from capture, and presents each frame the moment
+# it arrives. Nothing buffers, so there is no rate to govern and no magnifier
+# to pump. Measured from a change on screen to the change in the output, both
+# read through the compositor: 8 ms, against 70 through mpv at 99 fps.
+HOST = str(_INI.get("host", "mpv")).strip().lower()
+if HOST not in ("mpv", "presenter"):
+    HOST = "mpv"
+if "--presenter" in sys.argv:
+    HOST = "presenter"
+PRESENTER_EXE = os.path.join(MPV_DIR, "lens-presenter.exe") if MPV_DIR else None
+PRESENTER_SCRIPT = os.path.join(_script_dir(), "lens_presenter.py")
+if HOST == "presenter" and not (PRESENTER_EXE and os.path.isfile(PRESENTER_EXE)
+                                and os.path.isfile(PRESENTER_SCRIPT)):
+    print("host presenter asked for, but lens-presenter.exe is not in the mpv folder: using mpv",
+          flush=True)
+    HOST = "mpv"
 
 
 def _fps_for(stages):
@@ -412,6 +664,7 @@ GWL_STYLE, GWL_EXSTYLE = -16, -20
 WS_CHILD, WS_VISIBLE, WS_POPUP = 0x40000000, 0x10000000, 0x80000000
 WS_THICKFRAME, WS_MAXIMIZEBOX = 0x00040000, 0x00010000
 WS_EX_LAYERED, WS_EX_TRANSPARENT, WS_EX_NOACTIVATE = 0x00080000, 0x00000020, 0x08000000
+WDA_EXCLUDEFROMCAPTURE = 0x00000011
 HWND_TOPMOST = ctypes.c_void_p(-1)          # pointer sized, NOT int -1
 SWP_NOSIZE, SWP_NOMOVE, SWP_NOZORDER, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0004, 0x0010
 SWP_FRAMECHANGED = 0x0020
@@ -527,9 +780,9 @@ def _own_windows():
     return hits
 
 
-def find_mpv(title):
-    """Exact title match. Stage titles share a prefix, so substring matching
-    would return the wrong window."""
+def find_mpv(title, cls="mpv"):
+    """Exact title and class match. Stage titles share a prefix, so substring
+    matching would return the wrong window. The presenter's class is GLFW30."""
     hits = []
 
     @ctypes.WINFUNCTYPE(ctypes.c_bool, w.HWND, w.LPARAM)
@@ -541,7 +794,7 @@ def find_mpv(title):
         u.GetWindowTextW(h, b, n + 1)
         c = ctypes.create_unicode_buffer(256)
         u.GetClassNameW(h, c, 256)
-        if c.value == "mpv" and b.value == title:
+        if c.value == cls and b.value == title:
             hits.append(h)
         return True
 
@@ -564,6 +817,25 @@ def monitor_rect(x, y):
         r = mi.rcMonitor
         return r.left, r.top, r.right - r.left, r.bottom - r.top
     return 0, 0, u.GetSystemMetrics(0), u.GetSystemMetrics(1)
+
+
+def monitor_of(x, y):
+    """The monitor containing the point, as (index from 1 in enumeration order,
+    left, top). Windows Graphics Capture numbers monitors the same way."""
+    found = []
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(w.RECT),
+                        ctypes.c_void_p)
+    def cb(hmon, hdc, prc, lp):
+        r = prc.contents
+        found.append((r.left, r.top, r.right, r.bottom))
+        return True
+
+    u.EnumDisplayMonitors(None, None, cb, 0)
+    for i, (l, t, r, b) in enumerate(found, 1):
+        if l <= x < r and t <= y < b:
+            return i, l, t
+    return 1, 0, 0
 
 
 class MpvIPC:
@@ -624,6 +896,10 @@ class Lens:
         self.closing = False
         self.rebuilding = False     # True while set_passes is replacing the chain
         self.tweak = False          # True while the viewport is interactive
+        self.tweak_until = 0.0      # the overlay is followed until then after Done
+        self.proxy_scale = None     # the Cost Scaler's scale this session, or off
+        self.bar_drop = 0           # fullscreen: how far the bar has moved down
+        self.fs_origin = (x, y)     # fullscreen: where the picture is, for good
         self.frames = 0
         self.t_first = None
         self.out_frames = 0         # frames the visible stage has presented
@@ -638,6 +914,10 @@ class Lens:
         self._out_prev = None
         self.rate_note = ""         # last governor decision, for the title bar
         self.readout = READOUT      # what the title bar shows beside the size
+        self.latency_on = LATENCY   # the delay meter on the title bar
+        self.latency_ms = None      # its latest reading, the whole delay, estimated
+        self.latency_raw = None     # the measured part alone, capture to display
+        self._lat_hist = collections.deque(maxlen=8)
         self._shown = None          # (time, out_frames) behind the fps readout
         self._fps_hist = collections.deque(maxlen=3)
         self.saved_rate = rate      # best held rate from the state file, if any
@@ -650,6 +930,11 @@ class Lens:
         self.shot_busy = False
         self.shot_buf = np.empty((ch, cw, 4), np.uint8)
         self.stages = []            # [{title, proc, hwnd, ctl}], last one is visible
+        self.pres_in = self.pres_out = 0.0   # the presenter's arrivals and presents a second
+        self.mon_x = self.mon_y = 0          # the captured monitor's origin, presenter mode
+        self.shot_event = threading.Event()
+        self.shot_reply = None
+        self.passes = passes        # neural passes, inside the add-on or as stages
         self.pending = passes       # the pass count chosen on the bar, applied by Set
         self.nr_on = _read_nr_enabled()   # Neural Rendering on, as far as the lens knows
 
@@ -670,6 +955,7 @@ class Lens:
         else:
             t.geometry("%dx%d+%d+%d" % (cw + EDGE * 2, ch + BAR + EDGE, x - EDGE, y - BAR))
         bar = tk.Frame(t, bg=BG, height=BAR)
+        self.bar = bar
         bar.place(x=0 if fullscreen else EDGE, y=0, width=cw, height=BAR)
 
         self.menu_btn = tk.Label(bar, text=" \u2630 ", bg=BG, fg=FG, font=("Segoe UI", 12))
@@ -734,11 +1020,22 @@ class Lens:
             0, 0, cw, ch, self.host, None, hInst, None)
         if not self.hmag:
             raise SystemExit("magnifier control failed")
+        if HOST == "presenter":
+            # the presenter captures the monitor, so nothing of the lens may be
+            # in the picture: the host and the chrome are excluded from capture
+            # for good, and every other window of ours by watch_filter as it
+            # appears
+            for hx in (self.host, self.chrome):
+                u.SetWindowDisplayAffinity(hx, WDA_EXCLUDEFROMCAPTURE)
 
         # ---- stage 1: the magnifier host feeds the first mpv. The rate declared
         # to mpv depends on how many stages there will be, so it is settled first.
+        # With the add-on running the passes itself there is one stage whatever
+        # the count, and the count goes into ReShade.ini before that stage starts.
+        stages = 1 if ADDON_PASSES and _write_nr_passes(passes) else passes
+        self.apply_proxy()
         self.fps = _fps_for(passes)
-        self.rate = self.start_rate(passes) if ADAPTIVE else self.fps
+        self.rate = self.start_rate(passes, stages) if ADAPTIVE else self.fps
         if ADAPTIVE and self.saved_rate:
             # the state file remembers the best rate this size and pass count held,
             # so the chain does not have to shimmer its way down again
@@ -747,13 +1044,17 @@ class Lens:
         self.raise_chrome()
         self.aim()
 
-        for _ in range(max(0, passes - 1)):
+        for _ in range(max(0, stages - 1)):
             self._append_stage()
         self.update_info()
         self.start_counter()
 
-        self.start_pump()
-        self.start_governor()
+        if HOST != "presenter":
+            # the presenter captures for itself, buffers nothing and reports
+            # its own delay, so none of these have a job
+            self.start_pump()
+            self.start_governor()
+            self.watch_latency()
         self.watch_f6()
         self.root.after(1000, self.stats)
         self.root.after(200, self.watch_filter)
@@ -842,7 +1143,7 @@ class Lens:
         u.SetWindowPos(hwnd, HWND_TOPMOST, x, y, self.cw, self.ch, SWP_NOACTIVATE)
         return proc, hwnd, MpvIPC(pipe)
 
-    def start_capture(self, src_hwnd, dst_proc, count=False, alive=None):
+    def start_capture(self, src_hwnd, dst_proc, count=False, alive=None, sent=None):
         """WGC on src_hwnd, frames written to dst_proc's stdin.
 
         alive is a one key dict the owning stage can clear. Without it the writer
@@ -871,6 +1172,8 @@ class Lens:
         bufs = [np.empty((self.ch, self.cw, 4), np.uint8) for _ in range(2)]
         mvs = [memoryview(b).cast("B") for b in bufs]
         slot = {"i": 0, "ready": None}
+        stamps = [0.0, 0.0]          # when Windows composed the frame in each buffer
+        written = [0]                # frames sent so far: the next one's number in mpv
         cv = threading.Condition()
 
         def writer():
@@ -880,12 +1183,18 @@ class Lens:
                         cv.wait(0.2)
                     idx = slot["ready"]
                     slot["ready"] = None
+                    stamp = stamps[idx] if idx is not None else 0.0
                 if idx is None:
                     continue
                 try:
                     dst_proc.stdin.write(mvs[idx])
                 except (BrokenPipeError, OSError, ValueError):
                     return
+                if sent is not None:
+                    # its number in mpv's stream, its capture time, when it was
+                    # sent: the delay meter looks frames up by number
+                    sent.append((written[0], stamp, time.perf_counter()))
+                written[0] += 1
 
         threading.Thread(target=writer, daemon=True).start()
 
@@ -898,6 +1207,7 @@ class Lens:
                     return
                 i = slot["i"]
                 np.copyto(bufs[i], frame.frame_buffer[:lens.ch, :lens.cw, :])
+                stamps[i] = frame.timespan / 1e7       # 100 ns units, perf_counter's clock
                 with cv:
                     slot["ready"] = i
                     cv.notify()
@@ -966,6 +1276,12 @@ class Lens:
             self.keep_chrome_on_top()
         except Exception:
             pass
+        if HOST == "presenter":
+            for hx in _own_windows():
+                try:
+                    u.SetWindowDisplayAffinity(hx, WDA_EXCLUDEFROMCAPTURE)
+                except Exception:
+                    pass
         self.root.after(200, self.watch_filter)
 
     def keep_chrome_on_top(self):
@@ -1157,12 +1473,138 @@ class Lens:
 
     def _build_first(self, x, y):
         """Stage 1, fed by the magnifier host rather than by another stage."""
+        if HOST == "presenter":
+            self._build_presenter(x, y)
+            return
         alive = {"ok": True}
+        sent = collections.deque(maxlen=2400)
         proc, hwnd, ipc = self.spawn_mpv(TITLE, x, y)
-        ctl = self.start_capture(self.host, proc, count=True, alive=alive)
+        ctl = self.start_capture(self.host, proc, count=True, alive=alive, sent=sent)
         self.stages.append({"title": TITLE, "proc": proc, "hwnd": hwnd,
-                            "ctl": ctl, "alive": alive, "ipc": ipc})
+                            "ctl": ctl, "alive": alive, "ipc": ipc, "sent": sent})
         self.refresh_filter()
+
+    def _build_presenter(self, x, y):
+        """Stage 1 as the presenter. It captures the monitor itself, cropped to the
+        lens, with the lens's own windows excluded from capture, and presents each
+        frame the moment it arrives. Nothing is piped and nothing is governed."""
+        idx, mx, my = monitor_of(x + self.cw // 2, y + self.ch // 2)
+        self.mon_x, self.mon_y = mx, my
+        proc, hwnd = self.spawn_presenter(TITLE, x, y, "monitor:%d" % idx, x - mx, y - my)
+        self.stages.append({"title": TITLE, "proc": proc, "hwnd": hwnd, "ctl": None,
+                            "alive": {"ok": True}, "ipc": None, "sent": None})
+        self.refresh_filter()
+
+    def spawn_presenter(self, title, x, y, source, cx, cy):
+        """Start lens_presenter.py under the stack's lens-presenter.exe, and return
+        (proc, hwnd). See that file for what it does and what it prints."""
+        env = dict(os.environ, DISABLE_DLSS5_VK_BRIDGE="1")
+        cmd = [PRESENTER_EXE, PRESENTER_SCRIPT, "--source", source, "--at", str(x), str(y),
+               "--size", str(self.cw), str(self.ch), "--crop", str(cx), str(cy),
+               "--title", title, "--exclude"]
+        errlog = os.path.join(LOGDIR, "presenter-stderr.log")
+        try:
+            os.makedirs(LOGDIR, exist_ok=True)
+            errf = open(errlog, "a", encoding="utf-8", errors="replace")
+            errf.write("\n--- %s  %s ---\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), title))
+            errf.flush()
+        except OSError:
+            errf, errlog = subprocess.DEVNULL, None
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errf,
+                                cwd=MPV_DIR, env=env, text=True, bufsize=1)
+        if errf is not subprocess.DEVNULL:
+            try:
+                errf.close()
+            except OSError:
+                pass
+        threading.Thread(target=self._read_presenter, args=(proc,), daemon=True).start()
+        hwnd = None
+        for i in range(140):
+            hwnd = find_mpv(title, "GLFW30")
+            if hwnd:
+                break
+            if proc.poll() is not None:
+                break
+            if i == 20:
+                print("waiting for the presenter to open its window ...", flush=True)
+            time.sleep(0.25)
+        if not hwnd:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            raise SystemExit("\n".join([
+                "The presenter never opened a window for stage %s." % title,
+                "",
+                "It runs as lens-presenter.exe in the mpv folder and needs the glfw and",
+                "vulkan packages the lens's setup installs. What it printed is in:",
+                "  %s" % (errlog or "(could not be captured)")]))
+        st = u.GetWindowLongPtrW(hwnd, GWL_STYLE)
+        u.SetWindowLongPtrW(hwnd, GWL_STYLE, st & ~WS_THICKFRAME & ~WS_MAXIMIZEBOX)
+        self.set_interactive(hwnd, False)
+        u.SetWindowPos(hwnd, HWND_TOPMOST, x, y, self.cw, self.ch, SWP_NOACTIVATE)
+        return proc, hwnd
+
+    def _read_presenter(self, proc):
+        """The presenter's stdout: a stats line a second, and screenshot replies."""
+        for line in proc.stdout:
+            line = line.strip()
+            if line.startswith("stats "):
+                try:
+                    kv = dict(p.split("=", 1) for p in line[6:].split())
+                    new, arrived = int(kv["new"]), int(kv["arrived"])
+                    meter = float(kv["meter"])
+                except (ValueError, KeyError):
+                    continue
+                if self.t_first is None:
+                    self.t_first = time.perf_counter()
+                self.frames += arrived
+                self.out_frames += new
+                self.pres_in, self.pres_out = float(arrived), float(new)
+                if meter == meter:
+                    # the meter is the present call against the capture's own
+                    # timestamp; the composition and scanout after it come to about
+                    # a refresh and a half, measured: 8 ms flip to flip where the
+                    # meter read -5 at 120 Hz
+                    self.latency_raw = meter
+                    self.latency_ms = meter + 1.5 * 1000.0 / float(DISPLAY_HZ)
+            elif line.startswith("shot "):
+                self.shot_reply = line[5:]
+                self.shot_event.set()
+            elif line.startswith("presenter ready"):
+                print(line, flush=True)
+
+    def tell_presenter(self, text):
+        for s in list(self.stages):
+            try:
+                s["proc"].stdin.write(text + "\n")
+                s["proc"].stdin.flush()
+            except (OSError, ValueError, AttributeError):
+                pass
+
+    def _shot_presenter(self):
+        """Before and after through the presenter: the frame it captured, and the
+        picture it presented last, read back from the swapchain."""
+        text, colour = "screenshot captured nothing", WARN
+        try:
+            time.sleep(0.1)
+            os.makedirs(SHOT_DIR, exist_ok=True)
+            base = os.path.join(SHOT_DIR, "lens-%s-%dpass" % (time.strftime("%Y%m%d-%H%M%S"), self.passes))
+            self.shot_event.clear()
+            self.shot_reply = None
+            self.tell_presenter("shot " + base)
+            if self.shot_event.wait(5.0) and self.shot_reply and self.shot_reply.startswith("done"):
+                text, colour = "saved " + self.shot_reply[5:], ACCENT
+            elif self.shot_reply:
+                text = "screenshot failed: " + self.shot_reply
+        except Exception as exc:
+            text = "screenshot failed: %s" % exc
+        finally:
+            self.shot_busy = False
+        try:
+            self.root.after(0, lambda: self._shot_done(text, colour))
+        except Exception:
+            pass
 
     def _append_stage(self):
         """One more mpv on the end, neural rendering the stage before it."""
@@ -1170,10 +1612,11 @@ class Lens:
         n = len(self.stages) + 1
         title = "%sp%d" % (TITLE, n)
         alive = {"ok": True}
+        sent = collections.deque(maxlen=2400)
         proc, hwnd, ipc = self.spawn_mpv(title, x, y)
-        ctl = self.start_capture(self.stages[-1]["hwnd"], proc, alive=alive)
+        ctl = self.start_capture(self.stages[-1]["hwnd"], proc, alive=alive, sent=sent)
         self.stages.append({"title": title, "proc": proc, "hwnd": hwnd,
-                            "ctl": ctl, "alive": alive, "ipc": ipc})
+                            "ctl": ctl, "alive": alive, "ipc": ipc, "sent": sent})
         self.refresh_filter()
 
     def _kill_stage(self, s):
@@ -1203,9 +1646,9 @@ class Lens:
         rebuild is kept for both modes: the starting rate, the governor's search
         and the output counter all belong to one chain.
         """
-        n = max(1, min(MAX_PASSES, n))
+        n = max(1, min(_pass_limit(), n))
         self.pending = n
-        if self.closing or n == len(self.stages):
+        if self.closing or n == self.passes:
             self.update_info()
             return
         self.info.config(text="rebuilding at %d pass%s ..."
@@ -1221,14 +1664,21 @@ class Lens:
         for s in reversed(self.stages):
             self._kill_stage(s)
         self.stages = []
+        self.passes = n
+        self.apply_proxy()
+        # the add-on reads its pass count when a stage starts, so it is written
+        # now, with the old stages gone and before the new one spawns
+        stages = 1 if ADDON_PASSES and _write_nr_passes(n) else n
         self.fps = _fps_for(n)
-        self.rate = self.start_rate(n) if ADAPTIVE else self.fps
+        self.rate = self.start_rate(n, stages) if ADAPTIVE else self.fps
         self.rate_note = ""
+        self._lat_hist.clear()
+        self.latency_ms = None
         self.frames, self.t_first = 0, None
         x, y = self.inner()
         try:
             self._build_first(x, y)
-            for _ in range(n - 1):
+            for _ in range(stages - 1):
                 self._append_stage()
         except SystemExit:
             self.info.config(text="a stage failed to start", fg=WARN)
@@ -1250,22 +1700,40 @@ class Lens:
         if save:
             self.save_state()
 
+    def apply_proxy(self):
+        """Set the Cost Scaler proxy for this lens: on for fullscreen at the scale
+        the monitor and the pass count call for, off when windowed, or as the ini
+        says. The proxy reads its ini when it starts and again within a second of
+        a change, so this is right both before a stage spawns and live."""
+        if not _proxy_installed() or COST_SCALER == "manual":
+            return
+        want = COST_SCALER == "always" or (COST_SCALER == "fullscreen" and self.fullscreen)
+        scale = _proxy_scale(self.cw, self.ch, self.passes) if want else None
+        if _write_proxy(scale is not None, scale) and scale != self.proxy_scale:
+            self.proxy_scale = scale
+            print("cost scaler %s" % ("on at %.2f" % scale if scale else "off"), flush=True)
+
     def add_pass(self, save=True):
-        self.set_passes(len(self.stages) + 1, save)
+        self.set_passes(self.passes + 1, save)
 
     def drop_pass(self, save=True):
-        self.set_passes(len(self.stages) - 1, save)
+        self.set_passes(self.passes - 1, save)
 
     # ---- geometry
     def inner(self):
         if self.fullscreen:
-            return self.t.winfo_x(), self.t.winfo_y()
+            # fullscreen cannot be dragged, and in tweak mode the bar sits in the
+            # bottom right corner, see drop_bar, so the bar's position says
+            # nothing about where the picture is
+            return self.fs_origin
         return self.t.winfo_x() + EDGE, self.t.winfo_y() + BAR
 
     def aim(self):
         x, y = self.inner()
         r = w.RECT(x, y, x + self.cw, y + self.ch)
         mag.MagSetWindowSource(self.hmag, r)
+        if HOST == "presenter":
+            self.tell_presenter("crop %d %d" % (x - self.mon_x, y - self.mon_y))
 
     def place(self):
         x, y = self.inner()
@@ -1301,8 +1769,8 @@ class Lens:
         threading.Thread(target=loop, daemon=True).start()
 
     def update_info(self):
-        n = len(self.stages)
-        p = max(1, min(MAX_PASSES, self.pending))
+        n = self.passes
+        p = max(1, min(_pass_limit(), self.pending))
         self.pending = p
         chosen = p != n
         if not self.nr_on:
@@ -1315,18 +1783,18 @@ class Lens:
         self.pass_lbl.config(text="%d pass%s" % (p, "" if p == 1 else "es"),
                              fg=WARN if chosen else ACCENT)
         self.set_btn.config(fg=ACCENT if chosen else DIM)
-        self.plus.config(fg=DIM if p >= MAX_PASSES else FG)
+        self.plus.config(fg=DIM if p >= _pass_limit() else FG)
         self.minus.config(fg=DIM if p <= 1 else FG)
 
     def bump_passes(self, step):
         """Choose a pass count on the bar without rebuilding anything yet."""
         if not self.nr_on:
             return
-        self.pending = max(1, min(MAX_PASSES, self.pending + step))
+        self.pending = max(1, min(_pass_limit(), self.pending + step))
         self.update_info()
 
     def apply_passes(self):
-        if self.nr_on and self.pending != len(self.stages):
+        if self.nr_on and self.pending != self.passes:
             self.set_passes(self.pending)
 
     def stats(self):
@@ -1346,6 +1814,8 @@ class Lens:
             size = "%d x %d" % (self.cw, self.ch)
             if self.readout == "size":
                 txt = size
+            elif self.readout == "detail" and HOST == "presenter":
+                txt = "%s   %.0f in  %.0f out" % (size, self.pres_in, self.pres_out)
             elif self.readout == "detail" and ADAPTIVE:
                 fps = self.frames / max(now - self.t_first, 1e-6)
                 txt = "%s   %.0f in  %.0f out%s" % (size, fps, self.out_rate(), self.rate_note)
@@ -1353,8 +1823,71 @@ class Lens:
                 txt = "%s   %.0f fps%s" % (size, shown, self.rate_note)
             else:
                 txt = size
+            if self.latency_on and self.latency_ms is not None:
+                txt += "   delay ~%.0f ms" % self.latency_ms
             self.info.config(text=txt, fg=DIM)
         self.root.after(1000, self.stats)
+
+
+    def watch_latency(self):
+        """The delay meter: from Windows composing a captured frame to the
+        visible stage showing it.
+
+        Every frame written to a stage is logged with its number in mpv's
+        stream and the capture's own timestamp, which is on the same clock as
+        perf_counter (measured: delivery lands half a millisecond after it).
+        mpv reports the position of the frame it is showing, which names the
+        frame, and now minus that frame's capture time is the delay through
+        capture, pipe, buffer, Neural Rendering and present. With chained
+        stages the delays add.
+
+        What it cannot see: the magnifier's repaint and the host's composition
+        before the capture, and the present, composition and scanout after mpv
+        reports the frame shown. Measured against a window flipping black and
+        white under the lens, flip on screen to flip in the output, on an RTX
+        5090 with a 120 Hz display: the meter read 34 ms where the flip measured
+        70 at 99 fps, and 137 where it measured 183 at 33 fps. That gap is close
+        to three and a half refreshes plus half a frame at the visible rate, the
+        latter being mpv naming a frame before the display shows it, so the bar
+        shows the measured part plus that allowance, a refresh more per extra
+        stage: 70 and 181 against the 70 and 183 above.
+        """
+        def loop():
+            while not self.closing:
+                time.sleep(0.25)
+                if not self.latency_on or self.rebuilding or not self.stages:
+                    continue
+                declared = float(BASE_FPS if ADAPTIVE else self.fps)
+                total, now = 0.0, time.perf_counter()
+                for s in list(self.stages):
+                    try:
+                        m = s["ipc"].command("get_property", "time-pos")
+                        pos = m.get("data") if m else None
+                    except Exception:
+                        pos = None
+                    if not isinstance(pos, (int, float)):
+                        total = None
+                        break
+                    want = int(round(pos * declared))
+                    stamp = None
+                    for n, ts, _ in reversed(s["sent"]):
+                        if n <= want:
+                            stamp = ts
+                            break
+                    if stamp is None:
+                        total = None
+                        break
+                    total += now - stamp
+                if total is not None:
+                    self._lat_hist.append(total * 1000.0)
+                    h = sorted(self._lat_hist)
+                    self.latency_raw = h[len(h) // 2]
+                    refresh = 1000.0 / float(DISPLAY_HZ)
+                    unseen = (3.5 + len(self.stages) - 1) * refresh \
+                        + 500.0 / max(self.out_rate(), 1.0)
+                    self.latency_ms = self.latency_raw + unseen
+
+        threading.Thread(target=loop, daemon=True).start()
 
     # ---- adaptive rate
     def start_counter(self):
@@ -1366,6 +1899,8 @@ class Lens:
         capture of it delivers exactly once per presented frame. The callback
         only increments, so it never throttles anything.
         """
+        if HOST == "presenter":
+            return                       # the presenter reports its own presents
         self.stop_counter()
         alive = {"ok": True}
         self.out_alive = alive
@@ -1433,10 +1968,13 @@ class Lens:
         return self.stage_rate(self.rate, len(self.stages) - 1)
 
     @staticmethod
-    def start_rate(passes):
+    def start_rate(passes, stages=None):
         """Stage 1's starting rate: the fixed rule's rate for this pass count,
-        arriving at the visible stage after each later stage's headroom."""
-        return min(_fps_for(1), int(round(_fps_for(passes) / (5.0 / 6.0) ** (passes - 1))))
+        arriving at the visible stage after each later stage's headroom. With
+        the passes inside the add-on there is one stage and no headroom."""
+        if stages is None:
+            stages = passes
+        return min(_fps_for(1), int(round(_fps_for(passes) / (5.0 / 6.0) ** (stages - 1))))
 
     def apply_rate(self, new, why):
         """Set every stage's playback speed for a stage 1 rate of new fps."""
@@ -1818,11 +2356,10 @@ class Lens:
             if self.fullscreen:
                 # the windowed geometry stays untouched for the way back
                 with open(FULL_STATE, "w") as f:
-                    f.write("%d %d\n" % (len(self.stages), keep))
+                    f.write("%d %d\n" % (self.passes, keep))
                 return
             with open(STATE, "w") as f:
-                f.write("%d %d %d %d %d %d\n" % (self.cw, self.ch, x, y, len(self.stages),
-                                                keep))
+                f.write("%d %d %d %d %d %d\n" % (self.cw, self.ch, x, y, self.passes, keep))
         except OSError:
             pass
 
@@ -1885,7 +2422,27 @@ class Lens:
         m.add_command(label="Settings...", command=self.settings_dialog)
         m.add_separator()
         m.add_command(label="Close", command=self.quit)
-        m.tk_popup(self.t.winfo_x() + 6, self.t.winfo_y() + BAR)
+        # A native popup closes on a click outside it, or on Escape, only while
+        # its owner is the foreground window, and the title bar never activates:
+        # measured, as shipped the menu stayed up through both, until an item was
+        # chosen. So the bar takes the foreground for as long as the menu is
+        # posted, which is until it is chosen from or dismissed, and hands it
+        # back after. The click that dismisses it is consumed by the menu, so a
+        # second click on the menu button closes it rather than reopening it.
+        prev = u.GetForegroundWindow()
+        ex = u.GetWindowLongPtrW(self.chrome, GWL_EXSTYLE)
+        u.SetWindowLongPtrW(self.chrome, GWL_EXSTYLE, ex & ~WS_EX_NOACTIVATE)
+        self.focus(self.chrome)
+        try:
+            m.tk_popup(self.t.winfo_x() + 6, self.t.winfo_y() + BAR)
+        finally:
+            u.SetWindowLongPtrW(self.chrome, GWL_EXSTYLE, ex | WS_EX_NOACTIVATE)
+            u.PostMessageW(self.chrome, 0, 0, 0)      # WM_NULL, as documented for popups
+            if prev and prev != self.chrome and u.IsWindow(prev):
+                try:
+                    self.focus(prev)
+                except Exception:
+                    pass
 
     def set_interactive(self, hwnd, on):
         ex = u.GetWindowLongPtrW(hwnd, GWL_EXSTYLE)
@@ -1932,9 +2489,13 @@ class Lens:
             # interactive first, so the overlay that opens can be used with the
             # mouse; the key itself does not need the focus
             self.set_interactive(h, True)
+            if self.fullscreen:
+                self.drop_bar(True)
             self.info.config(text="TWEAK MODE: Home hides/shows the ReShade menu", fg=WARN)
             self.post_key(h, 0x24)
             self.root.after(150, lambda: self.focus(h))
+            self.tweak_until = float("inf")
+            self.root.after(700, self.follow_overlay)
         else:
             # the key first, and the window made click-through only after it
             # has been released: taking the styles back drops the focus, and
@@ -1942,6 +2503,52 @@ class Lens:
             self.post_key(h, 0x24)
             self.root.after(KEY_HOLD + 200, lambda: self.set_interactive(h, False))
             self.info.config(text="%d x %d" % (self.cw, self.ch), fg=DIM)
+            if self.fullscreen:
+                self.drop_bar(False)
+            # the add-on's write of a change made just before Done can still be
+            # on its way, so the file is followed a few seconds longer
+            self.tweak_until = time.perf_counter() + 4.0
+
+    def drop_bar(self, down):
+        """Fullscreen only. The bar lies over the top edge of the picture, which
+        is where the ReShade overlay keeps its tabs, so for tweak mode it becomes
+        a short bar in the bottom right corner and comes back after. Not the
+        whole bottom edge: the overlay reaches nearly to the bottom of the
+        monitor and its Reload button spans its width there, measured. The
+        overlay is anchored top left, so the far corner is clear of it."""
+        x, y = self.fs_origin
+        if down:
+            wd = min(self.cw, 840)         # room for every control and the mode text;
+                                            # at 780 the packer dropped the minus
+            self.bar_drop = self.ch - BAR
+            self.t.geometry("%dx%d+%d+%d" % (wd, BAR, x + self.cw - wd, y + self.bar_drop))
+        else:
+            wd = self.cw
+            self.bar_drop = 0
+            self.t.geometry("%dx%d+%d+%d" % (wd, BAR, x, y))
+        self.bar.place(x=0, y=0, width=wd, height=BAR)
+        self.raise_chrome()
+
+    def follow_overlay(self):
+        """Keep the title bar in step with a pass count chosen in the overlay.
+
+        The overlay's own control changes the add-on's count live, inside its
+        process, and the add-on writes it to ReShade.ini within about a second.
+        While the overlay is open, and for a few seconds after it closes, the
+        file is read back and a changed count becomes the bar's own, with
+        nothing rebuilt: the add-on is already running it.
+        """
+        if self.closing or not (self.tweak or time.perf_counter() < self.tweak_until):
+            return
+        if ADDON_PASSES and not self.rebuilding:
+            n = _read_nr_passes()
+            if n is not None and 1 <= n <= ADDON_MAX_PASSES and n != self.passes:
+                print("passes set to %d in the overlay" % n, flush=True)
+                self.passes = self.pending = n
+                self.update_info()
+                self.apply_proxy()
+                self.save_state()
+        self.root.after(700, self.follow_overlay)
 
     def send_key(self, vk, idx=0):
         """Every stage gets the key, so a toggle applies to every pass."""
@@ -2137,7 +2744,7 @@ class Lens:
                 try:
                     with open(STATE, "w") as f:
                         f.write("%d %d %d %d %d\n" % (wd - wd % 2, ht - ht % 2,
-                                                      nx, ny, len(self.stages)))
+                                                      nx, ny, self.passes))
                 except OSError:
                     pass
                 t.destroy()
@@ -2237,6 +2844,9 @@ class Lens:
         threading.Thread(target=self._shot_worker, daemon=True).start()
 
     def _shot_worker(self):
+        if HOST == "presenter":
+            self._shot_presenter()
+            return
         text, colour = "screenshot captured nothing", WARN
         try:
             # The menu that started this has closed, but frames containing it are
@@ -2269,7 +2879,7 @@ class Lens:
             stamp = time.strftime("%Y%m%d-%H%M%S")
             saved = []
             os.makedirs(SHOT_DIR, exist_ok=True)
-            base = os.path.join(SHOT_DIR, "lens-%s-%dpass" % (stamp, len(self.stages)))
+            base = os.path.join(SHOT_DIR, "lens-%s-%dpass" % (stamp, self.passes))
             if before is not None:
                 _write_png(base + "-before.png", _bgra_to_rgb(before))
                 saved.append("before")
@@ -2421,14 +3031,6 @@ class Lens:
         explain("How often the picture under the lens is captured, per second. The display's "
                 "own rate is the default and there is nothing to gain above it. Changing it "
                 "restarts the lens.")
-        most = tk.IntVar(value=MAX_PASSES)
-        slider("Most neural passes the plus button allows", most, 1, 8)
-        explain("Each pass renders the previous pass again, and every pass costs a share of "
-                "the frame rate. Two is usually the sweet spot and three is the highest that "
-                "is tested. Applies straight away.\n\n"
-                "Above three is experimental and may not work properly: at four passes the "
-                "rate search has been measured hunting over a 40 fps spread on a still "
-                "image, so the frame rate can swing and the picture can wander.")
 
         # ---- title bar
         section("Title bar")
@@ -2439,6 +3041,18 @@ class Lens:
         explain("What sits beside the size on the title bar. The frame rate is what the "
                 "visible pass actually presents, averaged over the last few seconds. Applies "
                 "straight away.")
+        latency = tk.BooleanVar(value=self.latency_on)
+        switch("Show the delay from capture to display", latency)
+        explain("How far the picture in the lens runs behind what is under it. Measured "
+                "inside the lens from the moment Windows composed a captured frame to the "
+                "moment the visible pass shows it, read back from mpv four times a second "
+                "and averaged over two seconds, plus an allowance for the steps that cannot "
+                "see: the magnifier's repaint and composition before the capture, and the "
+                "present, composition and scanout after. Calibrated against a window "
+                "flipping black and white under the lens on the test machine, it read 70 ms "
+                "where the flip measured 70 at 99 fps, and 181 where it measured 183 at 33 "
+                "fps. The delay grows at lower frame rates, since every buffered frame "
+                "lasts longer. Applies straight away.")
 
         # ---- folders
         section("Folders")
@@ -2451,7 +3065,7 @@ class Lens:
         explain("Both take effect at the next launch. Changing either restarts the lens.")
 
         def save():
-            global SHOT_DIR, MIN_FPS, MAX_PASSES
+            global SHOT_DIR, MIN_FPS
             restart = False
             d = shots.get().strip()
             if d and d != SHOT_DIR:
@@ -2471,12 +3085,6 @@ class Lens:
                 v = int(pump.get())
                 _save_ini("pump_hz", None if v == DISPLAY_HZ else v)
                 restart = True
-            if int(most.get()) != MAX_PASSES:
-                MAX_PASSES = int(most.get())
-                _save_ini("max_passes", None if MAX_PASSES == 3 else MAX_PASSES)
-                self.update_info()
-                if len(self.stages) > MAX_PASSES:
-                    self.set_passes(MAX_PASSES)
             m = mpv.get().strip()
             if m and m != (MPV_DIR or ""):
                 _save_ini("mpv_dir", m)
@@ -2493,6 +3101,11 @@ class Lens:
             if r != self.readout:
                 self.readout = r
                 _save_ini("readout", None if r == "fps" else r)
+            if bool(latency.get()) != self.latency_on:
+                self.latency_on = bool(latency.get())
+                self._lat_hist.clear()
+                self.latency_ms = None
+                _save_ini("latency", "1" if self.latency_on else None)
             t.destroy()
             if restart:
                 # the windowed geometry is what a fullscreen launch derives its
@@ -2755,7 +3368,7 @@ def main():
                 pass
     cw -= cw % 2
     ch -= ch % 2
-    passes = max(1, min(MAX_PASSES, passes))
+    passes = max(1, min(_pass_limit(), passes))
     archive_logs()
     root = tk.Tk()
     _set_icon(root)
@@ -2788,9 +3401,10 @@ def main():
         return
     lens.show_in_taskbar()
     print("Neural Lens %s (beta)" % __version__, flush=True)
-    print("lens ready %dx%d at (%d,%d), %d pass%s%s"
-          % (cw, ch, x, y, len(lens.stages), "" if len(lens.stages) == 1 else "es",
-             ", fullscreen" if FULLSCREEN else ""),
+    print("lens ready %dx%d at (%d,%d), %d pass%s%s, %s, host %s"
+          % (cw, ch, x, y, lens.passes, "" if lens.passes == 1 else "es",
+             ", fullscreen" if FULLSCREEN else "",
+             "run inside the add-on" if ADDON_PASSES else "chained as stages", HOST),
           flush=True)
 
     def watch():

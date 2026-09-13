@@ -162,7 +162,7 @@ whether Neural Rendering is applied. If it is not, fix that first.
   will not reach it, which is why the X is there.
 - The **menu** at the left opens the ReShade overlay in place so you can adjust Neural
   Rendering settings live, and also holds the pass controls and a Neural Rendering on and off
-  toggle.
+  toggle. The menu button opens and closes it; so does a click anywhere else, or Escape.
 - **Save a before and after screenshot** from the menu. It writes three PNGs: the untouched
   content the lens captured, the neural rendered result, and the two joined side by side. Both
   halves come from the same live pipeline a fraction of a second apart, so on still content they

@@ -76,11 +76,16 @@ glfw.window_hint(glfw.DECORATED, glfw.FALSE)
 glfw.window_hint(glfw.RESIZABLE, glfw.FALSE)
 glfw.window_hint(glfw.FLOATING, glfw.TRUE)
 glfw.window_hint(glfw.FOCUS_ON_SHOW, glfw.FALSE)
+glfw.window_hint(glfw.VISIBLE, glfw.FALSE)
 win = glfw.create_window(W, H, args.title, None, None)
 glfw.set_window_pos(win, X, Y)
 hwnd = glfw.get_win32_window(win)
+# a tool window that never activates has no taskbar button, and the styles go
+# on before the window is first shown, so no button flashes while it loads
+u.SetWindowLongPtrW(hwnd, -20, u.GetWindowLongPtrW(hwnd, -20) | 0x00000080 | 0x08000000)
 if args.exclude:
     u.SetWindowDisplayAffinity(hwnd, 0x11)
+u.ShowWindow(hwnd, 8)                                  # SW_SHOWNA
 glfw.poll_events()
 
 # ---- vulkan

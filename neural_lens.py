@@ -780,21 +780,36 @@ def _own_windows():
     return hits
 
 
-def find_mpv(title, cls="mpv"):
-    """Exact title and class match. Stage titles share a prefix, so substring
-    matching would return the wrong window. The presenter's class is GLFW30."""
+def find_mpv(title, cls="mpv", pid=None):
+    """A visible window of the class with the exact title, or, when pid is given,
+    of the class and that process, whatever its title. Stage titles share a
+    prefix, so substring matching would return the wrong window. The
+    presenter's class is GLFW30.
+
+    mpv's window is visible with the title "mpv" a second after launch and
+    takes the configured title a second and a half later, measured, and until
+    the lens has found it, it sits on the taskbar. Matching by process finds
+    it the moment it is visible."""
     hits = []
 
     @ctypes.WINFUNCTYPE(ctypes.c_bool, w.HWND, w.LPARAM)
     def cb(h, l):
         if not u.IsWindowVisible(h):
             return True
+        c = ctypes.create_unicode_buffer(256)
+        u.GetClassNameW(h, c, 256)
+        if c.value != cls:
+            return True
+        if pid is not None:
+            p = w.DWORD()
+            u.GetWindowThreadProcessId(h, ctypes.byref(p))
+            if p.value == pid:
+                hits.append(h)
+            return True
         n = u.GetWindowTextLengthW(h)
         b = ctypes.create_unicode_buffer(n + 1)
         u.GetWindowTextW(h, b, n + 1)
-        c = ctypes.create_unicode_buffer(256)
-        u.GetClassNameW(h, c, 256)
-        if c.value == cls and b.value == title:
+        if b.value == title:
             hits.append(h)
         return True
 
@@ -885,6 +900,119 @@ class MpvIPC:
         self.f = None
 
 
+class PopupMenu:
+    """The title bar menu, drawn by the lens itself.
+
+    A native popup only dismisses on an outside click or Escape while its
+    owner is the foreground window, and the title bar never activates so that
+    the application under the lens keeps the focus. Taking the foreground for
+    the menu's lifetime worked when it worked, but the click that dismissed
+    the menu was consumed, so the menu button looked dead on that click, and
+    when the foreground could not be taken the button posted a second menu on
+    top of the first, which read as a menu that cannot close. This is a plain
+    window of ours instead: the button opens it and closes it, a click
+    anywhere else closes it, so does Escape, nothing is consumed, and the
+    focus stays where it was.
+    """
+
+    def __init__(self, lens):
+        self.lens = lens
+        self.win = None
+        self.pressed = False
+
+    def toggle(self, items):
+        if self.win is not None:
+            self.close()
+        else:
+            self.open(items)
+
+    def open(self, items):
+        lens = self.lens
+        t = tk.Toplevel(lens.root)
+        self.win = t
+        t.overrideredirect(True)
+        t.attributes("-topmost", True)
+        t.configure(bg=ACCENT)
+        box = tk.Frame(t, bg=BG)
+        box.pack(padx=1, pady=1)
+        for item in items:
+            if item is None:
+                tk.Frame(box, bg="#334155", height=1).pack(fill="x", padx=6, pady=3)
+                continue
+            text, command, enabled = item
+            lbl = tk.Label(box, text=text, bg=BG, fg=FG if enabled else DIM, anchor="w",
+                           padx=14, pady=4, font=("Segoe UI", 10))
+            lbl.pack(fill="x")
+            if enabled and command is not None:
+                lbl.bind("<Enter>", lambda e, l=lbl: l.config(bg="#334155"))
+                lbl.bind("<Leave>", lambda e, l=lbl: l.config(bg=BG))
+                lbl.bind("<Button-1>", lambda e, c=command: self.choose(c))
+        t.update_idletasks()
+        wd, ht = t.winfo_reqwidth(), t.winfo_reqheight()
+        bx, by = lens.t.winfo_x(), lens.t.winfo_y()
+        mx, my, mw, mh = monitor_rect(bx + 10, by + 10)
+        x = max(mx, min(bx + 6, mx + mw - wd))
+        y = by + BAR
+        if y + ht > my + mh:
+            y = by - ht                   # fullscreen tweak mode: the bar is at the bottom
+        t.geometry("%dx%d+%d+%d" % (wd, ht, x, max(my, y)))
+        t.update()
+        h = u.GetParent(t.winfo_id()) or t.winfo_id()
+        u.SetWindowLongPtrW(h, GWL_EXSTYLE, u.GetWindowLongPtrW(h, GWL_EXSTYLE) | WS_EX_NOACTIVATE)
+        u.SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+        if HOST == "presenter":
+            u.SetWindowDisplayAffinity(h, WDA_EXCLUDEFROMCAPTURE)
+        try:
+            lens.refresh_filter()         # the magnifier must not see it either
+        except Exception:
+            pass
+        self.pressed = bool(u.GetAsyncKeyState(0x01) & 0x8000)
+        lens.root.after(30, self.watch)
+
+    def choose(self, command):
+        self.close()
+        try:
+            command()
+        except Exception:
+            pass
+
+    def inside(self, widget, px, py):
+        try:
+            x, y = widget.winfo_rootx(), widget.winfo_rooty()
+            return x <= px < x + widget.winfo_width() and y <= py < y + widget.winfo_height()
+        except Exception:
+            return False
+
+    def watch(self):
+        """Close on a click anywhere but the menu or the button, or on Escape.
+
+        The button's own handler toggles, and the menu's labels take their own
+        clicks, so those two are left alone. The state is polled rather than
+        bound, since neither the menu nor the bar ever has the keyboard focus."""
+        if self.win is None or self.lens.closing:
+            return
+        if u.GetAsyncKeyState(0x1B) & 0x8000:
+            self.close()
+            return
+        down = any(u.GetAsyncKeyState(vk) & 0x8000 for vk in (0x01, 0x02, 0x04))
+        if down and not self.pressed:
+            pt = w.POINT()
+            u.GetCursorPos(ctypes.byref(pt))
+            if not self.inside(self.win, pt.x, pt.y) and not self.inside(self.lens.menu_btn, pt.x, pt.y):
+                self.close()
+                return
+        self.pressed = down
+        self.lens.root.after(30, self.watch)
+
+    def close(self):
+        t, self.win = self.win, None
+        if t is not None:
+            try:
+                t.destroy()
+            except Exception:
+                pass
+
+
 class Lens:
     def __init__(self, root, x, y, cw, ch, passes, rate=None, fullscreen=False):
         self.root, self.cw, self.ch = root, cw, ch
@@ -934,6 +1062,7 @@ class Lens:
         self.mon_x = self.mon_y = 0          # the captured monitor's origin, presenter mode
         self.shot_event = threading.Event()
         self.shot_reply = None
+        self.popup = PopupMenu(self)
         self.passes = passes        # neural passes, inside the add-on or as stages
         self.pending = passes       # the pass count chosen on the bar, applied by Set
         self.nr_on = _read_nr_enabled()   # Neural Rendering on, as far as the lens knows
@@ -1113,15 +1242,15 @@ class Lens:
             except OSError:
                 pass
         hwnd = None
-        for i in range(140):
-            hwnd = find_mpv(title)
+        for i in range(700):
+            hwnd = find_mpv(title, pid=proc.pid)
             if hwnd:
                 break
-            if i == 20:
+            if i == 100:
                 # thirty five seconds of nothing reads as a hang, so say what
                 # is being waited for rather than leaving it silent
                 print("waiting for mpv to open its window ...", flush=True)
-            time.sleep(0.25)
+            time.sleep(0.05)
         if not hwnd:
             try:
                 proc.kill()
@@ -1519,15 +1648,15 @@ class Lens:
                 pass
         threading.Thread(target=self._read_presenter, args=(proc,), daemon=True).start()
         hwnd = None
-        for i in range(140):
-            hwnd = find_mpv(title, "GLFW30")
+        for i in range(700):
+            hwnd = find_mpv(title, "GLFW30", pid=proc.pid)
             if hwnd:
                 break
             if proc.poll() is not None:
                 break
-            if i == 20:
+            if i == 100:
                 print("waiting for the presenter to open its window ...", flush=True)
-            time.sleep(0.25)
+            time.sleep(0.05)
         if not hwnd:
             try:
                 proc.kill()
@@ -2391,58 +2520,33 @@ class Lens:
     # ReShade rather than mpv. With several passes the overlay belongs to the
     # visible stage, while F6 and F5 are sent to every stage in turn.
     def menu(self, e):
-        m = tk.Menu(self.t, tearoff=0)
+        off = self.nr_on
         # a bug report is much easier to act on when the reporter can read the
         # version off the app rather than having to work out which build they have
-        m.add_command(label="Neural Lens %s  (beta)" % __version__, state="disabled")
-        m.add_separator()
-        m.add_command(label=("Done tweaking  (back to click-through)" if self.tweak
-                             else "Tweak NR settings  (ReShade overlay, Home)"),
-                      command=self.toggle_tweak)
-        m.add_command(label=("Turn NR back on   (F6, all passes)" if not self.nr_on
-                             else "Turn NR off   (F6, all passes)"),
-                      command=self.toggle_nr)
-        m.add_separator()
-        off = "disabled" if not self.nr_on else "normal"
-        m.add_command(label="Add a pass now", command=self.add_pass, state=off)
-        m.add_command(label="Remove a pass now", command=self.drop_pass, state=off)
-        m.add_separator()
-        m.add_command(label="Save before and after      (both images, plus a join)",
-                      command=self.take_screenshot)
-        m.add_command(label="Save the result only       (F5, ReShade's own)",
-                      command=lambda: self.send_key(0x74))
-        m.add_command(label="Open screenshot folder", command=self.open_shots)
-        m.add_separator()
-        m.add_command(label=("End the A/B split" if self.split is not None
-                             else "Live A/B split      (neural left, raw right)"),
-                      command=self.toggle_split)
-        m.add_separator()
-        m.add_command(label="Resize the lens...", command=self.resize_dialog,
-                      state="disabled" if self.fullscreen else "normal")
-        m.add_command(label="Settings...", command=self.settings_dialog)
-        m.add_separator()
-        m.add_command(label="Close", command=self.quit)
-        # A native popup closes on a click outside it, or on Escape, only while
-        # its owner is the foreground window, and the title bar never activates:
-        # measured, as shipped the menu stayed up through both, until an item was
-        # chosen. So the bar takes the foreground for as long as the menu is
-        # posted, which is until it is chosen from or dismissed, and hands it
-        # back after. The click that dismisses it is consumed by the menu, so a
-        # second click on the menu button closes it rather than reopening it.
-        prev = u.GetForegroundWindow()
-        ex = u.GetWindowLongPtrW(self.chrome, GWL_EXSTYLE)
-        u.SetWindowLongPtrW(self.chrome, GWL_EXSTYLE, ex & ~WS_EX_NOACTIVATE)
-        self.focus(self.chrome)
-        try:
-            m.tk_popup(self.t.winfo_x() + 6, self.t.winfo_y() + BAR)
-        finally:
-            u.SetWindowLongPtrW(self.chrome, GWL_EXSTYLE, ex | WS_EX_NOACTIVATE)
-            u.PostMessageW(self.chrome, 0, 0, 0)      # WM_NULL, as documented for popups
-            if prev and prev != self.chrome and u.IsWindow(prev):
-                try:
-                    self.focus(prev)
-                except Exception:
-                    pass
+        items = [
+            ("Neural Lens %s  (beta)" % __version__, None, False),
+            None,
+            (("Done tweaking  (back to click-through)" if self.tweak
+              else "Tweak NR settings  (ReShade overlay, Home)"), self.toggle_tweak, True),
+            (("Turn NR back on   (F6, all passes)" if not self.nr_on
+              else "Turn NR off   (F6, all passes)"), self.toggle_nr, True),
+            None,
+            ("Add a pass now", self.add_pass, off),
+            ("Remove a pass now", self.drop_pass, off),
+            None,
+            ("Save before and after      (both images, plus a join)", self.take_screenshot, True),
+            ("Save the result only       (F5, ReShade's own)", lambda: self.send_key(0x74), True),
+            ("Open screenshot folder", self.open_shots, True),
+            None,
+            (("End the A/B split" if self.split is not None
+              else "Live A/B split      (neural left, raw right)"), self.toggle_split, True),
+            None,
+            ("Resize the lens...", self.resize_dialog, not self.fullscreen),
+            ("Settings...", self.settings_dialog, True),
+            None,
+            ("Close", self.quit, True),
+        ]
+        self.popup.toggle(items)
 
     def set_interactive(self, hwnd, on):
         ex = u.GetWindowLongPtrW(hwnd, GWL_EXSTYLE)

@@ -24,10 +24,14 @@ settings, the state file format and behaviour may change between releases.
   RTX 5090 at 6144x2560 with the passes inside the add-on: one pass 30 to 43 frames a second,
   two passes 23 to 43.
   `cost_scaler` and `cost_scaler_mpx` in the ini change the rule.
-- The title bar menu closes on a click anywhere outside it, the menu button included, and on
-  Escape. It used to stay open until an item was chosen, because a native popup only dismisses
-  that way while its owner is the foreground window and the title bar never activates; the
-  bar now takes the foreground for as long as the menu is posted and hands it back after.
+- The title bar menu is drawn by the lens itself instead of a native popup: the menu button
+  opens it and closes it, a click anywhere else closes it, so does Escape, and it never takes
+  the focus from the application under the lens. A native popup only dismisses on an outside
+  click while its owner is the foreground window, which the title bar never is, so it stayed
+  open until an item was chosen and a second press of the button posted another one.
+- Stage windows no longer flash a taskbar button while they load: the presenter's is created
+  as a tool window before it is shown, and mpv's is found by its process the moment it is
+  visible rather than by its title, which mpv sets a second and a half later.
 - Fullscreen, tweak mode turns the title bar into a short bar in the bottom right corner, so the
   ReShade overlay's tabs along the top are no longer under it, and puts it back on Done.
 - A delay meter on the title bar, switched on in Settings under Title bar or with

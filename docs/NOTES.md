@@ -7,7 +7,28 @@ chain.
 
 ## The multi-pass chain
 
-The add-on that works in mpv has **no pass control**. Its complete set of settings is
+**The v5 line of the add-on runs the passes itself** (renodx-dlss5 5.2.1 from the RHI
+repository, 2026-09-11, and the v5.0 beta before it): `NRPasses` in its `[RenoDX.DLSS5]`
+section of ReShade.ini, read only when the process starts. Measured: an edit while a stage ran
+had changed nothing twelve seconds later, and a stage that is terminated does not write the
+file back, so the lens writes the key after the old stage is gone and before the new one
+spawns. Against the chain below, RTX 5090, 2400x1800 over a still, governor frozen:
+
+```
+                              ceiling   at 60 fps          effect
+2 chained stages               52 fps   95% GPU, 494 W    9.87
+2 passes inside the add-on     69 fps   86% GPU, 482 W    9.95
+3 chained stages               33 fps                     13.86
+3 passes inside the add-on     53 fps                     13.74
+```
+
+Effect is the mean absolute difference of the lens's after screenshot from its before, out of
+255; the two-pass outputs differ from each other by 1.6. Trap: that add-on line resets its
+whole section to built-in defaults on first load when `ConfigVersion` is missing, and writes
+`ConfigVersion=2`, without a log line; re-apply tuned values after the first launch. Its own
+working resolution setting (`NRFollowInputRes`, `NRResolutionScale`) does nothing in mpv.
+
+The add-on line before v5 has **no pass control**. Its complete set of settings is
 `EnableHooks, NRAutoMask, NRColorStrength, NRDepthMode, NREnableUpscaling, NRIntensity,
 NRLocalStructure, NRLocalTone, NRMVecScaleX, NRMVecScaleY, NRPaperWhiteScale, NRPreset,
 NRScreenshotKey, NRSkinStructure, NRStyle, NRToggleKey, NRTransferStrength, NRUICorrection,
@@ -54,6 +75,88 @@ therefore enumerates every visible top-level window owned by the process, and a 
 re-applies the list, since a popup menu offers no hook to refresh from. Screenshots additionally
 wait for the chain to flush, because frames containing a window that has just closed are still
 in flight, and the visible stage lags the source by the pipeline latency.
+
+## The presenter
+
+`lens_presenter.py`, 2026-09-13. A glfw window with a Vulkan swapchain, run by a copy of
+python.exe in the stack folder named `lens-presenter.exe` (a `pyvenv.cfg` beside it with
+`home =` the real Python and `include-system-site-packages = true` makes the copy find its
+library and packages), on the ReShade layer's allow list, started with the stack folder as its
+working directory so it shares mpv's ReShade.ini, preset, add-ons and shaders. Each captured
+frame is copied into a host visible staging buffer, from there into the next swapchain image,
+and presented (mailbox). Between arrivals the last frame is presented again at the display's
+rate, copied in afresh each time: unlike mpv's `--untimed`, a repeat never re-runs Neural
+Rendering on its own output. ReShade attached, the Feed reported its feature ready over the
+same Vulkan transport, and feature 18 evaluated 600 times within seconds.
+
+Flip to flip through the compositor, the presenter beside the flipper so its window could be
+captured:
+
+```
+window capture of the flipper, mailbox         8 ms   (meter, present call minus capture stamp: -5)
+monitor capture cropped to the flipper         8 ms
+window capture, fifo                           5 ms
+mpv, what shipped, 99 fps                     70 ms
+```
+
+The capture's timestamp names the composition the frame belongs to, so the meter can read
+negative; the bar adds a refresh and a half, which put 8 against 8. As the lens's host,
+windowed 1400x1000: 118 fps, about 9 ms; fullscreen 6144x2558: 58 fps and 33 ms where mpv held
+30 fps at 183 ms. Every present of the presenter is a composition, and the monitor capture
+delivers a frame per composition, so the loop runs itself at the display rate even over a
+still.
+
+**Effect parity, and a trap.** On the same still the presenter's after image differed from its
+before by 2.5 where mpv's runs earlier in the day had measured 4.5, with identical before
+images. Neither a 10 bit swapchain (mpv presents through `A2B10G10R10`, the add-on's resources
+then read `format=24` as with mpv) nor an sRGB one changed it. The add-on's own
+`active settings` log line did: the runs had straddled a change of `NRIntensity` from 1.31 to
+1.7 and `NRStyle` from 1 to 0, made in the overlay during a hands-on session. mpv measured
+again under the current settings: 2.57. So the effect is the same through either host, and
+before comparing effects across runs, compare the `active settings` lines. 10 bit stayed
+optional (`LENS_PRESENTER_10BIT=1`): it cost frame rate (91 against 118) for no effect.
+
+Binding notes: `vkMapMemory` in the vulkan package returns a buffer object, so
+`np.frombuffer(mapped, ...)` directly; the glfw window's class is `GLFW30`, which is how the
+lens finds it; monitor capture frames carry alpha 255 throughout.
+
+## The Cost Scaler proxy
+
+xenmods' DLSSNR-Cost-Scaler is a proxy `nvngx_dlssnr.dll` that runs the model at a fraction of
+the frame and composites the delta back onto the native frame. It implements four D3D12 NGX
+entry points and forwards the other 51, every Vulkan one included, to the real DLL. It works in
+mpv because Neural Rendering there is a **D3D12 NGX session behind the Feed's Vulkan
+transport**: `dlss5-feed.log` says `opening D3D12 session (Vulkan transport)`, and neither
+add-on carries a single `NVSDK_NGX_VULKAN` symbol. The add-on logs the proxy as `custom runtime
+accepted; untested build` and carries on; the proxy logs its working size in
+`nvngx_dlssnr_proxy.log`. It reads its ini when it starts and again within a second of a change.
+
+RTX 5090, passes inside the add-on, governor frozen, most frames a second presented:
+
+```
+                                     off    0.75    0.50    0.35
+fullscreen 6144x2558, 1 pass          30      43      43      44
+fullscreen 6144x2558, 2 passes        23      31      43      43
+windowed 2400x1800, 1 pass            97      88
+windowed 2400x1800, 2 passes          69      86      91
+windowed 1400x1000, 1 pass           100     100
+```
+
+Effect, the after screenshot against the before as mean absolute difference out of 255, at
+2400x1800 with two add-on passes: 9.95 native, 8.59 at 0.75, 5.62 at 0.50. Power at a matched
+60 fps, one pass: 314 W to 261 W. It pays where the neural pass is the limit, fullscreen and
+multi-pass, and costs a little where it is not, which is why the lens turns it on for fullscreen
+only. One pass wants about 0.7 on this panel and two passes 0.5, so the rule is a working area
+of 8 megapixels over all the passes, which gives 0.70 and 0.50 here, and it is re-applied
+whenever the pass count changes, since the proxy reads its ini within a second.
+
+### The overlay writes ReShade.ini within a second
+
+Measured with F6 through the lens's own toggle: `NeuralUplift` was on disk 1.3 s after the
+press, both ways. So a pass count chosen in the overlay's own control is read back from the file
+while the overlay is open, and for four seconds after Done, and becomes the title bar's count
+with nothing rebuilt. The reverse does not hold: a running add-on does not read an edit to the
+file, which is why Set writes the key and respawns the stage.
 
 ## Resize restarts the process
 
@@ -107,6 +210,15 @@ the desktop behind it. Nothing composites an occluded region, so the duplication
 empty there and only transient dirty rects land in it. The symptom is a black viewport that
 accumulates mouse trails and window drag smears, and that carries stale content when the lens
 moves.
+
+**Windows Graphics Capture of the monitor is different**, measured 2026-09-13: with a window
+excluded through `WDA_EXCLUDEFROMCAPTURE` on top of a still, the captured region matched the
+bare still exactly, a mean absolute difference of 0.0 before and after moving the cursor across
+it, so WGC composes the desktop beneath an excluded window where Desktop Duplication shows
+black. That is what the presenter host does: capture the monitor with the lens's own windows
+excluded and crop. An excluded window is invisible to every capture, window capture included,
+so the output capture that the frame rate governor and the screenshots ran on is gone with it;
+the presenter has no governor to feed, and takes its screenshots by reading its swapchain back.
 
 Two caveats when testing this. A static window over another static window does capture
 correctly, because DWM still holds both buffers, so that case does not generalise: a Vulkan
@@ -575,6 +687,26 @@ milliseconds but leaves no slack for a late frame, which is what makes the pictu
 two is the floor. The flipper is featureless and can show stutter but not shimmer, so the two
 frame buffer was checked separately over a detailed still: an output floor of 0.341 against
 0.343 with eight frames, zero jumps, and 100 fps held in both.
+
+**The title bar's delay meter** logs every frame sent to a stage with its number in mpv's
+stream and the capture's own timestamp (`frame.timespan`, 100 ns units on perf_counter's
+clock: measured, delivery lands 0.5 ms after it), asks mpv for `time-pos` four times a
+second, and takes now minus the capture time of the frame that names. Against the flipper on
+the same rig, the flipper made topmost so that an editor in that corner cannot sit above it,
+which had left the output capture without a single flip:
+
+```
+                         flip to flip   meter, measured part   gap
+99 fps, one pass              70 ms             34 ms          36
+33 fps, one pass             183 ms            137 ms          46
+```
+
+The gap is what the meter cannot see, the magnifier's repaint and the host's composition
+before the capture, and the present, composition and scanout after mpv names the frame, and
+it grows with the frame interval because mpv names a frame before the display shows it. Three
+and a half refreshes plus half a frame at the visible rate, a refresh more per extra stage,
+fits both rows, 70 and 181, so the bar shows the measured part plus that allowance. On a re-run
+it read 67 against a flip measurement of 72.
 
 ### What does not cause the 60 fps ceiling
 

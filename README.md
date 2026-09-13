@@ -187,11 +187,13 @@ whether Neural Rendering is applied. If it is not, fix that first.
   comes back to the front and stays on top again. The button's Close window closes the lens.
 - **Fullscreen** is a checkbox in Settings, and is **experimental**: it is the least tested
   part of the lens, included to be tried and reported on rather than relied on. The lens
-  covers the whole monitor it is on, with the title bar over the top edge of the picture, and
-  cannot be dragged. Changing it restarts the lens, like a resize, and the windowed position
+  covers the whole monitor it is on, with the title bar over the top edge of the picture, as a
+  short bar in the bottom right corner instead while the ReShade overlay is open from the menu,
+  and cannot be dragged. Changing it restarts the lens, like a resize, and the windowed position
   and size are kept for the way back. A whole monitor is a lot of pixels: expect the frame
   rate to settle well below the windowed one, and see [Frame rate](#frame-rate) for what it
-  does about that.
+  does about that. If the Cost Scaler proxy is in the stack, fullscreen is where the lens
+  switches it on; see [The Cost Scaler proxy](#the-cost-scaler-proxy).
 
 ## How it works
 
@@ -217,11 +219,23 @@ Moving the lens only repositions those windows and re-aims the magnifier. Nothin
 
 ### Multiple passes
 
-Neural Rendering here is applied by a ReShade add-on, and that add-on offers no setting for
-running its pass more than once. So extra passes are produced by running the whole pipeline
-again: a second stage captures the first stage's mpv window and neural renders that already
-neural rendered image, and so on. The stages stack on the same rectangle, and only the last one
-is visible.
+How the extra passes are made depends on the add-on in the stack.
+
+The RenoDX DLSS 5 add-on from its v5 line runs the passes itself, inside the one mpv, and
+takes the count from `NRPasses` in its section of ReShade.ini when its process starts. The lens
+recognises such an add-on, writes the count there, and restarts its single stage whenever the
+count is applied with Set. Measured against chaining on an RTX 5090, a 2400x1800 lens over a
+still image: two passes inside the add-on presented up to 69 frames a second where two chained
+stages presented 51, three passes 53 where three stages presented 33, and the change to the image
+was the same within 2 out of 255. The add-on's own limit is four passes. `passes_mode` in the ini
+forces either way. The stack the setup fetches still carries the 4.70 add-on, which chains, so an
+installed lens runs the passes inside the add-on only once the add-on in its stack is replaced
+by a v5 build.
+
+Add-ons before that line offer no setting for running the pass more than once, so with those the
+extra passes are produced by running the whole pipeline again: a second stage captures the first
+stage's mpv window and neural renders that already neural rendered image, and so on. The stages
+stack on the same rectangle, and only the last one is visible.
 
 The passes genuinely accumulate rather than merely looking different. Cumulative change from
 the untouched source, as mean absolute difference out of 255:
@@ -234,16 +248,20 @@ the untouched source, as mean absolute difference out of 255:
 
 Running the same chain with Neural Rendering switched off changes the image by only 0.24, so
 the round trip through capture and mpv is very nearly lossless, and what accumulates really is
-neural work. Three is the default ceiling and the highest that is tested, changeable with
-`max_passes` in the ini or in the Settings dialog. Going above three is experimental: at four
-passes the rate search has been measured hunting across a 40 fps spread on a still image, so the
-frame rate can swing and the picture can wander.
+neural work. With the passes inside the add-on the title bar goes up to four, the add-on's own
+limit, and a count chosen in the ReShade overlay's own control reaches the title bar within about
+two seconds while the overlay is open. Chained, three is the ceiling and the highest that is
+tested; `max_passes` in the ini raises it, and going above three that way is experimental: at four
+chained stages the rate search has been measured hunting across a 40 fps spread on a still image,
+so the frame rate can swing and the picture can wander.
 
 **Each pass lowers the frame rate on purpose.** Every pass is another full capture and present
 stage, so the chain delivers fewer frames per second, and each stage is asked for a little less
 than the stage feeding it. The visible stage starts at five sixths of your display's refresh
 rate at one pass, and at that divided by the pass count beyond, and the rate is then adjusted to
-what the machine actually manages (see Frame rate below).
+what the machine actually manages (see Frame rate below). With the passes inside the add-on there
+is one stage, so only the neural work grows with the count; the rate starts by the same rule and
+the adjustment finds the rest.
 
 Asking a stage for more than it can deliver makes it present frames that have not arrived yet,
 and Neural Rendering then re-runs over its own output. A large mismatch crushes the picture
@@ -289,6 +307,15 @@ lens plays slower than frames arrive, so that buffer was always full and every f
 delay. Over a video this is the gap between the sound and the lens's picture, and it grows at
 lower frame rates, because each buffered frame lasts longer.
 
+The title bar can show that delay: **Show the delay from capture to display** in Settings, under
+Title bar. The lens logs every frame it sends with the time Windows composed it, asks mpv four
+times a second which frame it is showing, and takes the difference, plus an allowance for the
+steps that cannot see: the magnifier's repaint and composition before the capture, and the
+present, composition and scanout after. Calibrated against the flip measurement above on an
+RTX 5090 with a 120 Hz display, it read 70 ms where the flip measured 70 at 99 fps, and 181
+where the flip measured 183 at 33 fps; the measured part alone was 34 and 137. The bar marks
+it with a tilde because the allowance is an estimate.
+
 The title bar shows the frame rate the lens is actually showing you, averaged over the last few
 seconds, with a word beside it when the adjustment has just acted. Settings can change that to
 the input and output sides instead, where `120 in  33 out` means capture delivers 120 frames a
@@ -301,6 +328,73 @@ where it writes the answers.
 The single biggest factor in the input rate was a library default rather than anything
 expensive: the capture binding's `minimum_update_interval` throttles delivery to about 60 fps
 unless it is set to 0. See [docs/NOTES.md](docs/NOTES.md).
+
+### The presenter
+
+The lens can host its stage in a presenter of its own instead of mpv: `host = presenter` in the
+ini, or `--presenter` on the command line. The presenter, `lens_presenter.py`, is a Vulkan
+window that captures the monitor itself, cropped to the lens with the lens's own windows
+excluded from capture, and presents each frame the moment it arrives; between arrivals it
+presents the last frame again at the display's rate, copied in afresh each time so Neural
+Rendering never works on its own output. Nothing buffers, so there is no rate to govern and no
+magnifier to drive, and the delay meter reads the presenter's own figure. ReShade, the Feed and
+the add-on attach to it as they do to mpv, because it runs as the stack folder's own
+`lens-presenter.exe`, which the layer's allow list names.
+
+Measured on an RTX 5090 with a 120 Hz display, from a change on screen to the change in the
+output, both read through the compositor:
+
+| | mpv | presenter |
+|---|---|---|
+| 1400x1000, one pass | 70 ms at 99 fps | 8 ms at 118 fps |
+| fullscreen 6144x2560, one pass | 183 ms at 33 fps | 33 ms at 58 fps |
+
+The change Neural Rendering makes to the image is the same through either host on the same
+still, with the same settings. The presenter cannot chain stages, since a chained stage would
+have to capture a window it excludes from capture, so with an add-on before the v5 line it
+runs one pass; with a v5 add-on the passes run inside the add-on as usual. Screenshots come
+from the presenter: the frame it captured, and the picture it presented last, read back from
+its swapchain.
+
+Until the setup does it, the presenter is put in place by hand: `pip install glfw vulkan` for
+the Python the lens runs with, a copy of that Python's `python.exe` in the stack folder named
+`lens-presenter.exe` beside a `pyvenv.cfg` holding `home = <that Python's folder>` and
+`include-system-site-packages = true`, and the copy's full path added to `Apps=` in the
+`ReShade\ReShadeApps.ini` of the install, comma separated after mpv's.
+
+### The Cost Scaler proxy
+
+DLSSNR-Cost-Scaler, by xenmods, MIT, is a proxy `nvngx_dlssnr.dll` that runs the neural model
+at a fraction of the frame's resolution and composites the result back onto the full frame. The
+setup does not fetch it. To put it in the stack by hand, rename `nvngx_dlssnr.dll` in the stack
+folder to `nvngx_dlssnr_real.dll`, then copy the proxy's `nvngx_dlssnr.dll` and `nvngx_dlssnr.ini`
+from its release zip beside it. Neural Rendering in mpv runs as a D3D12 NGX session behind the
+Feed's Vulkan transport, which is what the proxy hooks, so it works here as it does in a game.
+
+When it is there, the lens switches it on for a fullscreen lens and off for a windowed one,
+writing its ini before the stage starts and again whenever the pass count changes. The scale is
+chosen so the model's work over all the passes comes to about 8 megapixels: 6144x2560 gets 0.70
+at one pass and 0.50 at two, 3840x2160 stays at native for one pass and gets 0.65 at two, and
+2560x1440 stays at native up to two passes, since below a saving of about a fifth the proxy's
+own cost is all that is left. `cost_scaler_mpx` in the ini changes that budget;
+`cost_scaler` set to `always` applies the rule to a windowed lens as well, `off` keeps the proxy
+off, and `manual` leaves the proxy's ini alone. Anamorphic scaling is switched off with the scale,
+and the proxy's other settings are left as they are.
+
+Measured on an RTX 5090 with the passes inside the add-on, as the most frames a second the visible
+stage presented:
+
+| | off | 0.75 | 0.50 | 0.35 |
+|---|---|---|---|---|
+| fullscreen 6144x2560, one pass | 30 | 43 | 43 | 44 |
+| fullscreen 6144x2560, two passes | 23 | 31 | 43 | 43 |
+| windowed 2400x1800, one pass | 97 | 88 | | |
+| windowed 2400x1800, two passes | 69 | 86 | 91 | |
+
+The price is detail: the change the neural pass makes to the image is about a fifth smaller at
+0.75 and almost half at 0.50, because the model sees fewer pixels of what, under a lens, is all
+detail. That is why it stays off windowed, where the neural pass is rarely what limits the frame
+rate; the one pass windowed row shows the proxy's own per frame cost when it is not.
 
 ## Limits
 

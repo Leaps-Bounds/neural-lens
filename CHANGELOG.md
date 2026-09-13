@@ -3,6 +3,45 @@
 Versions follow semantic versioning. While the major version is 0 the project is beta, and
 settings, the state file format and behaviour may change between releases.
 
+## Unreleased
+
+- With a RenoDX DLSS 5 add-on from its v5 line in the stack, the passes run inside the add-on
+  instead of as chained stages. The count chosen on the title bar is written to `NRPasses` in
+  the add-on's section of ReShade.ini and the single stage restarts, the rebuild Set already
+  did. Older add-ons chain as before; `passes_mode = addon` or `chain` in the ini forces
+  either. The add-on's own limit is four passes. Measured on an RTX 5090 at 2400x1800: two
+  passes presented up to 69 frames a second inside the add-on against 51 chained, three
+  passes 53 against 33, with the same change to the image within 2 out of 255. The setup
+  still fetches the 4.70 add-on, so this applies once the add-on in the stack is a v5 build.
+- With the passes inside the add-on, the title bar goes up to four, the add-on's own limit,
+  and a count chosen in the ReShade overlay's own control reaches the title bar within about
+  two seconds while the overlay is open, with nothing rebuilt. The Settings slider for the
+  most passes allowed is gone; `max_passes` in the ini still caps the chained stages of an
+  older add-on, at three by default.
+- When the DLSSNR Cost Scaler proxy is in the stack, put there by hand as the README
+  describes, the lens switches it on for a fullscreen lens, scaled so the neural model's work
+  over all the passes comes to about 8 megapixels, and off for a windowed one. Measured on an
+  RTX 5090 at 6144x2560 with the passes inside the add-on: one pass 30 to 43 frames a second,
+  two passes 23 to 43.
+  `cost_scaler` and `cost_scaler_mpx` in the ini change the rule.
+- The title bar menu closes on a click anywhere outside it, the menu button included, and on
+  Escape. It used to stay open until an item was chosen, because a native popup only dismisses
+  that way while its owner is the foreground window and the title bar never activates; the
+  bar now takes the foreground for as long as the menu is posted and hands it back after.
+- Fullscreen, tweak mode turns the title bar into a short bar in the bottom right corner, so the
+  ReShade overlay's tabs along the top are no longer under it, and puts it back on Done.
+- A delay meter on the title bar, switched on in Settings under Title bar or with
+  `latency = 1` in the ini. The lens logs every frame it sends with the time Windows composed
+  it, asks mpv which frame it is showing, and adds an allowance for the steps it cannot see.
+  Calibrated against a window flipping black and white under the lens: 70 ms shown against
+  70 measured at 99 fps, 181 against 183 at 33 fps.
+- A presenter of the lens's own as an alternative host to mpv, `host = presenter` in the ini
+  or `--presenter`: a Vulkan window that captures the monitor itself, the lens's windows
+  excluded from capture, and presents each frame as it arrives, so nothing buffers and no
+  rate is governed. Measured from a change on screen to the change in the output: 8 ms
+  against 70 through mpv windowed, and 33 ms at 58 fps against 183 ms at 33 fps fullscreen,
+  with the same change to the image. It is put in place by hand for now, see the README.
+
 ## 0.1.0, 2026-09-12
 
 First numbered release. Licensed under the GNU General Public License, version 3 or later.

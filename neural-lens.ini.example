@@ -42,8 +42,10 @@
 # adaptive = 1
 # min_fps = 12
 
-# Highest number of neural passes the plus button will go to. Three is the
-# default and the highest that is tested.
+# Highest number of neural passes the plus button will go to when the passes
+# are chained as stages, which is what an add-on before the v5 line gets. With
+# the passes inside the add-on the bar goes to four, the add-on's own limit,
+# and this is not used. Three is the chain's default and the highest tested.
 #
 # Beyond three is experimental and may not work properly. At four passes the
 # rate search has been measured hunting over a 40 fps spread on a still image,
@@ -51,10 +53,39 @@
 # allowed because the ceiling is yours to set, not because four is ready.
 # max_passes = 3
 
+# How the passes are made. auto, the default, looks at the add-on in the mpv
+# folder: the RenoDX DLSS 5 add-on from its v5 line runs the passes itself,
+# inside one mpv, and the lens writes the count to NRPasses in ReShade.ini
+# and restarts its one stage when the count is applied. Older add-ons get a
+# chain of stages, each neural rendering the one before. addon or chain
+# forces one or the other.
+# passes_mode = auto
+
+# The DLSSNR Cost Scaler proxy, when it is in the mpv folder: the model renamed
+# to nvngx_dlssnr_real.dll, the proxy as nvngx_dlssnr.dll with its ini beside
+# it. fullscreen, the default, switches it on for a fullscreen lens and off for
+# a windowed one; always applies the same rule to any lens; off keeps it off;
+# manual leaves its ini alone. The scale is chosen so the model's work over all
+# the passes comes to about cost_scaler_mpx megapixels: 8 is 6144x2560 at 0.70
+# for one pass and 0.50 for two, 3840x2160 at native for one pass and 0.65 for
+# two, and 2560x1440 at native up to two passes. A slower card can want less.
+# cost_scaler = fullscreen
+# cost_scaler_mpx = 8
+
 # What the title bar shows beside the size: fps, the frame rate the visible
 # pass actually presents; detail, the capture rate in and the rate asked out;
 # or size. The Settings dialog has this too.
 # readout = fps
+
+# Show the delay from capture to display beside the frame rate. See the README
+# under Frame rate for what it measures. The Settings dialog has this too.
+# latency = 0
+
+# What hosts the picture. mpv is what shipped. presenter is the lens's own Vulkan
+# window, which captures the monitor itself and presents each frame as it arrives,
+# about 8 ms behind the screen against 70 through mpv. It needs lens-presenter.exe
+# in the mpv folder, see the README under The presenter.
+# host = mpv
 
 # Experimental. Cover the whole monitor the lens is on. This is the least
 # tested part of the lens, so try it rather than rely on it. The Settings

@@ -27,6 +27,9 @@ Lines on stdin:
     shot BASE       save BASE-before.png (the captured frame), BASE-after.png (the
                     last presented output, read back from the swapchain) and
                     BASE-side-by-side.png, then print "shot done"
+    probe N         read back the next N presented pictures and print
+                    "probe n=N median=M max=X", the mean absolute difference
+                    between consecutive ones out of 255: how steady the output is
     quit            leave
 
 Lines on stdout, once a second:
@@ -302,7 +305,8 @@ cap.event(on_closed)
 ctl = cap.start_free_threaded()
 
 # ---- commands on stdin
-wanted = {"quit": False, "shot": None}
+wanted = {"quit": False, "shot": None, "probe": 0}
+probe = {"prev": None, "diffs": []}
 
 
 def commands():
@@ -320,6 +324,12 @@ def commands():
                 pass
         elif parts[0] == "shot" and len(parts) >= 2:
             wanted["shot"] = line.strip()[5:]
+        elif parts[0] == "probe" and len(parts) == 2:
+            try:
+                wanted["probe"] = max(0, int(parts[1]))
+                probe["prev"], probe["diffs"] = None, []
+            except ValueError:
+                pass
     wanted["quit"] = True
 
 
@@ -381,7 +391,8 @@ while not glfw.window_should_close(win) and not wanted["quit"]:
         before = bgra_to_rgb(staging.copy())
     vk.vkResetFences(device, 1, [fence])
     idx = acquire(device, swapchain, 10 ** 9, sem_acquire, None)
-    record(cmds[idx], idx, bool(shot) and readback_ok)
+    probing = wanted["probe"] > 0 and readback_ok
+    record(cmds[idx], idx, (bool(shot) or probing) and readback_ok)
     vk.vkQueueSubmit(queue, 1, [vk.VkSubmitInfo(
         sType=vk.VK_STRUCTURE_TYPE_SUBMIT_INFO, waitSemaphoreCount=1, pWaitSemaphores=[sem_acquire],
         pWaitDstStageMask=[vk.VK_PIPELINE_STAGE_TRANSFER_BIT], commandBufferCount=1,
@@ -396,6 +407,17 @@ while not glfw.window_should_close(win) and not wanted["quit"]:
         new += 1
     else:
         again += 1
+    if probing and had_picture:
+        vk.vkWaitForFences(device, 1, [fence], vk.VK_TRUE, 10 ** 9)
+        cur = readback[::4, ::4, :3].astype(np.int16)
+        if probe["prev"] is not None:
+            probe["diffs"].append(float(np.abs(cur - probe["prev"]).mean()))
+        probe["prev"] = cur
+        wanted["probe"] -= 1
+        if wanted["probe"] == 0:
+            d = sorted(probe["diffs"])
+            say("probe n=%d median=%.3f max=%.3f" % (len(d), d[len(d) // 2] if d else float("nan"),
+                                                     d[-1] if d else float("nan")))
     if shot:
         wanted["shot"] = None
         try:

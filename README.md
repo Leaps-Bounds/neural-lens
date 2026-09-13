@@ -182,9 +182,11 @@ whether Neural Rendering is applied. If it is not, fix that first.
   itself. The add-on reads the physical key, so F6 pressed anywhere toggles it. While it is off
   the title bar says `NR off` and the pass controls wait, because a pass with Neural Rendering
   off is only a copy of the last one.
-- **It has a taskbar button.** A fullscreen application, or another window that insists on
-  being on top, can leave the lens buried underneath it. Click the lens on the taskbar and it
-  comes back to the front and stays on top again. The button's Close window closes the lens.
+- **It has a taskbar button.** A window that is itself set to stay on top can leave the lens
+  underneath it. Click the lens on the taskbar and it comes back to the front and stays on
+  top again. The button's Close window closes the lens. A maximised or full screen window,
+  which Windows puts above everything when it becomes the foreground, is handled on its own:
+  the lens notices and comes back within a fifth of a second.
 - **Fullscreen** is a checkbox in Settings, and is **experimental**: it is the least tested
   part of the lens, included to be tried and reported on rather than relied on. The lens
   covers the whole monitor it is on, with the title bar over the top edge of the picture, as a
@@ -227,7 +229,9 @@ recognises such an add-on, writes the count there, and restarts its single stage
 count is applied with Set. Measured against chaining on an RTX 5090, a 2400x1800 lens over a
 still image: two passes inside the add-on presented up to 69 frames a second where two chained
 stages presented 51, three passes 53 where three stages presented 33, and the change to the image
-was the same within 2 out of 255. The add-on's own limit is four passes. `passes_mode` in the ini
+was the same within 2 out of 255. The add-on's own limit is four passes. The lens switches the
+add-on's chained temporal history on with the count, since its passes beyond the first are
+stateless by default and flicker without it. `passes_mode` in the ini
 forces either way. The stack the setup fetches still carries the 4.70 add-on, which chains, so an
 installed lens runs the passes inside the add-on only once the add-on in its stack is replaced
 by a v5 build.

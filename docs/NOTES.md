@@ -116,6 +116,23 @@ again under the current settings: 2.57. So the effect is the same through either
 before comparing effects across runs, compare the `active settings` lines. 10 bit stayed
 optional (`LENS_PRESENTER_10BIT=1`): it cost frame rate (91 against 118) for no effect.
 
+**Flicker at two passes and up.** The add-on's own text: passes 2+ are stateless by default and
+can flicker; try the chained-history toggle. Measured with the presenter's own readback of
+consecutive presented pictures over a still, mean absolute difference out of 255:
+
+```
+passes   chained history off   on
+1              0.31
+2              0.46             0.37
+3              0.60             0.34
+4                               0.35
+```
+
+So the lens writes `NRChainedHistory=1` whenever it writes `NRPasses`. The same measure
+through mpv's output capture read 0.33 at two passes and 0.41 at three, 0.31 with chained
+history, under the same settings (`NRIntensity=1.7`, `NRStyle=0`; the earlier 1.31 and style
+1 gave 0.12 at one pass, so the settings themselves set the noise floor).
+
 Binding notes: `vkMapMemory` in the vulkan package returns a buffer object, so
 `np.frombuffer(mapped, ...)` directly; the glfw window's class is `GLFW30`, which is how the
 lens finds it; monitor capture frames carry alpha 255 throughout.

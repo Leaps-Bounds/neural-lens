@@ -45,6 +45,15 @@ settings, the state file format and behaviour may change between releases.
   rate is governed. Measured from a change on screen to the change in the output: 8 ms
   against 70 through mpv windowed, and 33 ms at 58 fps against 183 ms at 33 fps fullscreen,
   with the same change to the image. It is put in place by hand for now, see the README.
+- The add-on's chained temporal history is switched on whenever the lens writes the pass
+  count. Its passes beyond the first are stateless by default and can flicker, in its own
+  words; measured over a still, the change between consecutive presented pictures fell from
+  0.60 to 0.34 out of 255 at three passes with it on, close to the 0.31 of one pass.
+- The lens climbs back on top by itself when a maximised or full screen window has been
+  stacked over it. Windows puts such a window above every topmost window when it becomes
+  the foreground, which left the lens under a picture viewer until its taskbar button was
+  clicked; the lens now notices within a fifth of a second and raises itself, leaving
+  windows that are themselves topmost alone.
 
 ## 0.1.0, 2026-09-12
 

@@ -254,43 +254,64 @@ def _pass_limit():
 
 
 def _write_nr_passes(n):
-    """Set NRPasses in the add-on's section of ReShade.ini, keeping the rest.
+    """Set NRPasses in the add-on's section of ReShade.ini, keeping the rest,
+    and NRChainedHistory=1 with it.
 
-    The add-on reads it only when its process starts: measured, an edit while
+    The add-on reads them only when its process starts: measured, an edit while
     a stage ran had changed nothing twelve seconds later, and a stage that is
     stopped (terminated, not asked to exit) does not write the file back. So
     this runs after the old stages are gone and before the new one spawns,
     inside the rebuild Set already does. Returns whether the file was written;
     when it was not, the passes are chained as stages instead.
+
+    Chained history: the add-on's passes beyond the first are stateless by
+    default and, in its own words, can flicker. Measured over a still through
+    the presenter, the change between consecutive presented pictures was 0.46
+    at two passes and 0.60 at three, out of 255, against 0.31 at one pass;
+    with chained history 0.37 and 0.34. So it is switched on whenever the
+    count is written.
     """
     if not MPV_DIR:
         return False
     path = os.path.join(MPV_DIR, "ReShade.ini")
+    keys = {"NRPasses": str(n), "NRChainedHistory": "1"}
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
             lines = fh.read().splitlines(True)
     except OSError:
         return False
-    out, inside, done = [], False, False
+    out, inside, done = [], False, set()
+
+    def rest():
+        for k, v in keys.items():
+            if k not in done:
+                out.append("%s=%s\n" % (k, v))
+                done.add(k)
+
     for line in lines:
         bare = line.strip()
         if bare.startswith("["):
-            if inside and not done:
-                out.append("NRPasses=%d\n" % n)
-                done = True
+            if inside:
+                rest()
             inside = bare.lower() == "[renodx.dlss5]"
-        elif inside and bare.lower().startswith("nrpasses="):
-            if not done:
-                out.append("NRPasses=%d\n" % n)
-                done = True
+        elif inside and "=" in bare:
+            name = bare.split("=", 1)[0].strip().lower()
+            for k, v in keys.items():
+                if name == k.lower():
+                    if k not in done:
+                        out.append("%s=%s\n" % (k, v))
+                        done.add(k)
+                    break
+            else:
+                out.append(line)
             continue
         out.append(line)
-    if not done:
+    if len(done) < len(keys):
         if out and not out[-1].endswith("\n"):
             out[-1] += "\n"
         if not inside:
             out.append("\n[RenoDX.DLSS5]\n")
-        out.append("NRPasses=%d\n" % n)
+        rest()
     try:
         with open(path + ".tmp", "w", encoding="utf-8") as fh:
             fh.writelines(out)
@@ -298,6 +319,7 @@ def _write_nr_passes(n):
         return True
     except OSError:
         return False
+
 
 
 def _read_nr_passes():
@@ -665,6 +687,7 @@ WS_CHILD, WS_VISIBLE, WS_POPUP = 0x40000000, 0x10000000, 0x80000000
 WS_THICKFRAME, WS_MAXIMIZEBOX = 0x00040000, 0x00010000
 WS_EX_LAYERED, WS_EX_TRANSPARENT, WS_EX_NOACTIVATE = 0x00080000, 0x00000020, 0x08000000
 WDA_EXCLUDEFROMCAPTURE = 0x00000011
+WS_EX_TOPMOST = 0x00000008
 HWND_TOPMOST = ctypes.c_void_p(-1)          # pointer sized, NOT int -1
 SWP_NOSIZE, SWP_NOMOVE, SWP_NOZORDER, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0004, 0x0010
 SWP_FRAMECHANGED = 0x0020
@@ -1062,6 +1085,8 @@ class Lens:
         self.mon_x = self.mon_y = 0          # the captured monitor's origin, presenter mode
         self.shot_event = threading.Event()
         self.shot_reply = None
+        self.probe_event = threading.Event()
+        self.probe_reply = None
         self.popup = PopupMenu(self)
         self.passes = passes        # neural passes, inside the add-on or as stages
         self.pending = passes       # the pass count chosen on the bar, applied by Set
@@ -1411,7 +1436,40 @@ class Lens:
                     u.SetWindowDisplayAffinity(hx, WDA_EXCLUDEFROMCAPTURE)
                 except Exception:
                     pass
+        try:
+            self.keep_stage_on_top()
+        except Exception:
+            pass
         self.root.after(200, self.watch_filter)
+
+    def keep_stage_on_top(self):
+        """Raise the lens again when an ordinary window has been stacked over it.
+
+        Windows puts a maximised or full screen window that becomes the
+        foreground above every topmost window: measured with the Photos app,
+        maximised over a windowed lens it sat above the stage and stayed
+        there, and only a fresh HWND_TOPMOST brought the lens back. So
+        whenever a visible window that is neither ours nor itself topmost
+        sits above the visible stage and overlaps the lens, the whole lens is
+        raised, the same as the taskbar button does. Windows that are
+        themselves topmost are left alone, so a tool the user keeps on top is
+        not fought over.
+        """
+        if not self.stages or self.rebuilding:
+            return
+        stage = self.visible()
+        lx, ly = self.inner()
+        own = set(_own_windows()) | {s["hwnd"] for s in self.stages} | {self.host, self.chrome}
+        h = u.GetWindow(stage, 3)                    # GW_HWNDPREV: the window above
+        while h:
+            if (h not in own and u.IsWindowVisible(h)
+                    and not u.GetWindowLongPtrW(h, GWL_EXSTYLE) & WS_EX_TOPMOST):
+                r = w.RECT()
+                u.GetWindowRect(h, ctypes.byref(r))
+                if r.right > lx and r.left < lx + self.cw and r.bottom > ly and r.top < ly + self.ch:
+                    self.bring_back()
+                    return
+            h = u.GetWindow(h, 3)
 
     def keep_chrome_on_top(self):
         """Raise the chrome again if a stage has climbed above it.
@@ -1439,6 +1497,13 @@ class Lens:
     def raise_chrome(self):
         u.SetWindowPos(self.chrome, HWND_TOPMOST, 0, 0, 0, 0,
                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+        if getattr(self, "popup", None) is not None and self.popup.win is not None:
+            try:
+                hm = u.GetParent(self.popup.win.winfo_id()) or self.popup.win.winfo_id()
+                u.SetWindowPos(hm, HWND_TOPMOST, 0, 0, 0, 0,
+                               SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+            except Exception:
+                pass
         if self.divider is not None:
             try:
                 h = u.GetParent(self.divider.winfo_id()) or self.divider.winfo_id()
@@ -1700,6 +1765,9 @@ class Lens:
             elif line.startswith("shot "):
                 self.shot_reply = line[5:]
                 self.shot_event.set()
+            elif line.startswith("probe "):
+                self.probe_reply = line[6:]
+                self.probe_event.set()
             elif line.startswith("presenter ready"):
                 print(line, flush=True)
 

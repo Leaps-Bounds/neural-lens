@@ -60,9 +60,30 @@ across runs, compare the `active settings` lines. A 10 bit swapchain stayed opti
 118, for no difference to the effect.
 
 **One monitor.** The presenter captures the monitor the lens was on when it started, and clamps
-its crop to that monitor, so a lens over the monitor's edge shows a shifted picture and a lens
-larger than the monitor gets no frames at all. When a drag ends with the lens's centre on another
+its crop to that monitor, so a lens over the monitor's edge would show a shifted picture and a
+lens larger than the monitor would get no frames at all. So the lens keeps itself on one monitor:
+`fit_rect` moves it, and shrinks it keeping its proportions, into the work area of the monitor
+under its centre when it starts, when a resize is confirmed and when a drag ends. A lens that has
+to shrink restarts, since a new size needs a new swapchain. A new install opens at 1400x1000,
+fitted to and centred on the main monitor. When a drag ends with the lens's centre on another
 monitor, the lens restarts the presenter there.
+
+**Display changes end the capture.** With a second monitor switched on while the lens ran, the
+presenter went on presenting its last frame: a red and green square flashed under the lens's
+centre never reached the Neural Rendering input, and switching the monitor off again did not bring
+the capture back. The main monitor's handle changed with each change. Two things recover it:
+
+- The lens reads the monitor layout on its 200 ms timer and starts a new presenter once a changed
+  layout has held still for a second. With a real monitor switched on and then off, each change
+  gave a new presenter within about three seconds. After the first, its picture matched the still
+  exactly; after the second, the flashed square reached the input.
+- The presenter reports a capture that has stopped delivering, as `capture lost`: a closed
+  capture, frames that no longer cover the lens, or a monitor capture silent for three seconds,
+  since a monitor capture delivers a frame for every composition, over a still desktop too. The
+  lens then starts a new presenter after a wait that begins at a second and doubles up to a
+  minute, until a presenter has run for half a minute, because a screen that is off or locked is
+  silent as well. windows-capture's `stop()` does not call `on_closed`, so the silence is what
+  caught a stopped capture in the harness: a new presenter 6.6 s after the stop.
 
 Binding notes: `vkMapMemory` in the vulkan package returns a buffer object, so
 `np.frombuffer(mapped, ...)` works on it directly. Monitor capture frames carry alpha 255

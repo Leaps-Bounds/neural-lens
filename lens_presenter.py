@@ -33,6 +33,7 @@ Lines on stdin:
     probe N         read back the next N presented pictures and print
                     "probe n=N median=M max=X", the mean absolute difference
                     between consecutive ones out of 255: how steady the output is
+    stop-capture    end the capture, as Windows does when the displays change; for tests
     quit            leave
 
 Lines on stdout, once a second:
@@ -40,6 +41,14 @@ Lines on stdout, once a second:
 where meter is the median, over that second, of the present call minus the
 capture's own timestamp for frames presented for the first time. The timestamp
 is the composition the frame belongs to, so this can be slightly negative.
+
+And once, when frames stop coming:
+    capture lost REASON
+where REASON says how: the capture was closed, a monitor capture has had no frame
+for three seconds, or its frames no longer cover the lens. Windows ends a monitor
+capture when the displays change, and a monitor capture otherwise delivers a
+frame for every composition, over a still desktop too. The presenter keeps
+showing its last frame; the lens starts a new presenter.
 """
 import argparse
 import ctypes
@@ -279,7 +288,8 @@ def main():
 
     # ---- capture: one slot, the newest frame wins
     slot = {"frame": np.empty((H, W, 4), np.uint8), "spare": np.empty((H, W, 4), np.uint8),
-            "ts": 0.0, "new": False, "dropped": 0, "arrived": 0}
+            "ts": 0.0, "new": False, "dropped": 0, "arrived": 0,
+            "last": time.perf_counter(), "unfit": 0, "size": (0, 0), "closed": False}
     crop = {"x": args.crop[0], "y": args.crop[1]}
     cv = threading.Condition()
     kind, _, ref = args.source.partition(":")
@@ -300,6 +310,8 @@ def main():
             cx = max(0, min(cx, frame.width - W))
             cy = max(0, min(cy, frame.height - H))
             if frame.height < H or frame.width < W:
+                slot["unfit"] += 1
+                slot["size"] = (frame.width, frame.height)
                 return
             with cv:
                 np.copyto(slot["spare"], frame.frame_buffer[cy:cy + H, cx:cx + W, :])
@@ -309,15 +321,17 @@ def main():
                     slot["dropped"] += 1
                 slot["new"] = True
                 slot["arrived"] += 1
+                slot["last"] = time.perf_counter()
                 cv.notify()
         except Exception:
             pass
 
 
     def on_closed():
-        pass
+        slot["closed"] = True
 
 
+    ctl = None
     if cap is not None:
         cap.event(on_frame_arrived)
         cap.event(on_closed)
@@ -335,7 +349,8 @@ def main():
             slot["arrived"] += 1
 
     # ---- commands on stdin
-    wanted = {"quit": False, "shot": None, "probe": 0}
+    wanted = {"quit": False, "shot": None, "probe": 0, "stop": False}
+    lost = {"said": False}
     probe = {"prev": None, "diffs": []}
 
 
@@ -354,6 +369,8 @@ def main():
                     pass
             elif parts[0] == "shot" and len(parts) >= 2:
                 wanted["shot"] = line.strip()[5:]
+            elif parts[0] == "stop-capture":
+                wanted["stop"] = True
             elif parts[0] == "probe" and len(parts) == 2:
                 try:
                     wanted["probe"] = max(0, int(parts[1]))
@@ -465,6 +482,13 @@ def main():
                 say("shot done " + ", ".join(saved))
             except Exception as exc:
                 say("shot failed %s" % exc)
+        if wanted["stop"]:
+            wanted["stop"] = False
+            if ctl is not None:
+                try:
+                    ctl.stop()
+                except Exception:
+                    pass
         now = time.perf_counter()
         if now - t_report >= 1.0:
             h = sorted(lat)
@@ -473,6 +497,19 @@ def main():
             lat, new, again, t_report = [], 0, 0, now
             slot["arrived"] = 0
             slot["dropped"] = 0
+            if cap is not None and not lost["said"]:
+                quiet = now - slot["last"]
+                reason = None
+                if slot["closed"]:
+                    reason = "closed"
+                elif slot["unfit"] and quiet > 1.0:
+                    reason = "frames of %dx%d no longer cover the lens" % slot["size"]
+                elif kind == "monitor" and quiet > 3.0:
+                    reason = "no frame for %.0f s" % quiet
+                if reason:
+                    say("capture lost " + reason)
+                    lost["said"] = True
+            slot["unfit"] = 0
 
     vk.vkDeviceWaitIdle(device)
 

@@ -61,8 +61,15 @@ The lens draws its picture with a presenter of its own, and mpv is gone.
   screen window has been stacked over it. Windows puts such a window above every topmost window
   when it becomes the foreground; windows that are themselves topmost are left alone.
 - No taskbar button flashes while the presenter starts.
-- Dragging the lens onto another monitor restarts the presenter on that monitor once the lens
-  is let go.
+- The lens stays on one monitor, since the presenter captures one. It opens fitted to its
+  monitor, centred on the main monitor the first time, a resize is kept within the monitor, and a
+  lens let go over an edge slides back onto it. Let go on another monitor, it starts again there.
+- Switching a monitor on or off, or rearranging monitors, starts the lens's picture again within a
+  couple of seconds. Windows ends a monitor capture when the displays change, so the lens starts
+  a new presenter once the monitor layout has held still for a second. The presenter also
+  reports a capture that has stopped delivering, and the lens then starts a new one after a wait
+  that begins at a second and doubles up to a minute, since a screen that is off or locked stops
+  delivering too.
 - `stack_dir` in the ini, `--stack-dir` and `NEURAL_LENS_STACK` name the stack folder. The names
   0.1.0 used, `mpv_dir`, `--mpv-dir` and `NEURAL_LENS_MPV_DIR`, still work.
 - From source, the presenter needs `glfw` and `vulkan` besides `numpy` and `windows-capture`, and
@@ -73,8 +80,8 @@ Known limits:
 
 - The neural stack is fetched, not included. None of it is redistributed here, so setup needs
   the network to assemble it, and the lens does nothing until it has.
-- The presenter captures one monitor. A lens hanging over the edge of its monitor shows a picture
-  that no longer lines up with what is under it, and a lens larger than its monitor shows nothing.
+- The lens stays on one monitor at a time. While it is dragged across a monitor's edge, its
+  picture does not line up with what is under it.
 - Resizing and changing the pass count restart the presenter, which takes a second or two.
 - Applications in exclusive fullscreen cannot be under the lens: nothing else is drawn over them.
   Borderless windowed works.

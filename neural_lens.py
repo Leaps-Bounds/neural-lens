@@ -714,6 +714,63 @@ def monitor_of(x, y):
     return 1, 0, 0
 
 
+def monitor_layout():
+    """The monitors as rectangles in enumeration order, the order Windows Graphics
+    Capture numbers them in. Compared on a timer to notice displays being added,
+    removed or rearranged."""
+    found = []
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(w.RECT),
+                        ctypes.c_void_p)
+    def cb(hmon, hdc, prc, lp):
+        r = prc.contents
+        found.append((r.left, r.top, r.right, r.bottom))
+        return True
+
+    u.EnumDisplayMonitors(None, None, cb, 0)
+    return tuple(found)
+
+
+def work_area(x, y):
+    """The work area, the monitor less the taskbar, of the monitor containing the
+    point or else the one nearest to it, in pixels."""
+    class MONITORINFO(ctypes.Structure):
+        _fields_ = [("cbSize", ctypes.c_ulong), ("rcMonitor", w.RECT),
+                    ("rcWork", w.RECT), ("dwFlags", ctypes.c_ulong)]
+    u.MonitorFromPoint.restype = ctypes.c_void_p
+    u.MonitorFromPoint.argtypes = [w.POINT, ctypes.c_ulong]
+    u.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.POINTER(MONITORINFO)]
+    h = u.MonitorFromPoint(w.POINT(int(x), int(y)), 2)     # MONITOR_DEFAULTTONEAREST
+    mi = MONITORINFO()
+    mi.cbSize = ctypes.sizeof(MONITORINFO)
+    if h and u.GetMonitorInfoW(h, ctypes.byref(mi)):
+        r = mi.rcWork
+        return r.left, r.top, r.right - r.left, r.bottom - r.top
+    return 0, 0, u.GetSystemMetrics(0), u.GetSystemMetrics(1)
+
+
+def fit_rect(x, y, cw, ch, area=None):
+    """The lens moved, and shrunk if it has to be, so that the picture, its title
+    bar and its border lie inside one monitor's work area.
+
+    The presenter captures one monitor, so a lens hanging over that monitor's
+    edge shows a picture that no longer lines up with what is under it, and a
+    lens larger than the monitor gets no frames at all. The monitor is the one
+    under the lens's centre, or the nearest when that point is on none. A lens
+    that has to shrink keeps its proportions. area stands in for the monitor's
+    work area when given.
+    """
+    mx, my, mw, mh = area or work_area(x + cw // 2, y + ch // 2)
+    room_w, room_h = mw - 2 * EDGE, mh - BAR - EDGE
+    scale = min(1.0, room_w / float(cw), room_h / float(ch))
+    if scale < 1.0:
+        cw, ch = int(cw * scale), int(ch * scale)
+    cw, ch = max(2, cw - cw % 2), max(2, ch - ch % 2)
+    x = max(mx + EDGE, min(x, mx + mw - EDGE - cw))
+    y = max(my + BAR, min(y, my + mh - EDGE - ch))
+    return x, y, cw, ch
+
+
 class PopupMenu:
     """The title bar menu, drawn by the lens itself.
 
@@ -858,6 +915,12 @@ class Lens:
         self.passes = passes        # neural passes, run inside the add-on
         self.pending = passes       # the pass count chosen on the bar, applied by Set
         self.nr_on = _read_nr_enabled()   # Neural Rendering on, as far as the lens knows
+        self.last_arrival = time.perf_counter()   # the presenter's last report of a captured frame
+        self.healthy_since = time.perf_counter()  # when the current presenter started
+        self.recover_wait = 1.0     # seconds before the next start after a lost capture
+        self.recover_after = None   # that start, while it is pending
+        self.layout = monitor_layout()            # the monitors the presenter started under
+        self.layout_seen = (self.layout, time.perf_counter())   # the last layout read, and since when
 
         # ---- chrome (tk): title bar + subtle border + transparent hole
         t = tk.Toplevel(root)
@@ -1035,6 +1098,8 @@ class Lens:
                 self.frames += arrived
                 self.out_frames += new
                 self.pres_in, self.pres_out = float(arrived), float(new)
+                if arrived > 0:
+                    self.last_arrival = time.perf_counter()
                 if meter == meter:
                     self.latency_raw = meter
                     self.latency_ms = meter + 1.5 * 1000.0 / float(DISPLAY_HZ)
@@ -1044,6 +1109,12 @@ class Lens:
             elif line.startswith("probe "):
                 self.probe_reply = line[6:]
                 self.probe_event.set()
+            elif line.startswith("capture lost"):
+                print(line, flush=True)
+                try:
+                    self.root.after(0, self.capture_lost, line[13:])
+                except Exception:
+                    pass
             elif line.startswith("presenter ready"):
                 print(line, flush=True)
 
@@ -1088,7 +1159,12 @@ class Lens:
             self.keep_stage_on_top()
         except Exception:
             pass
-        self.root.after(200, self.watch_filter)
+        try:
+            self.watch_layout()
+        except Exception:
+            pass
+        if not self.closing:
+            self.root.after(200, self.watch_filter)
 
     def keep_stage_on_top(self):
         """Raise the lens again when an ordinary window has been stacked over it.
@@ -1338,6 +1414,13 @@ class Lens:
     def restart_presenter(self, note, save=True):
         """Replace the presenter with a new one at the lens's place, pass count and
         monitor, since all three are fixed when a presenter starts."""
+        if self.recover_after is not None:
+            try:
+                self.root.after_cancel(self.recover_after)
+            except Exception:
+                pass
+            self.recover_after = None
+        self.healthy_since = self.last_arrival = time.perf_counter()
         self.info.config(text=note, fg=WARN)
         self.root.update_idletasks()
         # Tweak mode applied to the presenter about to be replaced, and its
@@ -1375,6 +1458,91 @@ class Lens:
         self.update_info()
         if save:
             self.save_state()
+
+    def capture_lost(self, reason):
+        """Start the presenter again when its capture has ended.
+
+        Windows ends a monitor capture when the displays change: measured, with a
+        second monitor switched on while the lens ran, the presenter went on
+        presenting its last frame, and switching that monitor off again did not
+        bring its capture back. A new presenter captures afresh, on the monitor
+        under the lens as the displays are now. A screen that is off or locked
+        stops frames as well, so the wait before each new start doubles, up to a
+        minute, until a presenter has run for half a minute.
+        """
+        if self.closing or self.recover_after is not None:
+            return
+        if time.perf_counter() - self.healthy_since > 30.0:
+            self.recover_wait = 1.0
+        delay, self.recover_wait = self.recover_wait, min(60.0, self.recover_wait * 2)
+        print("capture lost (%s); starting the presenter again in %.0f s" % (reason, delay), flush=True)
+        self.recover_after = self.root.after(int(delay * 1000), self._recover)
+
+    def _recover(self):
+        self.recover_after = None
+        if self.closing or self.rebuilding:
+            return
+        if time.perf_counter() - self.last_arrival < 1.5:
+            return                          # frames came back by themselves
+        self.layout = monitor_layout()
+        self.layout_seen = (self.layout, time.perf_counter())
+        if self.refit():
+            return
+        self.restart_presenter("capture ended, starting again ...")
+
+    def watch_layout(self):
+        """Start the presenter again once the monitor layout has changed and settled.
+
+        A display being added, removed or rearranged renumbers the monitors and
+        ends the presenter's capture, so there is no point waiting for the loss to
+        be reported. The layout is read on the 200 ms timer and acted on once it
+        has held still for a second, since one change arrives as several.
+        Fullscreen restarts the lens, which then covers its monitor as it is now.
+        """
+        now = monitor_layout()
+        if now != self.layout_seen[0]:
+            self.layout_seen = (now, time.perf_counter())
+            return
+        if (now == self.layout or self.closing or self.rebuilding
+                or time.perf_counter() - self.layout_seen[1] < 1.0):
+            return
+        print("the monitors changed: %s" % (now,), flush=True)
+        self.layout = now
+        if self.fullscreen:
+            self.quit(restart=True)
+            return
+        if self.refit():
+            return
+        self.restart_presenter("the monitors changed, starting again ...")
+
+    def refit(self):
+        """Keep the windowed lens on one monitor as the displays are now.
+
+        A lens that only needs moving is moved. One that has to shrink cannot do
+        so in place, since a new size needs a new swapchain, so its new size is
+        saved and the lens restarts, the same way a resize does, and this returns
+        True. Fullscreen already covers exactly its monitor.
+        """
+        if self.fullscreen or self.closing:
+            return False
+        x, y = self.inner()
+        nx, ny, ncw, nch = fit_rect(x, y, self.cw, self.ch)
+        if (ncw, nch) != (self.cw, self.ch):
+            print("the lens no longer fits its monitor; restarting at %d x %d" % (ncw, nch), flush=True)
+            try:
+                with open(STATE, "w") as f:
+                    f.write("%d %d %d %d %d\n" % (ncw, nch, nx, ny, self.passes))
+            except OSError:
+                pass
+            self.quit(restart=True)
+            return True
+        if (nx, ny) != (x, y):
+            self.t.geometry("+%d+%d" % (nx - EDGE, ny - BAR))
+            self.t.update()                 # so inner() reads the new place
+            self.place()
+            self.aim()
+            self.save_state()
+        return False
 
     def apply_proxy(self):
         """Set the Cost Scaler for this lens: on for fullscreen at the scale the
@@ -1503,6 +1671,8 @@ class Lens:
             self.drag = None
             self.place()
             self.aim()
+            if self.refit():
+                return
             self.save_state()
             self.follow_monitor()
 
@@ -1825,6 +1995,8 @@ class Lens:
             st["done"] = True
             # rootx/rooty, not x/y: save_state stores the viewport origin
             nx, ny = t.winfo_rootx(), t.winfo_rooty()
+            # kept on one monitor, the one under the outline's centre
+            nx, ny, fw, fh = fit_rect(nx, ny, wd - wd % 2, ht - ht % 2)
             t.attributes("-topmost", False)
             t.withdraw()
             if self.confirm(
@@ -1834,11 +2006,10 @@ class Lens:
                     "the Neural Rendering add-on crashes when its swapchain is "
                     "recreated, so restarting is the safe way.\n\n"
                     "It reopens at the new size with the same number of passes."
-                    % (wd, ht)):
+                    % (fw, fh)):
                 try:
                     with open(STATE, "w") as f:
-                        f.write("%d %d %d %d %d\n" % (wd - wd % 2, ht - ht % 2,
-                                                      nx, ny, self.passes))
+                        f.write("%d %d %d %d %d\n" % (fw, fh, nx, ny, self.passes))
                 except OSError:
                     pass
                 t.destroy()
@@ -2273,7 +2444,7 @@ def main():
             "that line to use the data folder beside the program.",
         ]))
         return
-    cw, ch, x, y, passes = 1400, 1000, 500, 400, 1
+    cw, ch, x, y, passes = 1400, 1000, None, None, 1
     if os.path.exists(STATE):
         try:
             v = [int(n) for n in open(STATE).read().split()]
@@ -2281,7 +2452,17 @@ def main():
             if len(v) > 4:
                 passes = v[4]
         except Exception:
-            pass
+            cw, ch, x, y = 1400, 1000, None, None
+    if x is None:
+        # nothing saved: the preferred size, centred on the main monitor, whose
+        # top left corner is always the desktop's origin
+        mx, my, mw, mh = work_area(0, 0)
+        x, y, cw, ch = fit_rect(mx + EDGE, my + BAR, cw, ch, (mx, my, mw, mh))
+        x = mx + (mw - cw) // 2
+        y = my + BAR + (mh - BAR - EDGE - ch) // 2
+    # kept on one monitor: a saved place can be on a monitor that has since gone,
+    # or larger than a lowered resolution leaves room for
+    x, y, cw, ch = fit_rect(x, y, cw, ch)
     if FULLSCREEN:
         # the monitor the windowed lens sits on, whole. The pass count comes
         # from the fullscreen lens's own file.

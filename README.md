@@ -170,7 +170,10 @@ every card.
 
 - **Move it** by dragging the title bar. The viewport is click-through, so clicking inside it
   reaches whatever is underneath rather than the lens. Let go of it on another monitor and it
-  takes a second to start again there.
+  takes a second to start again there. Let go of it hanging over the edge of a monitor and it
+  slides back onto that monitor.
+- **Monitors can change while it runs.** Switch a monitor on or off, or rearrange them, and the
+  lens starts its picture again a couple of seconds later, still on its monitor.
 - **Close it** with the X. The viewport never takes keyboard focus, so no key closes it.
 - The **menu** at the left opens the ReShade overlay in place so you can adjust Neural
   Rendering settings live, and also holds the pass controls and a Neural Rendering on and off
@@ -325,9 +328,10 @@ off windowed, where the neural pass is rarely what limits the frame rate.
   add-on crashes when its swapchain is recreated, so the menu's resize takes the size you drag
   out, saves it, and relaunches at that size and position with the same number of passes. It
   takes a second or two. Applying a new pass count restarts the presenter the same way.
-- **The lens shows one monitor at a time.** The presenter captures the monitor the lens is on. A
-  lens hanging over the edge of that monitor shows a picture that no longer lines up with what is
-  under it, and a lens larger than its monitor shows nothing.
+- **The lens stays on one monitor.** The presenter captures one monitor, so the lens opens
+  fitted to the monitor it is on, a resize is kept within that monitor, and a lens let go over an
+  edge slides back onto it. While it is being dragged across an edge, its picture does not line
+  up with what is under it.
 - **Applications in exclusive fullscreen cannot be under the lens**, because nothing else is
   drawn over them. Borderless windowed works. An application with real DLSS support can usually
   take Neural Rendering directly through the add-on anyway, without this.

@@ -525,7 +525,7 @@ def _display_hz():
 
 DISPLAY_HZ = _display_hz()
 
-# Fullscreen covers the whole monitor the lens is on. It is an ini flag rather
+# Fullscreen fills the monitor the lens is on. It is an ini flag rather
 # than a window state because the lens has to restart to change size, and the
 # windowed geometry in the state file must survive the round trip, so the
 # fullscreen lens keeps its pass count in a file of its own.
@@ -825,7 +825,7 @@ class PopupMenu:
         x = max(mx, min(bx + 6, mx + mw - wd))
         y = by + BAR
         if y + ht > my + mh:
-            y = by - ht                   # fullscreen tweak mode: the bar is at the bottom
+            y = by - ht                   # no room below the bar
         t.geometry("%dx%d+%d+%d" % (wd, ht, x, max(my, y)))
         t.update()
         h = u.GetParent(t.winfo_id()) or t.winfo_id()
@@ -890,8 +890,8 @@ class Lens:
         self.rebuilding = False     # True while set_passes is replacing the presenter
         self.tweak = False          # True while the viewport is interactive
         self.tweak_until = 0.0      # the overlay is followed until then after Done
+        self.tweak_prev = None      # the window that had the keyboard before tweak mode
         self.proxy_scale = None     # the Cost Scaler's scale this session, or off
-        self.bar_drop = 0           # fullscreen: how far the bar has moved down
         self.fs_origin = (x, y)     # fullscreen: where the picture is, for good
         self.frames = 0             # frames the presenter has captured
         self.t_first = None
@@ -930,12 +930,12 @@ class Lens:
         t.configure(bg=ACCENT)
         t.attributes("-transparentcolor", KEY)
         # windowed, the bar sits above the picture inside a frame that also draws
-        # the border. Fullscreen there is no room above the monitor, so the
-        # chrome is just the bar, laid over the top edge of the picture. It must
-        # not be larger than the screen: a layered window that is comes up
-        # blank, with nothing drawn at all.
+        # the border. Fullscreen the bar sits above the picture too, but the
+        # chrome is the bar alone: a frame around a picture that fills the
+        # monitor would be larger than the screen, and a layered window that is
+        # comes up blank, with nothing drawn at all.
         if fullscreen:
-            t.geometry("%dx%d+%d+%d" % (cw, BAR, x, y))
+            t.geometry("%dx%d+%d+%d" % (cw, BAR, x, y - BAR))
         else:
             t.geometry("%dx%d+%d+%d" % (cw + EDGE * 2, ch + BAR + EDGE, x - EDGE, y - BAR))
         bar = tk.Frame(t, bg=BG, height=BAR)
@@ -1198,9 +1198,9 @@ class Lens:
     def keep_chrome_on_top(self):
         """Raise the chrome again if the presenter has climbed above it.
 
-        A presenter that covers the whole monitor can end up above the title
-        bar, which then cannot be seen or clicked. Only the presenter counts:
-        menus and dialogs are meant to be above the chrome.
+        The A/B divider lies over the picture, so a presenter above the chrome
+        hides it. Only the presenter counts: menus and dialogs are meant to be
+        above the chrome.
         """
         stages = {s["hwnd"] for s in self.stages}
         tops = [self.chrome]
@@ -1426,7 +1426,11 @@ class Lens:
         # Tweak mode applied to the presenter about to be replaced, and its
         # successor is built click-through, so the flag has to come back down
         # or the lens believes it is interactive while behaving otherwise. The
-        # ReShade overlay itself goes with the process that was hosting it.
+        # ReShade overlay itself goes with the process that was hosting it, and
+        # the keyboard goes back as it would on Done.
+        if self.tweak:
+            prev = self.tweak_prev
+            self.root.after(0, lambda: self.hand_focus_back(prev, None))
         self.tweak = False
         self.rebuilding = True
         for s in reversed(self.stages):
@@ -1566,9 +1570,8 @@ class Lens:
     # ---- geometry
     def inner(self):
         if self.fullscreen:
-            # fullscreen cannot be dragged, and in tweak mode the bar sits in the
-            # bottom right corner, see drop_bar, so the bar's position says
-            # nothing about where the picture is
+            # fullscreen cannot be dragged, and its chrome is the bar alone, with
+            # no border to count from
             return self.fs_origin
         return self.t.winfo_x() + EDGE, self.t.winfo_y() + BAR
 
@@ -1680,8 +1683,10 @@ class Lens:
     # The ReShade overlay lives INSIDE the presenter's swapchain, so it cannot
     # be moved to a separate window. Tweak mode makes the viewport interactive
     # (drops WS_EX_TRANSPARENT / WS_EX_NOACTIVATE), focuses it and presses Home
-    # so the overlay opens in place; leaving tweak mode presses Home again and
-    # restores click-through.
+    # so the overlay opens in place. It ends with Done, which presses Home again,
+    # or with a Home the user presses, which has closed the overlay already;
+    # either way the viewport goes back to click-through and the keyboard to the
+    # window that had it.
     def menu(self, e):
         off = self.nr_on
         # a bug report is much easier to act on when the reporter can read the
@@ -1746,51 +1751,84 @@ class Lens:
         self.root.after(KEY_HOLD, lambda: u.PostMessageW(hwnd, 0x101, vk, lp | 0xC0000000))
 
     def toggle_tweak(self):
-        h = self.visible()
-        self.tweak = not self.tweak
         if self.tweak:
-            # interactive first, so the overlay that opens can be used with the
-            # mouse; the key itself does not need the focus
-            self.set_interactive(h, True)
-            if self.fullscreen:
-                self.drop_bar(True)
-            self.info.config(text="TWEAK MODE: Home hides/shows the ReShade menu", fg=WARN)
-            self.post_key(h, 0x24)
-            self.root.after(150, lambda: self.focus(h))
-            self.tweak_until = float("inf")
-            self.root.after(700, self.follow_overlay)
+            self.end_tweak()
         else:
+            self.start_tweak()
+
+    def start_tweak(self):
+        h = self.visible()
+        self.tweak = True
+        self.tweak_prev = u.GetForegroundWindow()
+        # interactive first, so the overlay that opens can be used with the
+        # mouse; the key itself does not need the focus
+        self.set_interactive(h, True)
+        self.info.config(text="TWEAK MODE: press Home when done", fg=WARN)
+        self.post_key(h, 0x24)
+        self.root.after(150, lambda: self.focus(h))
+        self.tweak_until = float("inf")
+        self.root.after(700, self.follow_overlay)
+        u.GetAsyncKeyState(0x24)            # forget a press from before, see watch_home
+        self.root.after(KEY_HOLD, lambda: self.watch_home(h))
+
+    def end_tweak(self, press_home=True):
+        """Leave tweak mode: from Done, which closes the overlay with Home, or
+        with press_home False once the user's own Home has closed it."""
+        h = self.visible()
+        self.tweak = False
+        prev = self.tweak_prev
+        if press_home:
             # the key first, and the window made click-through only after it
             # has been released: taking the styles back drops the focus, and
             # ReShade forgets every key it is holding when that happens
             self.post_key(h, 0x24)
-            self.root.after(KEY_HOLD + 200, lambda: self.set_interactive(h, False))
-            self.info.config(text="%d x %d" % (self.cw, self.ch), fg=DIM)
-            if self.fullscreen:
-                self.drop_bar(False)
-            # the add-on's write of a change made just before Done can still be
-            # on its way, so the file is followed a few seconds longer
-            self.tweak_until = time.perf_counter() + 4.0
+        self.root.after(KEY_HOLD + 200 if press_home else 200,
+                        lambda: (self.set_interactive(h, False), self.hand_focus_back(prev, h)))
+        self.info.config(text="%d x %d" % (self.cw, self.ch), fg=DIM)
+        # the add-on's write of a change made just before Done can still be
+        # on its way, so the file is followed a few seconds longer
+        self.tweak_until = time.perf_counter() + 4.0
 
-    def drop_bar(self, down):
-        """Fullscreen only. The bar lies over the top edge of the picture, which
-        is where the ReShade overlay keeps its tabs, so for tweak mode it becomes
-        a short bar in the bottom right corner and comes back after. Not the
-        whole bottom edge: the overlay reaches nearly to the bottom of the
-        monitor and its Reload button spans its width there, measured. The
-        overlay is anchored top left, so the far corner is clear of it."""
-        x, y = self.fs_origin
-        if down:
-            wd = min(self.cw, 840)         # room for every control and the mode text;
-                                           # at 780 the packer dropped the minus
-            self.bar_drop = self.ch - BAR
-            self.t.geometry("%dx%d+%d+%d" % (wd, BAR, x + self.cw - wd, y + self.bar_drop))
-        else:
-            wd = self.cw
-            self.bar_drop = 0
-            self.t.geometry("%dx%d+%d+%d" % (wd, BAR, x, y))
-        self.bar.place(x=0, y=0, width=wd, height=BAR)
-        self.raise_chrome()
+    def watch_home(self, h, pressing=False):
+        """End tweak mode when the user's Home closes the overlay.
+
+        A Home press reaches the presenter, and so ReShade, only while the
+        presenter is the foreground window, and ReShade closes the overlay on
+        it. The key is read from the physical keyboard, the way F6 is, so the
+        presses the lens posts itself are not counted, and tweak mode ends once
+        the key is back up: dropping the focus while it is down makes ReShade
+        forget it. The low bit catches a press that came and went between two
+        looks.
+        """
+        if self.closing or not self.tweak or not self.stages or h != self.visible():
+            return
+        state = u.GetAsyncKeyState(0x24)
+        down = bool(state & 0x8000)
+        if not pressing and (down or state & 1) and u.GetForegroundWindow() == h:
+            pressing = True
+        if pressing and not down:
+            self.end_tweak(press_home=False)
+            return
+        self.root.after(30, lambda: self.watch_home(h, pressing))
+
+    def hand_focus_back(self, prev, h):
+        """Give the keyboard back to the window that had it before the presenter
+        took it, so the next key goes where the user expects rather than to
+        ReShade. A window of the lens's own, or one that has gone, is left be."""
+        if not prev or prev == h or not u.IsWindow(prev):
+            return
+        pid = w.DWORD()
+        u.GetWindowThreadProcessId(prev, ctypes.byref(pid))
+        if pid.value == os.getpid():
+            return
+        try:
+            me = k32.GetCurrentThreadId()
+            tid = u.GetWindowThreadProcessId(prev, None)
+            u.AttachThreadInput(me, tid, True)
+            u.SetForegroundWindow(prev)
+            u.AttachThreadInput(me, tid, False)
+        except Exception:
+            pass
 
     def follow_overlay(self):
         """Keep the title bar in step with a pass count chosen in the overlay.
@@ -1868,15 +1906,7 @@ class Lens:
         def back():
             if not self.tweak:
                 self.set_interactive(h, False)
-            if prev and prev != h:
-                try:
-                    me = k32.GetCurrentThreadId()
-                    tid = u.GetWindowThreadProcessId(prev, None)
-                    u.AttachThreadInput(me, tid, True)
-                    u.SetForegroundWindow(prev)
-                    u.AttachThreadInput(me, tid, False)
-                except Exception:
-                    pass
+            self.hand_focus_back(prev, h)
 
         def up():
             u.keybd_event(vk, 0, 2, 0)
@@ -2163,13 +2193,12 @@ class Lens:
         # ---- fullscreen
         section("Fullscreen")
         full = tk.BooleanVar(value=self.fullscreen)
-        switch("Cover the whole monitor the lens is on", full)
+        switch("Fill the monitor the lens is on", full)
         explain("Changing it restarts the lens. Windowed, it comes back at its last position "
-                "and size. Fullscreen, the title bar sits over the top edge of the picture, "
-                "moves to the bottom right corner while the ReShade overlay is open, and the lens "
-                "cannot be dragged. A whole monitor is many times the pixels of a window, so "
-                "expect a lower frame rate; the lens switches the Cost Scaler on for fullscreen "
-                "to win some of it back.")
+                "and size. Fullscreen, the lens fills its monitor apart from the taskbar, with "
+                "the title bar across the top, and it cannot be dragged. A whole monitor is many "
+                "times the pixels of a window, so expect a lower frame rate; the lens switches "
+                "the Cost Scaler on for fullscreen to win some of it back.")
 
         # ---- title bar
         section("Title bar")
@@ -2464,13 +2493,17 @@ def main():
     # or larger than a lowered resolution leaves room for
     x, y, cw, ch = fit_rect(x, y, cw, ch)
     if FULLSCREEN:
-        # the monitor the windowed lens sits on, whole. The pass count comes
-        # from the fullscreen lens's own file.
-        x, y, cw, ch = monitor_rect(x + cw // 2, y + ch // 2)
-        # two pixels short of the monitor: a borderless window that covers a
-        # monitor exactly is taken over by the compositor's fullscreen path,
-        # and the title bar on top of it stops being drawn
-        ch -= 2
+        # the work area of the monitor the windowed lens sits on, with the bar
+        # across its top and the picture filling the rest. The ReShade overlay
+        # opens at the picture's top left with its tabs along its top edge, so a
+        # picture that starts below the bar keeps them clear of it without the
+        # bar ever moving, and nothing of the lens shares its place with the
+        # taskbar, which is always on top as well. Starting below the bar, the
+        # picture never covers a monitor exactly, which would hand it to the
+        # compositor's fullscreen path and stop the bar being drawn. The pass
+        # count comes from the fullscreen lens's own file.
+        mx, my, mw, mh = work_area(x + cw // 2, y + ch // 2)
+        x, y, cw, ch = mx, my + BAR, mw, mh - BAR
         if os.path.exists(FULL_STATE):
             try:
                 passes = int(open(FULL_STATE).read().split()[0])

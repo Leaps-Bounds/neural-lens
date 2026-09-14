@@ -154,7 +154,7 @@ HASHES = {
     "cost-scaler.dll": ["975b0a063b32463a8812209810f338f3025b47b97d7cb621330c11a7d13898e8"],
 }
 # One Neural Rendering model serves every RTX card. The SF-v2 build was thought
-# to be 40 series only until it was measured running on a 5090 on 2026-09-12:
+# to be 40 series only until it was measured running on an RTX 5090 on 2026-09-12:
 # feature 18 created and evaluated, and the in-to-out difference matched the
 # stock model to within 0.01 at two pinned rates. Its author states it covers
 # RTX 20, 30 and 40 and runs identically on 50. The stock 310.8.0 hash is listed

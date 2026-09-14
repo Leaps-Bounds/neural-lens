@@ -54,9 +54,11 @@ The lens draws its picture with a presenter of its own, and mpv is gone.
   in the ini: the presenter's own measure from capture to present, plus a refresh and a half for
   composition and scanout. Against a window flipping black and white it read
   8 ms where the flip measured 8 at 120 Hz.
-- Fullscreen, tweak mode turns the title bar into a short bar in the bottom right corner, so the
-  ReShade overlay's tabs along the top are not under it, and puts it back on Done. Fullscreen is
-  no longer marked experimental.
+- Fullscreen, the lens fills its monitor apart from the taskbar, with the title bar across the top
+  and the picture below it, so the ReShade overlay, which opens at the picture's top left, is never
+  under the bar. Fullscreen is no longer marked experimental.
+- Home, pressed to close the ReShade overlay, ends tweak mode as Done does, and leaving tweak mode
+  gives the keyboard back to the window that had it.
 - The lens climbs back on top by itself within a fifth of a second when a maximised or full
   screen window has been stacked over it. Windows puts such a window above every topmost window
   when it becomes the foreground; windows that are themselves topmost are left alone.

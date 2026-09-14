@@ -175,9 +175,11 @@ every card.
 - **Monitors can change while it runs.** Switch a monitor on or off, or rearrange them, and the
   lens starts its picture again a couple of seconds later, still on its monitor.
 - **Close it** with the X. The viewport never takes keyboard focus, so no key closes it.
-- The **menu** at the left opens the ReShade overlay in place so you can adjust Neural
-  Rendering settings live, and also holds the pass controls and a Neural Rendering on and off
-  toggle. The menu button opens and closes it; so does a click anywhere else, or Escape.
+- The **menu** at the left opens the ReShade overlay in place so you can adjust Neural Rendering
+  settings live, and also holds the pass controls and a Neural Rendering on and off toggle. The menu
+  button opens and closes it; so does a click anywhere else, or Escape. While the overlay is open
+  the lens takes clicks and keys for it; press Home, or choose Done tweaking in the menu, to close
+  it and make the lens click-through again.
 - **Save a before and after screenshot** from the menu. It writes three PNGs: the untouched
   content the lens captured, the neural rendered result, and the two joined side by side. Both
   come from the presenter at the same moment, the capture it holds and the picture it presented,
@@ -204,12 +206,11 @@ every card.
   top again. The button's Close window closes the lens. A maximised or full screen window,
   which Windows puts above everything when it becomes the foreground, is handled on its own:
   the lens notices and comes back within a fifth of a second.
-- **Fullscreen** is a checkbox in Settings. The lens covers the whole monitor it is on, with the
-  title bar over the top edge of the picture, as a short bar in the bottom right corner instead
-  while the ReShade overlay is open from the menu, and cannot be dragged. Changing it restarts
-  the lens, like a resize, and the windowed position and size are kept for the way back. A whole
-  monitor is a lot of pixels, so the frame rate is lower, and fullscreen is where the lens
-  switches the Cost Scaler on; see [The Cost Scaler](#the-cost-scaler).
+- **Fullscreen** is a checkbox in Settings. The lens fills the monitor it is on apart from the
+  taskbar, with the title bar across the top and the picture below it, and cannot be dragged.
+  Changing it restarts the lens, like a resize, and the windowed position and size are kept for the
+  way back. A whole monitor is a lot of pixels, so the frame rate is lower, and fullscreen is where
+  the lens switches the Cost Scaler on; see [The Cost Scaler](#the-cost-scaler).
 
 ## How it works
 

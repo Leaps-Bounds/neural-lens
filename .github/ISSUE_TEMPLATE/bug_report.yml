@@ -37,7 +37,7 @@ body:
     attributes:
       label: Neural Lens version
       description: Shown at the top of the menu, at the top of Settings, and printed when the lens starts.
-      placeholder: 0.1.0
+      placeholder: 0.2.0
     validations:
       required: true
 
@@ -45,7 +45,7 @@ body:
     id: passes
     attributes:
       label: How many passes
-      options: ["1", "2", "3", "4 or more (experimental, needs max_passes raised in Settings)"]
+      options: ["1", "2", "3", "4"]
     validations:
       required: true
 
@@ -53,7 +53,7 @@ body:
     id: mode
     attributes:
       label: Windowed or fullscreen
-      description: Fullscreen is experimental and much less tested, so this decides where to look first.
+      description: Fullscreen switches the Cost Scaler on, so this decides where to look first.
       options: ["Windowed", "Fullscreen"]
     validations:
       required: true
@@ -71,8 +71,8 @@ body:
     id: size
     attributes:
       label: Lens size and display
-      description: The first line of lens-state.txt in the data folder beside the lens, plus your display resolution.
-      placeholder: 1400 1000 500 400 2 100, on a 3840x2160 display
+      description: The first line of lens-state.txt in the data folder beside the lens, plus your display resolution and refresh rate.
+      placeholder: 1400 1000 500 400 2, on a 3840x2160 display at 144 Hz
     validations:
       required: true
 
@@ -97,7 +97,7 @@ body:
     id: stack
     attributes:
       label: Neural Rendering stack
-      description: Versions of ReShade, dlss5-feed, renodx-dlss5 and nvngx_dlssnr.dll. Most are recorded in stack\install-record.json in the lens folder.
+      description: Versions of ReShade, dlss5-feed, renodx-dlss5, the Cost Scaler and nvngx_dlssnr.dll. Most are recorded in install-record.json in the lens folder.
     validations:
       required: true
 
@@ -111,15 +111,12 @@ body:
         the newest archived `ReShade.log`. The line that confirms Neural Rendering was
         running is `feature=18 (DLSSNR`.
 
-        If you were using more than one pass, attach the archived `ReShade.log1` as well.
-        ReShade writes one log per stage, so a multi-pass run produces several.
+        If the lens never opened, or its picture never appeared, attach
+        `presenter-stderr.log` from the same folder instead. That is what the presenter
+        itself printed, and it is the only place the reason survives.
 
-        If the lens never opened, or a stage never appeared, attach `mpv-stderr.log` from
-        the same folder instead. That is what mpv itself printed, and it is the only place
-        the reason survives.
-
-        For anything about the picture or the frame rate, attach `lens.log` from that folder
-        too. It is the lens's own output, including every rate decision it made.
+        For anything about the picture, the frame rate or the Cost Scaler, attach `lens.log`
+        from that folder too, and the archived `nvngx_dlssnr_proxy.log` if there is one.
       render: shell
 
   - type: checkboxes

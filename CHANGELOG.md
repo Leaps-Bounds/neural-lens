@@ -3,57 +3,81 @@
 Versions follow semantic versioning. While the major version is 0 the project is beta, and
 settings, the state file format and behaviour may change between releases.
 
-## Unreleased
+## 0.2.0, 2026-09-13
 
-- With a RenoDX DLSS 5 add-on from its v5 line in the stack, the passes run inside the add-on
-  instead of as chained stages. The count chosen on the title bar is written to `NRPasses` in
-  the add-on's section of ReShade.ini and the single stage restarts, the rebuild Set already
-  did. Older add-ons chain as before; `passes_mode = addon` or `chain` in the ini forces
-  either. The add-on's own limit is four passes. Measured on an RTX 5090 at 2400x1800: two
-  passes presented up to 69 frames a second inside the add-on against 51 chained, three
-  passes 53 against 33, with the same change to the image within 2 out of 255. The setup
-  still fetches the 4.70 add-on, so this applies once the add-on in the stack is a v5 build.
-- With the passes inside the add-on, the title bar goes up to four, the add-on's own limit,
-  and a count chosen in the ReShade overlay's own control reaches the title bar within about
-  two seconds while the overlay is open, with nothing rebuilt. The Settings slider for the
-  most passes allowed is gone; `max_passes` in the ini still caps the chained stages of an
-  older add-on, at three by default.
-- When the DLSSNR Cost Scaler proxy is in the stack, put there by hand as the README
-  describes, the lens switches it on for a fullscreen lens, scaled so the neural model's work
-  over all the passes comes to about 8 megapixels, and off for a windowed one. Measured on an
-  RTX 5090 at 6144x2560 with the passes inside the add-on: one pass 30 to 43 frames a second,
-  two passes 23 to 43.
-  `cost_scaler` and `cost_scaler_mpx` in the ini change the rule.
-- The title bar menu is drawn by the lens itself instead of a native popup: the menu button
-  opens it and closes it, a click anywhere else closes it, so does Escape, and it never takes
-  the focus from the application under the lens. A native popup only dismisses on an outside
-  click while its owner is the foreground window, which the title bar never is, so it stayed
-  open until an item was chosen and a second press of the button posted another one.
-- Stage windows no longer flash a taskbar button while they load: the presenter's is created
-  as a tool window before it is shown, and mpv's is found by its process the moment it is
-  visible rather than by its title, which mpv sets a second and a half later.
+The lens draws its picture with a presenter of its own, and mpv is gone.
+
+- **The presenter.** `lens-presenter.exe` is a Vulkan window of the lens's own that captures the
+  monitor with Windows.Graphics.Capture, cropped to the lens, with every window of the lens
+  excluded from capture, and presents each frame the moment it arrives. Between arrivals it
+  presents the last frame again at the display's rate, copied in afresh, so Neural Rendering
+  never runs on its own output. ReShade, the Feed and the add-on attach to it as they did to mpv.
+  Measured on an RTX 5090 with a 120 Hz display, a window flipping between black and white took
+  8 ms to show the change in the presenter's output, where 0.1.0's pipeline took 70 ms at 99 fps.
+  A 1400x1000 lens shows 118 frames a second. Fullscreen at 6144x2560 it shows 42 with the delay
+  meter at 47 ms, and 58 at 33 ms with the Cost Scaler on, where 0.1.0 measured 183 ms at 33 fps.
+  The change Neural Rendering makes to the image is the same.
+- Gone with mpv: the Magnification API host, the adaptive frame rate and its Settings controls,
+  and the ini's `fps`, `pump_hz`, `adaptive`, `min_fps`, `max_passes`, `passes_mode` and `host`.
+  Nothing buffers, so there is no rate to govern. The state file no longer carries a rate, and
+  one written by 0.1.0 still loads.
+- **Passes run inside the add-on, up to four.** The setup fetches RenoDX DLSS 5 5.2.1, which
+  applies several neural passes in one process from `NRPasses` in ReShade.ini. Set writes the
+  count and restarts the presenter, and a count chosen in the ReShade overlay's own control
+  reaches the title bar within about two seconds while the overlay is open. The add-on's chained
+  temporal history, a toggle in its overlay, is left as the add-on has it: at the add-on's
+  defaults it made two passes less steady and four steadier, and with other settings it steadied
+  two and three, so whether to switch it on is a setting like any other.
+- **A new install starts the add-on at its own defaults.** The setup writes nothing into the
+  add-on's section of ReShade.ini but its config version, where 0.1.0 wrote tuned values. A
+  repair keeps whatever that section holds.
+- **The Cost Scaler is part of the stack.** The setup fetches DLSSNR-Cost-Scaler 1.0.6 and puts it
+  in front of NVIDIA's model, off, with its global hotkeys off. The lens switches it on for a
+  fullscreen lens, scaled so the model's work over all the passes comes to about 8 megapixels,
+  and off for a windowed one. `cost_scaler` and `cost_scaler_mpx` in the ini change the rule.
+  Fullscreen at 6144x2560 with the add-on at its defaults, it took one pass from 42 frames a
+  second to 58 and two passes from 26 to 54, with the change to the picture about a quarter
+  smaller.
+- The add-on and the Cost Scaler are pinned releases, each archive and the file taken from it
+  checked against a hash, as NVIDIA's runtimes already were.
+- **The stack sits in the install folder itself**, beside `lens-presenter.exe`, because ReShade
+  reads its configuration from the folder of the program it attaches to. The download is about
+  150 MB, where it was 230, and the install comes to about 400 MB, where it came to 540.
+  Installing over 0.1.0 removes the stack it assembled in `stack`, keeping NVIDIA's runtimes and
+  ReShade's DLL when their hashes and version check out, so they are not downloaded again.
+- The self test runs the presenter on a still for about nine seconds, and reports whether the
+  Cost Scaler loaded as well as whether Neural Rendering ran.
+- The title bar menu is drawn by the lens itself. The menu button opens it and closes it, a
+  click anywhere else closes it, so does Escape, and it never takes the focus from the
+  application under the lens.
+- A delay meter on the title bar, switched on in Settings under Title bar or with `latency = 1`
+  in the ini: the presenter's own measure from capture to present, plus a refresh and a half for
+  composition and scanout. Against a window flipping black and white it read
+  8 ms where the flip measured 8 at 120 Hz.
 - Fullscreen, tweak mode turns the title bar into a short bar in the bottom right corner, so the
-  ReShade overlay's tabs along the top are no longer under it, and puts it back on Done.
-- A delay meter on the title bar, switched on in Settings under Title bar or with
-  `latency = 1` in the ini. The lens logs every frame it sends with the time Windows composed
-  it, asks mpv which frame it is showing, and adds an allowance for the steps it cannot see.
-  Calibrated against a window flipping black and white under the lens: 70 ms shown against
-  70 measured at 99 fps, 181 against 183 at 33 fps.
-- A presenter of the lens's own as an alternative host to mpv, `host = presenter` in the ini
-  or `--presenter`: a Vulkan window that captures the monitor itself, the lens's windows
-  excluded from capture, and presents each frame as it arrives, so nothing buffers and no
-  rate is governed. Measured from a change on screen to the change in the output: 8 ms
-  against 70 through mpv windowed, and 33 ms at 58 fps against 183 ms at 33 fps fullscreen,
-  with the same change to the image. It is put in place by hand for now, see the README.
-- The add-on's chained temporal history is switched on whenever the lens writes the pass
-  count. Its passes beyond the first are stateless by default and can flicker, in its own
-  words; measured over a still, the change between consecutive presented pictures fell from
-  0.60 to 0.34 out of 255 at three passes with it on, close to the 0.31 of one pass.
-- The lens climbs back on top by itself when a maximised or full screen window has been
-  stacked over it. Windows puts such a window above every topmost window when it becomes
-  the foreground, which left the lens under a picture viewer until its taskbar button was
-  clicked; the lens now notices within a fifth of a second and raises itself, leaving
-  windows that are themselves topmost alone.
+  ReShade overlay's tabs along the top are not under it, and puts it back on Done. Fullscreen is
+  no longer marked experimental.
+- The lens climbs back on top by itself within a fifth of a second when a maximised or full
+  screen window has been stacked over it. Windows puts such a window above every topmost window
+  when it becomes the foreground; windows that are themselves topmost are left alone.
+- No taskbar button flashes while the presenter starts.
+- Dragging the lens onto another monitor restarts the presenter on that monitor once the lens
+  is let go.
+- `stack_dir` in the ini, `--stack-dir` and `NEURAL_LENS_STACK` name the stack folder. The names
+  0.1.0 used, `mpv_dir`, `--mpv-dir` and `NEURAL_LENS_MPV_DIR`, still work.
+- From source, the presenter needs `glfw` and `vulkan` besides `numpy` and `windows-capture`, and
+  `neural_stack.py` puts a copy of the Python running it in the stack folder as
+  `lens-presenter.exe`, which the layer's allow list names.
+
+Known limits:
+
+- The neural stack is fetched, not included. None of it is redistributed here, so setup needs
+  the network to assemble it, and the lens does nothing until it has.
+- The presenter captures one monitor. A lens hanging over the edge of its monitor shows a picture
+  that no longer lines up with what is under it, and a lens larger than its monitor shows nothing.
+- Resizing and changing the pass count restart the presenter, which takes a second or two.
+- Applications in exclusive fullscreen cannot be under the lens: nothing else is drawn over them.
+  Borderless windowed works.
 
 ## 0.1.0, 2026-09-12
 

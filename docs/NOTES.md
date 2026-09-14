@@ -2,17 +2,112 @@
 
 Measurements, constraints and Win32 details behind the implementation. Most of the rejected
 approaches below look reasonable on paper and fail only when measured, so each one is kept
-alongside the number that ruled it out. Read this before changing the capture path or the pass
-chain.
+alongside the number that ruled it out. Read this before changing the capture path, the
+presenter or the passes.
 
-## The multi-pass chain
+## The presenter
+
+`lens_presenter.py` is a glfw window with a Vulkan swapchain, `B8G8R8A8_UNORM`, in mailbox mode
+where the surface offers it. Installed, it is `lens-presenter.exe`, frozen beside
+`NeuralLens.exe`. From source, `lens-presenter.exe` in the stack folder is a copy of `python.exe`,
+with a `pyvenv.cfg` beside it naming the real interpreter with `include-system-site-packages =
+true`, and a `.pth` file naming the packages of the Python that ran the setup, so a virtual
+environment works too.
+
+Each captured frame is copied into a host visible staging buffer, from there into the next
+swapchain image, and presented. Between arrivals the last frame is presented again at the
+display's rate, copied in afresh each time, so a repeat never re-runs Neural Rendering on its
+own output. A frame that arrives before the loop has taken the previous one replaces it. Every
+present is a composition, and the monitor capture delivers a frame per composition, so the loop
+runs at the display's rate even over a still.
+
+The window is created hidden, given `WS_EX_TOOLWINDOW` and `WS_EX_NOACTIVATE`, and then shown
+without activation, so no taskbar button ever appears, not even while it loads. It is excluded
+from capture with `WDA_EXCLUDEFROMCAPTURE`. The process is per monitor DPI aware, version 2, set
+before glfw initialises, as the lens is.
+
+It reads `crop X Y`, `shot BASE`, `probe N` and `quit` on stdin, and prints a stats line a
+second: new pictures presented, frames arrived, repeats, frames replaced by a newer one before
+they were taken, and the meter, the median of the present call minus the capture's own
+timestamp. `--source pattern` presents a still with detail and captures nothing; the stack
+setup's self test uses it. The lens finds the presenter's window by its process id and glfw's
+window class, `GLFW30`, which works the moment the window is visible.
+
+**Delay.** Measured with a separate process flipping a window between black and white, and two
+Windows Graphics Capture sessions in the harness timestamping the moment each mean crosses mid
+grey, one on the flipper and one on the presenter's window, placed beside it so it could be
+captured. Both pass through the compositor once, so that cancels:
+
+```
+window capture of the flipper, mailbox         8 ms   meter -5
+monitor capture cropped to the flipper         8 ms
+window capture, fifo                           5 ms
+```
+
+The capture's timestamp names the composition the frame belongs to, so the meter can read
+negative; the title bar adds a refresh and a half, which put 8 against 8. With the lens itself at
+one pass, the meter with that allowance reads 10 ms at 118 fps windowed at 1400x1000, and
+fullscreen at 6144x2558 47 ms at 42 fps, or 33 ms at 58 fps with the Cost Scaler on.
+
+**Effect parity, and a trap.** On the same still the presenter's after image first differed
+from its before by 2.5, where earlier runs with mpv as the host had measured 4.5, with identical
+before images. Neither a 10 bit swapchain nor an sRGB one changed it. The add-on's own
+`active settings` log line did: the runs had straddled a change of `NRIntensity` from 1.31 to
+1.7 and `NRStyle` from 1 to 0, made in the overlay between them. mpv measured again under the
+same settings: 2.57. So the effect is the same through either host, and before comparing effects
+across runs, compare the `active settings` lines. A 10 bit swapchain stayed optional,
+`LENS_PRESENTER_10BIT=1`, blitting through an intermediate image: it cost frame rate, 91 against
+118, for no difference to the effect.
+
+**One monitor.** The presenter captures the monitor the lens was on when it started, and clamps
+its crop to that monitor, so a lens over the monitor's edge shows a shifted picture and a lens
+larger than the monitor gets no frames at all. When a drag ends with the lens's centre on another
+monitor, the lens restarts the presenter there.
+
+Binding notes: `vkMapMemory` in the vulkan package returns a buffer object, so
+`np.frombuffer(mapped, ...)` works on it directly. Monitor capture frames carry alpha 255
+throughout. windows-capture numbers monitors from 1 in `EnumDisplayMonitors` order.
+
+## Capture under the lens's own windows
+
+**Windows Graphics Capture of the monitor composes the desktop beneath an excluded window.** With
+a window excluded through `WDA_EXCLUDEFROMCAPTURE` on top of a still, the captured region matched
+the bare still exactly, a mean absolute difference of 0.0 before and after moving the cursor
+across it. Desktop Duplication shows black there instead; see Dead ends.
+
+An excluded window is invisible to every capture, window capture included, so the lens's output
+cannot be captured from outside while it is excluded. The screenshots and the steadiness probe
+read the presenter's own swapchain back instead.
+
+Every window the lens owns is excluded: the chrome and the presenter when they are created, the
+menu and the A/B divider when they open, and anything else by a timer that re-applies the
+exclusion to every visible top-level window of the process every 200 ms, since dialogs and
+message boxes offer no hook to act on.
+
+## Why the stack is the program's folder
+
+ReShade, loaded as a Vulkan layer, reads `ReShade.ini`, and through it the add-ons and shaders,
+from the folder of the executable it attaches to. With `lens-presenter.exe` one folder above the
+stack and the stack as its working directory, the layer did not attach, and `ReShade64.dll` 6.8.0
+names no environment variable that points it elsewhere. So installed, the program's folder is the
+stack, and from source the stack folder holds the interpreter's copy. The allow list,
+`ReShadeApps.ini` beside the layer, names that one executable.
+
+## Passes inside the add-on
 
 **The v5 line of the add-on runs the passes itself** (renodx-dlss5 5.2.1 from the RHI
-repository, 2026-09-11, and the v5.0 beta before it): `NRPasses` in its `[RenoDX.DLSS5]`
-section of ReShade.ini, read only when the process starts. Measured: an edit while a stage ran
-had changed nothing twelve seconds later, and a stage that is terminated does not write the
-file back, so the lens writes the key after the old stage is gone and before the new one
-spawns. Against the chain below, RTX 5090, 2400x1800 over a still, governor frozen:
+repository, and the v5.0 beta before it): `NRPasses` in its `[RenoDX.DLSS5]` section of
+ReShade.ini, read only when the process starts. An edit while it ran had changed nothing twelve
+seconds later, and a process that is terminated does not write the file back, so the lens writes
+the key after the old presenter is gone and before the new one spawns.
+
+The add-on does write its settings back within about a second of a change made in its overlay:
+`NeuralUplift` was on disk 1.3 s after F6. So while the overlay is open, and for four seconds
+after Done, the lens reads `NRPasses` back from the file, and a changed count becomes the title
+bar's count with nothing restarted, since the add-on is already running it.
+
+Against chaining whole pipelines, which is how 0.1.0 made passes, RTX 5090, 2400x1800 over a
+still:
 
 ```
                               ceiling   at 60 fps          effect
@@ -22,133 +117,81 @@ spawns. Against the chain below, RTX 5090, 2400x1800 over a still, governor froz
 3 passes inside the add-on     53 fps                     13.74
 ```
 
-Effect is the mean absolute difference of the lens's after screenshot from its before, out of
-255; the two-pass outputs differ from each other by 1.6. Trap: that add-on line resets its
-whole section to built-in defaults on first load when `ConfigVersion` is missing, and writes
-`ConfigVersion=2`, without a log line; re-apply tuned values after the first launch. Its own
-working resolution setting (`NRFollowInputRes`, `NRResolutionScale`) does nothing in mpv.
+Effect is the mean absolute difference of the after screenshot from the before, out of 255; the
+two two-pass outputs differ from each other by 1.6.
 
-The add-on line before v5 has **no pass control**. Its complete set of settings is
-`EnableHooks, NRAutoMask, NRColorStrength, NRDepthMode, NREnableUpscaling, NRIntensity,
-NRLocalStructure, NRLocalTone, NRMVecScaleX, NRMVecScaleY, NRPaperWhiteScale, NRPreset,
-NRScreenshotKey, NRSkinStructure, NRStyle, NRToggleKey, NRTransferStrength, NRUICorrection,
-NeuralUplift`. The newer `renodx-dlss` add-on does have `DirectNeuralRenderingPassCount`, but
-it will not inject into mpv at all (see Dead ends), so it is not an option here.
-
-Every build in this add-on line reports the same version resource, `0.2026.0828.0517`, so only
-size and hash tell them apart. The setup fetches `renodx-dlss5` 4.70 from the RHI repository.
-The measurements above were taken on v4.1.5, 1,694,720 bytes, sha256 `9150097c`.
-
-Passes are therefore made by chaining: stage N captures stage N-1's mpv window with WGC and
-renders it again. Cumulative change from the raw source, as mean absolute difference out of 255:
+Through the presenter, a 1400x1000 lens over a still with the add-on at its defaults, chained
+history off as it ships: frames a second, the delay meter's reading, the change to the picture,
+and the change between consecutive presented pictures, both out of 255:
 
 ```
-                        stacked      side by side control
-1 pass                    7.71               7.71
-2 passes                 14.05              14.06
-3 passes                 19.45              19.52
-same chain, NR disabled   0.24  (round trip is nearly lossless)
+passes   frame rate   delay   change   consecutive
+1          118 fps    10 ms    2.30      0.42
+2          107 fps    13 ms    3.58      0.51
+3           89 fps    23 ms    4.89      0.65
+4           74 fps    29 ms    6.21      0.76
 ```
 
-The stacked and separated columns agreeing is what establishes that stacking is sound rather
-than merely different.
-
-### Every stage must be on the magnifier's exclude list
-
-`MagSetWindowFilterList` starts out excluding the host, the chrome and stage 1's mpv. Stack
-stages 2 and 3 on the same rect **without adding them** and the magnifier renders them back into
-stage 1's input, which is a fast and total feedback loop:
+**Flicker at two passes and up.** The add-on's own text: passes beyond the first are stateless by
+default and can flicker; try the chained history toggle. Measured with the presenter's readback of
+consecutive presented pictures over a still, mean absolute difference out of 255, first with
+`NRIntensity=1.7` and `NRStyle=0`, then at the add-on's defaults. At the defaults the two and
+three pass pairs were measured twice, in both orders, with the same result, and four passes once:
 
 ```
-with the stages excluded        7.71 / 14.05 / 19.45
-with stages 2 and 3 missing     7.70 / 62.52 / 61.23   (dark blob, ghosted text, saturated)
+            NRIntensity 1.7, style 0        the add-on's defaults
+passes      chained off     on              chained off     on
+1             0.31                            0.42
+2             0.46          0.37              0.51          0.59
+3             0.60          0.34              0.65          0.66
+4                           0.35              0.76          0.68
 ```
 
-`refresh_filter()` rebuilds the whole list after every add or remove for this reason. The call
-must happen inside the process that owns the magnifier.
+So whether chained history steadies the picture depends on the settings and the pass count, and
+the lens leaves `NRChainedHistory` to the add-on, which keeps it off by default. The settings set
+the floor as well: `NRIntensity=1.31` with `NRStyle=1` gave 0.12 at one pass.
 
-The list must also cover **transient** windows of the same process: the popup menu, the resize
-outline, the settings dialog and any message box. Listing windows by name cannot cover these,
-because they are created and destroyed on demand, and anything missed is rendered into stage 1's
-input, neural rendered along with the desktop, and saved into screenshots. `refresh_filter()`
-therefore enumerates every visible top-level window owned by the process, and a 200 ms timer
-re-applies the list, since a popup menu offers no hook to refresh from. Screenshots additionally
-wait for the chain to flush, because frames containing a window that has just closed are still
-in flight, and the visible stage lags the source by the pipeline latency.
+Traps: this add-on line resets its whole section to built-in defaults when `ConfigVersion` is
+missing or older than its own, and writes `ConfigVersion=2`, without a log line. Its own working
+resolution setting (`NRFollowInputRes`, `NRResolutionScale`) scales against a game's DLSS render
+resolution, which the lens has none of: with `NRFollowInputRes=2` and `NRResolutionScale=0.75`
+the log still said `NR input 2400x1800`, at the same cost and with the same output.
 
-## The presenter
+The newer `renodx-dlss` add-on, with `DirectNeuralRenderingPassCount`, does not inject at all;
+see Dead ends.
 
-`lens_presenter.py`, 2026-09-13. A glfw window with a Vulkan swapchain, run by a copy of
-python.exe in the stack folder named `lens-presenter.exe` (a `pyvenv.cfg` beside it with
-`home =` the real Python and `include-system-site-packages = true` makes the copy find its
-library and packages), on the ReShade layer's allow list, started with the stack folder as its
-working directory so it shares mpv's ReShade.ini, preset, add-ons and shaders. Each captured
-frame is copied into a host visible staging buffer, from there into the next swapchain image,
-and presented (mailbox). Between arrivals the last frame is presented again at the display's
-rate, copied in afresh each time: unlike mpv's `--untimed`, a repeat never re-runs Neural
-Rendering on its own output. ReShade attached, the Feed reported its feature ready over the
-same Vulkan transport, and feature 18 evaluated 600 times within seconds.
+## The add-on's defaults on a new install
 
-Flip to flip through the compositor, the presenter beside the flipper so its window could be
-captured:
+With a section holding only `ConfigVersion=2`, 5.2.1 ran at its defaults, logged as
+`intensity=1.000000 color_strength=1.000000 transfer=1.000000 paper_white=2.537500 preset=0
+style=0 enabled=ON`, wrote back `EnableHooks=2`, `NeuralUplift=1` and `NREnableUpscaling=0`, and
+created and evaluated feature 18 at one pass. So that is all the setup writes into the section,
+and a repair keeps whatever the section holds.
 
-```
-window capture of the flipper, mailbox         8 ms   (meter, present call minus capture stamp: -5)
-monitor capture cropped to the flipper         8 ms
-window capture, fifo                           5 ms
-mpv, what shipped, 99 fps                     70 ms
-```
+The add-on's developer asked, for the v5 line, that the proxy codec be set to Classic,
+`NRCodecMode=0`. Interleaved over a still at the defaults, one pass, twice each: the change
+between consecutive presented pictures measured 0.42 with the default codec and 0.40 with
+Classic, the change to the picture 2.30 and 2.19, and the frame rate 118 and 116. So the default
+stays.
 
-The capture's timestamp names the composition the frame belongs to, so the meter can read
-negative; the bar adds a refresh and a half, which put 8 against 8. As the lens's host,
-windowed 1400x1000: 118 fps, about 9 ms; fullscreen 6144x2558: 58 fps and 33 ms where mpv held
-30 fps at 183 ms. Every present of the presenter is a composition, and the monitor capture
-delivers a frame per composition, so the loop runs itself at the display rate even over a
-still.
-
-**Effect parity, and a trap.** On the same still the presenter's after image differed from its
-before by 2.5 where mpv's runs earlier in the day had measured 4.5, with identical before
-images. Neither a 10 bit swapchain (mpv presents through `A2B10G10R10`, the add-on's resources
-then read `format=24` as with mpv) nor an sRGB one changed it. The add-on's own
-`active settings` log line did: the runs had straddled a change of `NRIntensity` from 1.31 to
-1.7 and `NRStyle` from 1 to 0, made in the overlay during a hands-on session. mpv measured
-again under the current settings: 2.57. So the effect is the same through either host, and
-before comparing effects across runs, compare the `active settings` lines. 10 bit stayed
-optional (`LENS_PRESENTER_10BIT=1`): it cost frame rate (91 against 118) for no effect.
-
-**Flicker at two passes and up.** The add-on's own text: passes 2+ are stateless by default and
-can flicker; try the chained-history toggle. Measured with the presenter's own readback of
-consecutive presented pictures over a still, mean absolute difference out of 255:
-
-```
-passes   chained history off   on
-1              0.31
-2              0.46             0.37
-3              0.60             0.34
-4                               0.35
-```
-
-So the lens writes `NRChainedHistory=1` whenever it writes `NRPasses`. The same measure
-through mpv's output capture read 0.33 at two passes and 0.41 at three, 0.31 with chained
-history, under the same settings (`NRIntensity=1.7`, `NRStyle=0`; the earlier 1.31 and style
-1 gave 0.12 at one pass, so the settings themselves set the noise floor).
-
-Binding notes: `vkMapMemory` in the vulkan package returns a buffer object, so
-`np.frombuffer(mapped, ...)` directly; the glfw window's class is `GLFW30`, which is how the
-lens finds it; monitor capture frames carry alpha 255 throughout.
-
-## The Cost Scaler proxy
+## The Cost Scaler
 
 xenmods' DLSSNR-Cost-Scaler is a proxy `nvngx_dlssnr.dll` that runs the model at a fraction of
 the frame and composites the delta back onto the native frame. It implements four D3D12 NGX
-entry points and forwards the other 51, every Vulkan one included, to the real DLL. It works in
-mpv because Neural Rendering there is a **D3D12 NGX session behind the Feed's Vulkan
-transport**: `dlss5-feed.log` says `opening D3D12 session (Vulkan transport)`, and neither
-add-on carries a single `NVSDK_NGX_VULKAN` symbol. The add-on logs the proxy as `custom runtime
-accepted; untested build` and carries on; the proxy logs its working size in
-`nvngx_dlssnr_proxy.log`. It reads its ini when it starts and again within a second of a change.
+entry points and forwards the other 51, every Vulkan one included, to `nvngx_dlssnr_real.dll`.
+It works in the lens because Neural Rendering there is a **D3D12 NGX session behind the Feed's
+Vulkan transport**: `dlss5-feed.log` says `opening D3D12 session (Vulkan transport)`, and neither
+add-on carries a single `NVSDK_NGX_VULKAN` symbol. The add-on logs the proxy as
+`custom runtime accepted; untested build` and carries on. The proxy logs its settings and its
+working size in `nvngx_dlssnr_proxy.log`, switched off included, and reads its ini when it starts
+and again within a second of a change.
 
-RTX 5090, passes inside the add-on, governor frozen, most frames a second presented:
+The setup writes the proxy's own ini with four changes: `EnableProxy = 0`, since the lens decides;
+`EnableHotkeys = 0`, since its hotkeys are polled globally and a desktop program must not answer
+Ctrl+Alt+PageUp in every window; `EnableDepthAwareResolve = 0`, which works from the depth the
+Feed synthesises and was off for every measurement below; and `EnableGovernor = 0`, its default.
+
+Measured with 0.1.0's pipeline, passes inside the add-on, most frames a second presented:
 
 ```
                                      off    0.75    0.50    0.35
@@ -159,32 +202,35 @@ windowed 2400x1800, 2 passes          69      86      91
 windowed 1400x1000, 1 pass           100     100
 ```
 
+Through the presenter, fullscreen at 6144x2558 over a still with the add-on at its defaults and
+the proxy at the lens's own scale; the one pass pair was measured twice with the same result. The
+delay is the meter's reading, the change is from the untouched source out of 255, and the power
+is one reading of the card's draw:
+
+```
+                         frame rate   delay   change   power
+one pass, off              42 fps    47 ms    1.63     557 W
+one pass, on at 0.70       58 fps    33 ms    1.22     500 W
+two passes, off            26 fps    78 ms    2.98     576 W
+two passes, on at 0.50     54 fps    36 ms    2.22     503 W
+```
+
 Effect, the after screenshot against the before as mean absolute difference out of 255, at
 2400x1800 with two add-on passes: 9.95 native, 8.59 at 0.75, 5.62 at 0.50. Power at a matched
 60 fps, one pass: 314 W to 261 W. It pays where the neural pass is the limit, fullscreen and
 multi-pass, and costs a little where it is not, which is why the lens turns it on for fullscreen
-only. One pass wants about 0.7 on this panel and two passes 0.5, so the rule is a working area
-of 8 megapixels over all the passes, which gives 0.70 and 0.50 here, and it is re-applied
-whenever the pass count changes, since the proxy reads its ini within a second.
-
-### The overlay writes ReShade.ini within a second
-
-Measured with F6 through the lens's own toggle: `NeuralUplift` was on disk 1.3 s after the
-press, both ways. So a pass count chosen in the overlay's own control is read back from the file
-while the overlay is open, and for four seconds after Done, and becomes the title bar's count
-with nothing rebuilt. The reverse does not hold: a running add-on does not read an edit to the
-file, which is why Set writes the key and respawns the stage.
+only. One pass wants about 0.7 on that panel and two passes 0.5, so the rule is a working area of
+8 megapixels over all the passes, re-applied whenever the pass count changes.
 
 ## Resize restarts the process
 
-Live resize is unavailable because a resize recreates mpv's swapchain, and the Neural Rendering
-add-on responds by releasing its DLSS feature and crashing with 0xC0000005. Moving the lens is
-safe, because that only repositions windows and re-aims the magnifier.
+A resize would recreate the swapchain, and the Neural Rendering add-on responds to a recreated
+swapchain by releasing its DLSS feature and crashing with 0xC0000005. Moving the lens is safe,
+because that only repositions windows and moves the crop.
 
 The menu's resize writes the new geometry into the state file and starts a fresh copy of the
-process. `quit()` terminates each stage and waits for it, and the handover then waits a further
-second before starting the replacement, because stage windows are found by **exact title match**
-and a lingering mpv window would let the new stage 1 bind to the old one.
+process once `quit()` has ended the presenter and waited for it, and a further second has
+passed.
 
 ### The handover must not use `os.execv`
 
@@ -204,10 +250,43 @@ the outgoing process.
 The failure only occurs when the script path contains a space, so any test of this path must run
 from such a path. Verified two ways: 1200x800 at (1800, 700) resized to 960x640 at (1860, 740)
 returning at exactly that size and position with capture running, the pass count carried across
-and no orphaned mpv; and the same flow driven from a batch file inside a directory whose name
-contains a space.
+and nothing left running; and the same flow driven from a batch file inside a directory whose
+name contains a space.
 
 ## Dead ends
+
+### mpv as the host
+
+0.1.0 hosted the neural pass in mpv. A Magnification API window under the lens rendered the
+desktop for the lens rectangle, Windows.Graphics.Capture captured that window by its handle, raw
+BGRA frames went into mpv's standard input, and ReShade's Vulkan layer hooked mpv's swapchain. It
+worked, and three things about it could not be fixed from outside mpv:
+
+- **Delay.** mpv plays a stream at a declared rate, so every frame in its readahead is delay.
+  With the readahead cut from eight frames to two and `--video-latency-hacks` on, a flip under
+  the lens took 68 to 70 ms to reach the output at 99 fps, 136 ms with eight frames, and 183 ms
+  at 33 fps. One frame of readahead measured 63 ms and left no slack for a late frame, which
+  shimmered. The presenter measures 8 ms and, fullscreen, 33 ms.
+- **Rate.** Declaring more than the pipeline delivers makes mpv present without a new frame, and
+  Neural Rendering then re-runs over its own output until the picture crushes toward black and
+  recovers, over and over. `--untimed` does the same thing at once. Declaring exactly what arrives
+  shimmers instead: one stage with 119 frames a second arriving measured 1.637 out of 255 at 120
+  declared, 0.220 at 110 and 0.150 at 100, against a floor of 0.146. So 0.1.0 declared five
+  sixths of the display rate and governed a playback speed live from the presented rate, the
+  brightness out against in, and the output's frame to frame change on still content, with limits
+  that expired and retakes of levels already held. A rule calibrated on one GPU did not survive
+  another: on an RTX 4070 SUPER two passes at the rule's 50 presented 40 and shimmered, and a
+  2000x1400 lens at 100 presented 27 and collapsed. The presenter presents the captured frame
+  again instead of a stale one, so neither failure can occur, and nothing needs governing.
+- **Passes.** Before the add-on could run several passes, each extra pass was another mpv
+  capturing the one before, stacked on the same rectangle: cumulative change 7.71, 14.05 and
+  19.45 for one, two and three passes, 0.24 with Neural Rendering off. Every stage had to be on
+  the magnifier's exclude list, or the magnifier rendered it back into the first stage's input
+  and the picture collapsed into a feedback loop, 62.52 at two passes with a stage missing. See
+  Passes inside the add-on for what replaced it.
+
+The 0.1.0 tag's copy of this file has the full measurements of the governor, the readahead and
+the chain.
 
 ### Desktop Duplication (ddagrab) under the lens
 
@@ -222,27 +301,18 @@ magnifier repainting that rect, no lens      YAVG 45.96
 same, with an excluded lens on top           YAVG 20.04   black again
 ```
 
-`WDA_EXCLUDEFROMCAPTURE` removes a window from the capture, but it does not make Windows render
-the desktop behind it. Nothing composites an occluded region, so the duplication buffer stays
-empty there and only transient dirty rects land in it. The symptom is a black viewport that
-accumulates mouse trails and window drag smears, and that carries stale content when the lens
-moves.
-
-**Windows Graphics Capture of the monitor is different**, measured 2026-09-13: with a window
-excluded through `WDA_EXCLUDEFROMCAPTURE` on top of a still, the captured region matched the
-bare still exactly, a mean absolute difference of 0.0 before and after moving the cursor across
-it, so WGC composes the desktop beneath an excluded window where Desktop Duplication shows
-black. That is what the presenter host does: capture the monitor with the lens's own windows
-excluded and crop. An excluded window is invisible to every capture, window capture included,
-so the output capture that the frame rate governor and the screenshots ran on is gone with it;
-the presenter has no governor to feed, and takes its screenshots by reading its swapchain back.
+`WDA_EXCLUDEFROMCAPTURE` removes a window from the capture, but it does not make Desktop
+Duplication show the desktop behind it: nothing composites the occluded region into the
+duplication buffer, so it stays empty there and only transient dirty rects land in it. The
+symptom is a black viewport that accumulates mouse trails and window drag smears. Windows
+Graphics Capture of the monitor does compose it; see Capture under the lens's own windows.
 
 Two caveats when testing this. A static window over another static window does capture
 correctly, because DWM still holds both buffers, so that case does not generalise: a Vulkan
 swapchain presenting sixty times a second means the region beneath it is never redrawn. And
 sample YAVG rather than chroma, because a chroma only check gives a false pass.
 
-### gdigrab or BitBlt of the magnifier window
+### gdigrab or BitBlt of a magnifier window
 
 Blank whether occluded or not. The magnifier composites through DWM, and BitBlt sees only the
 window's own GDI surface, which is empty.
@@ -250,67 +320,65 @@ window's own GDI surface, which is empty.
 ### MagSetImageScalingCallback
 
 Deprecated. It is accepted and returns TRUE, and then the next Mag call deadlocks when driven
-from ctypes, most likely because the callback takes structures by value. Unnecessary anyway,
-since WGC can capture the host window directly.
+from ctypes, most likely because the callback takes structures by value.
 
 ### The newer renodx-dlss add-on (the one with PassCount)
 
 Will not inject into mpv on either `--gpu-api=vulkan` or `d3d11`. Zero
 `DLSS-NR direct: EvaluateFeature` in both cases, both stopping at
 `WARN NVNGX parameter module is not loaded yet: nvngx.dll`, and the Vulkan attempt segfaulted
-mpv. It requires `nvngx.dll` loaded by a real DLSS integration, which mpv cannot provide.
+mpv. It requires `nvngx.dll` loaded by a real DLSS integration, which a capture host cannot
+provide.
 
 ### UDP transport
 
-Resyncs badly after a restart: 353 buffering events, with frames arriving every few seconds. A
-pipe and TCP both measured 60 fps, and nothing restarts mid session, so it buys nothing.
-
-### `--untimed`
-
-Makes mpv present as fast as it can rather than on the stream's timing. Presents then outnumber
-frame arrivals by roughly sixty to one, so Neural Rendering reprocesses its own output until the
-picture collapses. Never add it. See also the rate section below, which is the same failure
-reached through a declared frame rate that is too high.
+Resynced badly after a restart: 353 buffering events, with frames arriving every few seconds. A
+pipe and TCP both measured 60 fps, and nothing restarts mid session, so it bought nothing.
 
 ### An in-app NR health indicator
 
-Comparing the frame sent to mpv against the frame actually displayed separates NR on from NR off
-by only 1.4x: 0.58 off, 0.82 on, and 1.7 on in a different scene, so the scene matters more than
-the setting. Whole frame averaging at 1/8 stride washes out exactly the local detail that Neural
-Rendering changes, so such an indicator raises false alarms. The F6 toggle is unambiguous
+Comparing the frame sent to the host against the frame actually displayed separates NR on from NR
+off by only 1.4x: 0.58 off, 0.82 on, and 1.7 on in a different scene, so the scene matters more
+than the setting. Whole frame averaging at 1/8 stride washes out exactly the local detail that
+Neural Rendering changes, so such an indicator raises false alarms. The F6 toggle is unambiguous
 instead, measuring 12.7/255 on plain text.
 
 ## Gotchas
 
-- WGC cannot find a `WS_EX_TOOLWINDOW` window. The magnifier host must be a plain popup, and it
-  should be captured by `window_hwnd` rather than by name.
 - `windows_capture` dispatches handlers by function `__name__`. They must literally be called
   `on_frame_arrived` and `on_closed`, or it raises ValueError.
-- `frame.frame_buffer` is row padded and non contiguous (stride 2304 for width 560), so it
-  cannot go straight down a pipe. Slice `[:h, :w, :]`, `np.copyto` it into a reused buffer and
-  write that buffer's memoryview. Do not write from the capture callback itself; see the frame
-  rate section.
-- The opening frame of a freshly started capture session is sometimes handed over uninitialised
-  and comes back black, measured at roughly one sample in 14. Skip the first frames and reject
-  an all zero buffer. This affects saved screenshots as well as measurement.
+- `WindowsCapture(...)` takes a `minimum_update_interval` whose default throttles delivery to
+  about 60 frames a second. Setting it to `0` more than doubles delivery on an identical source:
+  59.4 against 124.6.
+- `frame.frame_buffer` is row padded and non contiguous (stride 2304 for width 560). Slice
+  `[:h, :w, :]` and `np.copyto` it into a reused buffer; `ascontiguousarray().tobytes()` costs
+  two full copies, measured at 2.93 ms per 1400x1000 frame against 0.18 ms.
+- The opening frame of a freshly started window capture session is sometimes handed over
+  uninitialised and comes back black, measured at roughly one sample in 14. Skip the first
+  frames and reject an all zero buffer.
 - Passing `HWND_TOPMOST` as Python `-1` through ctypes silently fails on x64, because a 32 bit
-  int goes into a pointer parameter. Use `ctypes.c_void_p(-1)`. mpv resets its own z order
-  anyway, so give it `--ontop` rather than forcing the z order from outside.
-- Stage windows share a title prefix, so find them by **exact** title match. Substring matching
-  returns the wrong stage.
-- `MagSetWindowTransform` is optional, and it deadlocks if called after the scaling callback has
-  been set. Skip it; the identity transform is the default.
-- The lens is deliberately **not** excluded from capture, which is what makes its output
-  measurable with ddagrab. See-through was verified that way: the lens output correlated 0.997
-  with ground truth of the region behind it.
+  int goes into a pointer parameter. Use `ctypes.c_void_p(-1)`.
+- Find a child process's window by its process id rather than its title. A window is visible
+  before its title is set: mpv's showed "mpv" for a second and a half before taking its
+  configured title, with a taskbar button all that time.
+- A window with `WS_EX_TOOLWINDOW` or `WS_EX_NOACTIVATE` has no taskbar button. Set the styles
+  while the window is still hidden, or the button appears while it loads. Windows Graphics
+  Capture cannot find a tool window by its handle, which does not matter for a window nobody
+  captures.
+- `WindowFromPoint` skips click-through windows. To see what is stacked over the lens, walk the
+  z-order with `GetWindow(h, GW_HWNDPREV)`.
+- **Windows puts a maximised or full screen window that becomes the foreground above every topmost
+  window.** Measured with the Photos app maximised over a windowed lens: it sat above the
+  presenter and stayed there, and only a fresh `HWND_TOPMOST` brought the lens back. The lens
+  walks the z-order above the presenter every 200 ms and raises itself when a visible window that
+  is neither its own nor itself topmost overlaps it.
+- `tk_popup` is a native `TrackPopupMenu`. It blocks Tk's main loop until the menu closes, and it
+  dismisses on an outside click or Escape only while its owner is the foreground window, which a
+  title bar that never activates is not. The menu is a Tk window of the lens's own instead, closed
+  by a 30 ms poll of the mouse buttons and Escape through `GetAsyncKeyState`.
 - `RegisterHotKey` posts `WM_HOTKEY` to the registering thread's message queue. It must be
   registered on the same thread that pumps messages, not on a thread whose queue belongs to
   something else such as a tkinter mainloop.
-- **The tkinter mainloop dispatches `WM_PAINT` for the magnifier host.** Blocking it stops the
-  source repainting, and window capture then stops delivering frames, because capture delivers
-  on recomposition. Anything that waits for a frame, the screenshot included, must run on a
-  worker thread and marshal widget updates back with `after(0, ...)`. Waiting for a frame on the
-  mainloop cannot succeed: the frame can only arrive if the wait returns first.
 - On a decorated toplevel, `winfo_x`/`winfo_y` give the **frame** origin while
   `winfo_rootx`/`winfo_rooty` give the **client area**, and `geometry()` positions the frame. The
   decoration thickness is unknown until the window manager has mapped the window, so measuring it
@@ -324,85 +392,86 @@ instead, measuring 12.7/255 on plain text.
   count 60 and then not again. The number of occurrences is not a measure of how much Neural
   Rendering ran.
 - **ReShade rotates its log.** A second instance in the same folder cannot open `ReShade.log`, so
-  it writes `ReShade.log1`, and a third writes `ReShade.log2`. A multi-pass run therefore leaves
-  one log per stage, and `feature=18` appears once per *file* rather than once per run. Anything
-  that archives or inspects logs must cover all of them.
+  it writes `ReShade.log1`, and a third writes `ReShade.log2`. Anything that archives or inspects
+  logs must cover all of them.
 
 ### The taskbar button is the tk root
 
 The title bar is an override redirect window that never activates, so the mouse reaches the
 application under the lens, and that combination has no taskbar button. The hidden tk root
 stands in: titled, fully transparent, and parked minimised. Restoring it from the taskbar fires
-`<Map>`, the handler re-asserts topmost on every stage in chain order and then on the bar, and
-minimises the root again before it can be seen. `raise_chrome` alone would not do, since it
-re-asserts only the bar. Tk toplevels on Windows are not owned by the root, which was measured
-rather than assumed: the bar stayed visible with the root minimised, and restoring fired exactly
-one `<Map>`. Close window on the button arrives as the root's delete request and quits the lens.
+`<Map>`, the handler re-asserts topmost on the presenter and then on the bar, and minimises the
+root again before it can be seen. `raise_chrome` alone would not do, since it re-asserts only the
+bar. Tk toplevels on Windows are not owned by the root, which was measured rather than assumed:
+the bar stayed visible with the root minimised, and restoring fired exactly one `<Map>`. Close
+window on the button arrives as the root's delete request and quits the lens.
 
 ### No console
 
-The launcher starts the lens under pythonw. `sys.stdout` is None there, so at import everything
-printed is redirected to `lens.log` in the log folder, with the previous one first rolled into a
-stamped copy so the archive's pruning covers it. `GetConsoleWindow()` returning zero is what
-turns the messages that used to wait for Enter into dialogs, including a stage that never opened
-its window and an unexpected traceback out of `main()`. A harness driven from a tool with no
-console window sees the same, so any test that reaches a fatal path has to replace
-`messagebox.showerror` first, or it blocks on a dialog nobody will dismiss.
+The installed lens is a windowed program, and the launcher starts the lens under pythonw.
+`sys.stdout` is None there, so at import everything printed is redirected to `lens.log` in the
+log folder, with the previous one first rolled into a stamped copy so the archive's pruning covers
+it. `GetConsoleWindow()` returning zero is what turns the messages that used to wait for Enter into
+dialogs, including a presenter that never opened its window and an unexpected traceback out of
+`main()`. A harness driven from a tool with no console window sees the same, so any test that
+reaches a fatal path has to replace `messagebox.showerror` first, or it blocks on a dialog nobody
+will dismiss.
+
+The presenter catches any unhandled error itself, prints the traceback to its stderr, which the
+lens keeps in `presenter-stderr.log`, and exits: frozen without a console, an unhandled error
+would otherwise stop in a dialog of the bootloader's while the lens waited for a window. From
+source, the lens starts the interpreter's copy with `CREATE_NO_WINDOW`, since `python.exe` would
+otherwise open a console of its own under a lens that has none.
 
 ### Per monitor DPI awareness
 
-A 1400x760 lens on the 5090's secondary monitor produced a 1680x912 chain: ReShade created its
-Neural Rendering resources at 1680x912 and the Feed delivered frames at 1680x912, while
-`GetWindowRect` from inside the lens said 1400x760. The ratio, 1.2, is not a scaling factor,
-it is the ratio of two: 150 percent over 125. The lens was system DPI aware, which keeps the DPI
-the session logged on with and lives in a coordinate space Windows virtualizes against each
-monitor, so a window it placed on a monitor whose scaling differed from that was rescaled by
-Windows on the way, and the lens never saw the real size. The lens is now per monitor DPI
-aware, version 2, so every coordinate it uses is a physical pixel on whichever monitor it is on.
+A 1400x760 lens on the 5090's secondary monitor once produced a 1680x912 picture: ReShade created
+its Neural Rendering resources at 1680x912 and the Feed delivered frames at 1680x912, while
+`GetWindowRect` from inside the lens said 1400x760. The ratio, 1.2, is not a scaling factor, it
+is the ratio of two: 150 percent over 125. A system DPI aware process keeps the DPI the session
+logged on with and lives in a coordinate space Windows virtualizes against each monitor, so a
+window placed on a monitor whose scaling differed from that was rescaled by Windows on the way.
+The lens and the presenter are per monitor DPI aware, version 2, so every coordinate either uses
+is a physical pixel on whichever monitor it is on.
 
 Verified on the 4070 with the primary monitor switched to 125 percent while the session had
-logged on at 100: the lens asked for 1400x760, a per monitor aware probe measured the stage
+logged on at 100: the lens asked for 1400x760, a per monitor aware probe measured the picture's
 window at 1400x760 physical, ReShade created its resources at 1400x760, and the chrome measured
-1404x796 with both windows reporting 120 DPI, so nothing is bitmap stretched either. The same
-test before the change also agreed on the primary, which is what separated "follows the
-monitor" from "follows the geometry" and pointed at the secondary monitor's scaling context.
-Fonts follow the monitor's DPI now; the bar is 34 pixels and holds a 10 point label up to 200
-percent.
+1404x796 with both windows reporting 120 DPI, so nothing is bitmap stretched either. Fonts follow
+the monitor's DPI; the bar is 34 pixels and holds a 10 point label up to 200 percent.
 
 ### Fullscreen
 
-Experimental, and the least tested part of the lens. It has had far less exercise than the
-windowed path, and is shipped to be tried and reported on rather than relied on.
+- **A layered window larger than the screen comes up blank.** The windowed chrome is the picture
+  plus a title bar plus a border, so over a whole monitor it was 3844x2194 on a 3840x2160
+  display. It existed, was visible and topmost, and drew nothing. Fullscreen the chrome is
+  therefore just the bar, laid over the top edge of the picture.
+- **A borderless window that covers a monitor exactly is taken over by the compositor's
+  fullscreen path**, and the title bar on top of it stops being drawn. The picture is two pixels
+  short of the monitor's height.
+- **The picture's window can climb above the chrome.** The lens walks the z-order above its
+  chrome on the 200 ms timer and raises the chrome again whenever the presenter is found there.
+  Menus and dialogs are not the presenter, so they stay above.
+- **The ReShade overlay keeps its tabs along the top edge, under the bar.** In tweak mode the bar
+  becomes an 840 pixel strip in the bottom right corner and returns on Done. Not the whole bottom
+  edge: the overlay reaches nearly to the bottom of the monitor, with its Reload button spanning
+  its width there, and it is anchored top left, so the far corner is clear. At 780 pixels Tk's
+  packer dropped the minus button. The picture's origin is fixed when the lens starts rather than
+  derived from the bar, which moves.
 
-Two things bit when the lens first covered a whole monitor:
-
-- **A layered window larger than the screen comes up blank.** The windowed chrome is the
-  picture plus a title bar plus a border, so over a whole monitor it was 3844x2194 on a
-  3840x2160 display. It existed, was visible and topmost, and drew nothing. Fullscreen the
-  chrome is therefore just the bar, 3840x34, laid over the top edge of the picture.
-- **mpv climbs above the chrome.** With the chrome raised after the stages were spawned, the
-  stage still ended up above it a few seconds later, so the bar could not be seen or clicked.
-  The lens now walks the z-order above its chrome on the 200 ms filter timer and raises the
-  chrome again whenever a stage is found there. Menus and dialogs are not stages, so they
-  stay above.
+The fullscreen lens keeps its pass count in `lens-state-fullscreen.txt`, because the windowed
+state file is what the way back restores.
 
 ### The A/B divider
 
-The divider is a thin topmost window of this process, so the magnifier already excludes it,
-and every stage is clipped with `SetWindowRgn` to the left of it. Two things about dragging it:
+The divider is a thin topmost window of this process, excluded from capture like the rest, and
+the presenter is clipped with `SetWindowRgn` to the left of it. Two things about dragging it:
 
-- **Tk ignores `geometry()` on a window while the mouse button is held on it.** The split
-  value followed the drag and the clip moved, but the line itself stayed where it was until
-  release, which reads as "the slider is locked". The divider is moved with `SetWindowPos`
-  instead, like the stages.
+- **Tk ignores `geometry()` on a window while the mouse button is held on it.** The split value
+  followed the drag and the clip moved, but the line itself stayed where it was until release,
+  which reads as "the slider is locked". The divider is moved with `SetWindowPos` instead.
 - The drag follows the mouse from a thread polling the button and the cursor rather than Tk's
-  motion events, so it keeps working after the pointer leaves the fourteen pixel window. The
-  governor is told to ignore its counters for a few seconds around the toggle, because the
-  clip shows up as black in the visible stage's capture.
-
-The fullscreen chain keeps its pass count and best held rate in `lens-state-fullscreen.txt`,
-because the windowed state file is what the way back restores, and a rate that suits a
-1400x1000 lens is far too high for eight million pixels.
+  motion events, so it keeps working after the pointer leaves the fourteen pixel window.
 
 ## Measurement pitfalls
 
@@ -410,426 +479,123 @@ because the windowed state file is what the way back restores, and a rate that s
   element being in frame; the static half of the same image gave the real figure. Check that the
   source is unchanged across samples before trusting any difference in the output.
 - **Establish a noise floor** by capturing the same state twice before trusting a difference.
-- **Do not infer NR state from the F6 toggle log.** The focus dance the lens used to deliver keys
-  sometimes failed to register a press, which inverts the inference. ReShade's own keys, Home
-  for the overlay and F5 for its screenshot, are now posted to each stage's message queue
-  (`WM_KEYDOWN` and `WM_KEYUP` to the window), which ReShade reads without the window having
-  focus and which does not drop. **F6 is different.** It belongs to the add-on, which reads it
-  through `GetAsyncKeyState`, the physical keyboard. Posted to the stage it did nothing in three
-  runs, with or without focus, while one genuine keystroke with no focus at all toggled it,
-  measured as the in-to-out difference over the same still going from 1.20 to 2.22. So the menu
-  sends F6 as a real keystroke with the stage briefly focused, to shield whatever is under the
-  lens from it, and the lens polls the same key the same way to track the state, seeded from
-  `NeuralUplift` in `ReShade.ini`, which the add-on honours at start and writes only at exit. A
-  toggle made with the mouse inside the overlay involves no key and is not seen until the next
-  launch. The advice stands anyway: measure absolutely, capture the region with the lens absent,
-  then with the lens over it. Passthrough means off, a large difference means on.
+- **Compare the add-on's `active settings` lines** in `ReShade.log` before comparing effects
+  across runs. A setting changed in the overlay between two runs moves the effect by more than
+  most code changes; see Effect parity above.
+- **Keep the GPU to the lens.** Another process taking the GPU lowers what the lens presents and
+  changes the delay, and it does so unevenly.
+- **F6 belongs to the add-on, which reads it through `GetAsyncKeyState`**, the physical keyboard.
+  Posted to the window it did nothing in three runs, with or without focus, while one genuine
+  keystroke with no focus at all toggled it, measured as the in-to-out difference over the same
+  still going from 1.20 to 2.22. So the menu sends F6 as a real keystroke with the presenter
+  briefly focused, to shield whatever is under the lens from it, and the lens polls the same key
+  the same way to track the state, seeded from `NeuralUplift` in `ReShade.ini`. ReShade's own
+  keys, Home for the overlay and F5 for its screenshot, are posted to the presenter's message
+  queue and held for longer than a frame, since ReShade notices a key only when it polls, once per
+  present. Measure absolutely anyway: capture the region with the lens absent, then with the lens
+  over it.
+- F6 is persisted by the add-on as `NeuralUplift=0` in ReShade.ini, so one toggle turns Neural
+  Rendering off for every later launch.
 - Neural Rendering's strength scales with local detail, about 4.5x stronger on the most detailed
   tenth of an image than on the flattest half. Flat content changing very little is expected.
 - **Never assert an absolute difference for Neural Rendering.** The strength depends on what is
   under the lens, so a threshold calibrated on detailed video fails on flat interface content,
-  and it fails by looking exactly like a broken feature. Assert the shape instead, which is
-  content independent: the change concentrates in detailed areas. One pair over flat interface
-  measured 1.29 overall, which looks like nothing against the 7.71 reference, yet 6.21 on the
-  most detailed tenth against 0.654 on the flattest half, a ratio of 9.5x. Round trip loss with
-  NR off is 0.24 spread evenly, so no such ratio can come from the capture path. Ratios of 4.8x
-  and 5.6x have been measured on other content.
-- **The detail ratio is itself content dependent, so calling it content independent above is
-  only half true.** It works where the image has genuinely flat areas to contrast against. Dense
-  photographic content has none: a still frame of film footage measured 2.24x, 2.51x and 2.67x
-  across three captures of a bit for bit identical source, with the flattest half of the image
-  still carrying a gradient of 3.0 and only 0.1 to 1.0 percent of pixels unchanged. There is no
-  flat half, so the ratio compresses while Neural Rendering works normally. Gate the assertion
-  on the flattest half actually being flat, and where it is not, assert only that the effect
-  sits far above the 0.24 round trip floor.
+  and it fails by looking exactly like a broken feature. Assert the shape instead: the change
+  concentrates in detailed areas. One pair over flat interface measured 1.29 overall, yet 6.21
+  on the most detailed tenth against 0.654 on the flattest half, a ratio of 9.5x.
+- **The detail ratio is itself content dependent.** It works where the image has genuinely flat
+  areas to contrast against. Dense photographic content has none: a still frame of film footage
+  measured 2.24x, 2.51x and 2.67x across three captures of a bit for bit identical source. Gate
+  the assertion on the flattest half actually being flat, and where it is not, assert only that
+  the effect sits well above the capture's own noise.
 - **Check that the source held still before trusting any before and after pair.** Saving two
-  captures and comparing them costs nothing and settles it: a suspected moving source turned out
-  to be byte identical, same sha256 across 28 minutes, which killed a plausible explanation
-  before it was acted on.
+  captures and comparing them costs nothing and settles it.
 - **Drive the real application rather than a mock.** `neural_lens.py` guards its entry point with
   `if __name__ == "__main__"`, so a harness can import it, wrap `Lens.__init__` to obtain the
   running instance, and schedule real menu actions on the real mainloop.
 
-## Where the frame rate goes
-
-Nothing here is GPU bound; the GPU sits near 30 percent at any pass count.
-
-The largest single factor is a library default. `windows_capture`'s `WindowsCapture(...)` takes
-a `minimum_update_interval` parameter whose default throttles delivery to roughly 60 frames per
-second. Setting it to `0` more than doubles delivery on an identical source:
-
-```
-window capture, defaults                    59.4 fps
-window capture, minimum_update_interval=0  124.6 fps
-window capture, dirty_region True / False   59.0 / 58.6   (irrelevant)
-```
-
-End to end in the lens at 1400x1000, before and after removing the throttle:
-
-```
-            before   after     GPU after
-1 pass        58.4   111.4        32%
-2 passes      49.8    84.7        57%
-3 passes      44.3    89.9        80%
-```
-
-The fps counter increments in stage 1's capture callback, so at multi-pass it reports capture
-rate rather than what the final stage presents, which is why three passes can appear faster than
-two. Treat the multi-pass figures as input side only.
-
-Two further factors, both in how the lens drives itself:
-
-1. **tkinter's `after()` is too coarse to pace repaints.** An `after(16)` tick lands nearer 20 ms,
-   which caps the lens at 47 to 52 fps. A thread pacing `InvalidateRect` fixes it. Calling
-   `InvalidateRect` from another thread only posts `WM_PAINT`; tkinter's mainloop dispatches it,
-   because the host window belongs to that thread.
-2. **The multi-megabyte `stdin.write` into mpv blocks the WGC delivery thread.** Removing the
-   write entirely measures 58.7 fps against 50.5 with it inline. A writer thread with a one slot
-   handoff absorbs the stall. The slot is overwritten rather than queued, because for a live view
-   only the newest frame is worth having.
-
-### The rate declared to mpv must never exceed what arrives
-
-`--demuxer-rawvideo-fps` tells mpv how fast the stream is, and mpv presents at that rate. Declare
-more than the chain delivers and mpv presents without a new frame to draw, so Neural Rendering
-re-runs over its own previous output. The picture crushes toward black over a few seconds, a
-fresh frame eventually forces a reset, and it repeats. This is the same failure as `--untimed`.
-
-Throughput divides roughly by the number of stages, because every pass is another full capture
-and present. Samples out of 14 that collapsed, at 1314x1332 on a 120 Hz display:
-
-```
-            1 stage   2 stages   3 stages   4 stages
-120 fps       0/14       8/14       4/14
- 90 fps                  0/14
- 60 fps                  0/14       0/14       4/14
- 30 fps                  0/14
-```
-
-Dividing alone is not enough. Declaring exactly what the chain delivers is already broken,
-because ordinary jitter then lands some presents with no new frame. That does not collapse the
-picture, it shimmers, which is why it survived the collapse testing above. Measured as frame to
-frame change on a static source, where the floor is 0.146 out of 255:
-
-```
-one stage, about 119 frames a second arriving
-    120 declared   1.637       0 percent headroom
-    110 declared   0.220       5 percent
-    100 declared   0.150      16 percent
-     90 declared   0.148      24 percent
-```
-
-So `_fps_for` declares `max(24, (BASE_FPS * 5 // 6) // stages)`, giving 100, 50, 33 and 25 on a
-120 Hz display, with 24 as the floor. Verified at every pass count: 0.150, 0.139, 0.135 and 0.133, against 1.637 at one stage
-and 0.225 at two under the previous rule.
-
-Stages after the first are fed by the stage before them, which presents at this same rate, so
-they sit at parity by construction and dividing cannot change that. What makes parity safe is a
-longer frame interval, which is why two stages at 60 measured 0.225 while three at 40 and four
-at 30 sat at the floor: 16.7 ms leaves room for jitter to slip past a present, 25 ms does not.
-
-This assumes the chain delivers close to the display rate. That holds at 120 Hz and is untested
-on a faster panel, where the ceiling itself would be too high.
-
-Two consequences:
-
-- **The rate is fixed when mpv spawns.** Changing the pass count must respawn every stage rather
-  than append one on the end, since leaving an existing stage at its old rate reproduces the
-  collapse. `set_passes` rebuilds the whole chain.
-- **Rebuilding needs a per stage stop flag.** The writer thread exits only on `lens.closing` or a
-  failed write, so tearing a stage down while the lens stays open would strand it on a condition
-  nothing will signal again.
-
-Note that four stages at 60 fps collapses, so a fixed rate that works at two and three stages is
-not sufficient at four.
-
-### The fixed rule does not survive another GPU, and what replaced it
-
-The rule above was calibrated on an RTX 5090 at 1400x1000. Measured on an RTX 4070 SUPER with
-driver 616.56, capturing the visible stage and taking the mean absolute frame to frame change
-out of 255 on a still, dense source (floors: 0.03 with Neural Rendering off, about 0.65 with it
-on at one pass, about 0.36 at two or three passes). "Spikes" are frames above 1.0:
-
-```
-lens        passes  declared     presented   result
-1400x1000   1       100 (rule)   100         at floor, 17 spikes in 995 frames
-1400x1000   1       35 to 60     = declared  clean
-1400x1000   2        50 (rule)    40         shimmer, 55 spikes, brightness 112 to 116
-1400x1000   2        24 or 32    = declared  clean
-1400x1000   3        33 (rule)    29         shimmer, 24 spikes
-1400x1000   3        24           24         clean
-2000x1400   1       100 (rule)    27         collapse, mean 14, brightness 47 to 74
-2000x1400   1        24           24         clean
-3840x2126   1       100 (rule)    10         a slideshow, delivery into stage 1 fell to 61
-3840x2126   1        24           24         held, delivery into stage 1 only 30
-```
-
-Capture into stage 1 stays at 120 whenever the GPU is not overloaded, so stage 1's counter
-cannot see any of it. Capacity also moves at runtime: the same one pass lens went from holding
-100 to holding about 60 once a video was playing beside it. On driver 610.47 the one pass rule
-collapsed outright in 3 of 5 runs.
-
-So the rate is governed instead. Every stage is declared at the display rate and presents at a
-playback speed set over mpv's IPC pipe, which changes live. Each stage after the first runs at
-five sixths of the stage feeding it, because equal rates at two passes were clean at 35 and
-shimmered at 37. Once a second the governor reads:
-
-- the frames the visible stage presents, from a counting only capture of its window, against
-  the rate it was asked for. Presenting 87 of 90 is not a shortfall: the margin is 8 percent of
-  the target, because 3 percent was tight enough that near perfect delivery dropped a lens from
-  90 to 58. A mild shortfall backs off to 95 percent of what was presented, which is by
-  definition achievable; a severe one, more than a quarter short, backs off to two thirds,
-  since the presented figure is then not to be trusted either.
-- the mean brightness entering stage 1 against the mean brightness shown. Neural Rendering moves
-  it by two or three percent; a collapse moves it by half or more, and can do so while every
-  frame is presented on time (one pass at 90 presented 90 and showed 153 for 115). Two seconds
-  of that halves the rate.
-- while the source is still (its own sampled change under 0.5), the frame to frame change of
-  the output. A frame counts as a jump when it differs from the one before by more than a
-  limit that scales with the gap between them: 1.5 out of 255 at 78 fps, where it was
-  calibrated, so 7.8 at 15 fps and 1.3 at 90. A fixed 1.5 fired more readily the lower the
-  rate already was, which is backwards, and trapped a lens at 12 on a chain that went on to
-  hold 90. More than a quarter of frames jumping, or a median above 1.5, marks the level as
-  failed, but only when the reading repeats a second later. The broken calibration had 47
-  percent of frames jumping and a clean one none, so a quarter sits well inside that; 3
-  percent was close enough to nothing that ordinary content crossed it, 9 frames in 275.
-  Another process taking the GPU spiked the median to 1.51 and 1.77 for four seconds and then
-  settled to between 0.12 and 0.46 while it was still running, so a single reading is an event
-  rather than a level. Just over the knee the shimmer is continuous rather than spiky: one
-  pass at 83 on a loaded 4070 changed by about 3 every frame.
-
-A failed level falls back to the last level a probe departed from, since a level near the knee
-can take fifteen seconds to show its shimmer and cannot be trusted sooner. Probes into new
-ground go halfway to the lowest failed level, only while the source is still, and stop when the
-step is under a twentieth of the rate.
-
-Ground the chain has already held is different. The highest rate it held is remembered, and
-after a knock down it is retaken in halving steps on a two sample window with half a second of
-settling, about three seconds a step, moving content included, because the level is known to
-work and only a chain that has since changed could refuse it. The recorded limit does not apply
-on the way back: a knock down records the limit at the floor it fell to, and gating the return
-behind it parked the lens at that floor until the limit expired, 30 seconds on the 5090 and 58
-on the 4070, since the wait is the retest interval, whatever it has grown to. A limit the chain
-is then running at or above is dropped, or it clamps the cap under the running rate and throws
-the lens back to the floor, measured as 35 to 12 every 17 seconds. A retake that fails lowers
-the remembered level to just under the rate that failed, so a level the GPU can no longer carry
-is not chased. Measured on the 4070 at 2936x1530, one pass over a still: settled at 37, knocked
-to 12 for 15 seconds, retook 37 in 16 seconds after release in five steps; the same run took 94
-seconds before, and 64 on the 5090.
-
-The lowest failed level expires. It clears once the output has been clean for twenty seconds and
-the level is at least thirty seconds old, and the wait before the next clearing doubles to a ten
-minute cap, so a real limit is re-tested less and less often while a stale one is gone inside a
-minute. Without this, one load event capped the chain for the rest of the session: a session
-that held 94 for 165 seconds cascaded to 34 and never exceeded 39 again, and a deliberate
-reproduction converged to 77 of a possible 99. With expiry, a 5090 at one pass under 45 seconds
-of GPU load went 100, down to 62, back to 99 about thirty seconds after the load stopped. A
-synthetic ceiling at 70, imposed with the input left intact, converged to exactly 70 and
-returned to 99 once lifted.
-
-Telling a passing load apart from a real limit by watching the rate frames arrive into stage 1
-was tried and dropped. Arrival holds at the pump rate while the chain alone collapses and falls
-when another process takes the GPU, which separates the two cleanly at one pass: 120 alone, 60
-while sharing, 120 again within seconds. At four passes the lens is itself the heavy process.
-Arrival averaged 98 against a line of 114, so every shortfall looked like somebody else's load,
-no limit was ever recorded, and the rate hunted over a 19 fps range with runaways and output
-floors of 13.8 and 82.7. With the rule removed and expiry alone, the same test settles to a
-4 fps spread at a visible 41.7.
-
-The sixth field of the state file is the highest rate the chain actually held, not the rate it
-was running when it closed. Saving the instantaneous rate meant a lens closed during a load
-event reopened at the depressed rate: two runs that each held 99 for over two minutes saved 97
-and 91.
-
-The brightness runaway test judges the output against the range the input has occupied over the
-last second and a half, not its latest value. The output lags the input by the pipeline delay
-plus up to a few frames of sampling, so on content whose brightness moves the two describe
-different moments and disagree while nothing is wrong. Measured on a scrolling source whose
-field cross-fades between dark and bright every couple of seconds, the way a video with scene
-changes does: a one pass chain that had just held 100 fps pinned went 100, 50, 25, 12 in 27
-seconds on false runaways and stayed at 12 for the rest of the run, which is what the user's own
-log showed over a video. With the range test the same source held 100 for the full 90 seconds
-with no verdict at all. On a still the range is a point, so the test is unchanged there: four
-passes pushed past capacity over a still still draws runaway verdicts. The stated limit is that
-over moving content a crush toward black on a scene that already reaches near black lands inside
-the input's own range and is not caught; a crush toward white over a scene that never reached it
-still is, and the presented shortfall test is unaffected. That is no worse than before, when the
-test fired constantly on motion and so was useless there.
-
-At four passes the governor hunted over a detailed still, for two separate reasons on two
-cards, and the fixes below settled the 4070 but not the 5090. On the 5090 the pinned measurement showed it was not capacity: stage 1 pinned at 43, 60,
-72 and 85, which is visible 25 to 49, left the picture intact at every one, brightness 48 in and
-48 out, floor 0.19, with only a mild shortfall at the top, while the runaway verdicts in the
-governed run all fired within seconds of a probe step. A speed change at four passes ripples
-through four stages and four buffers, and the brightness excursion it causes outlasted the 1.5
-second settle window, so the governor read a transition as a collapse and backed off to half.
-The settle window now grows with the pass count, half as long again per stage after the first,
-so 3.75 seconds at four passes. On the 4070 there were no runaways at all and the hunt was 35 and
-37 alternating every ten seconds: a retake of the remembered level failed by a hair, correctly
-lowered that level by one, and the next retake step of two overshot straight back to the level
-that had just failed. A retake now never goes past the level it is retaking. Measured on the
-4070 at four passes over the still: rate 35 to 39 over the last 90 seconds, a spread of 4, where
-it had been 32 to 37 on a ten second cycle. What moves is the recorded limit being re-tested on
-its doubling interval, a brief shortfall each time that falls straight back. Measured again on
-the 5090 after the settle window change, four passes over the same still hunted across a 40 fps
-spread in 90 seconds, so three is the default ceiling and four is experimental.
-
-Measurement traps that cost time here: F6 is persisted by the add-on as `NeuralUplift=0` in
-ReShade.ini, so one toggle turns Neural Rendering off for every later launch; a full frame
-difference inside the capture callback costs 10 ms at 1400x1000 and caps the capture near 40,
-which looks exactly like a chain limit; the ReShade frametime overlay in the corner of the stage
-reports mpv's own present cadence and is an independent witness.
-
-### Where the delay goes
-
-Measured with a separate process flipping a window between black and white under the lens, and
-two Windows Graphics Capture sessions in the harness, one on the flipper and one on the visible
-stage, each timestamping the moment its mean crosses mid grey. Both pass through the compositor
-once, so that cancels and the difference is the lens pipeline. One pass, 1400x1000, the rate
-pinned at 99, 21 flips per run:
-
-```
-mpv readahead                                    median   p90    presented
-8 frames, the old default                        136 ms   147    98.9 fps
-2 frames                                          78 ms    91    99.0
-2 frames + --video-latency-hacks=yes              68 ms    76    98.9
-  + --vulkan-swap-mode=mailbox                    69 ms    75    98.8
-1 frame + hacks + mailbox + --swapchain-depth=1   63 ms    69    98.9
-```
-
-The readahead is the cost. The lens plays slower than frames arrive, so the buffer is always
-full and every frame in it is delay, ten milliseconds each at 99 fps and more at lower rates.
-Two frames plus the latency hacks is what ships. Mailbox changed nothing. One frame gains five
-milliseconds but leaves no slack for a late frame, which is what makes the picture shimmer, so
-two is the floor. The flipper is featureless and can show stutter but not shimmer, so the two
-frame buffer was checked separately over a detailed still: an output floor of 0.341 against
-0.343 with eight frames, zero jumps, and 100 fps held in both.
-
-**The title bar's delay meter** logs every frame sent to a stage with its number in mpv's
-stream and the capture's own timestamp (`frame.timespan`, 100 ns units on perf_counter's
-clock: measured, delivery lands 0.5 ms after it), asks mpv for `time-pos` four times a
-second, and takes now minus the capture time of the frame that names. Against the flipper on
-the same rig, the flipper made topmost so that an editor in that corner cannot sit above it,
-which had left the output capture without a single flip:
-
-```
-                         flip to flip   meter, measured part   gap
-99 fps, one pass              70 ms             34 ms          36
-33 fps, one pass             183 ms            137 ms          46
-```
-
-The gap is what the meter cannot see, the magnifier's repaint and the host's composition
-before the capture, and the present, composition and scanout after mpv names the frame, and
-it grows with the frame interval because mpv names a frame before the display shows it. Three
-and a half refreshes plus half a frame at the visible rate, a refresh more per extra stage,
-fits both rows, 70 and 181, so the bar shows the measured part plus that allowance. On a re-run
-it read 67 against a flip measurement of 72.
-
-### What does not cause the 60 fps ceiling
-
-Each of these was measured and ruled out, so they are not worth re-investigating:
-
-- **The Magnification API.** Paced properly it delivers the same rate as an ordinary window, and
-  the magnified region's size makes no difference (1.4 Mpx and 0.1 Mpx both measure 59.0). A
-  reading of 51.6 fps for it is an artifact of a harness pacing its own pump loop with
-  `time.sleep(0.02)`, which is 50 Hz.
-- **The compositor.** `DwmFlush` returned about 148 times a second when measured, against a
-  120 Hz display, so composition is not the constraint.
-- **The test source.** A tkinter source issues about 924 redraws a second.
-- **Invalidation frequency.** Locking invalidation to composition with `DwmFlush` and free
-  running at 240 Hz both produce 59, because the throttle is downstream of invalidation.
-
-Measured as noise and not worth redoing: replacing a double per frame copy (2.93 ms to 0.18 ms),
-removing a redundant `MagSetWindowSource` from every tick, and raising Windows timer resolution
-with `timeBeginPeriod(1)`. All three are kept because they are strictly cheaper, but none moved
-the frame rate.
-
-### Benchmark harness requirements
-
-- A magnifier host needs a **real Win32 message pump on its owning thread**, or `WM_PAINT` is
-  never processed, the magnifier never redraws, and capture delivers almost nothing. A rig that
-  only calls `time.sleep()` in the main thread measures zero. Run a proper `PeekMessage` and
-  `DispatchMessage` loop, or instrument the real lens.
-- Window capture delivers frames when a window is **recomposited**, so a static source with no
-  forced invalidation produces almost no frames. That is not a failure of the capture path.
-
 ## The installer and the stack setup
 
-The lens is frozen with PyInstaller and wrapped by Inno Setup into a per user installer,
-`PrivilegesRequired=lowest`, into a folder the user chooses, `%LOCALAPPDATA%\Programs\NeuralLens`
-by default. The installer holds the lens and nothing else. Setup fetches the neural stack during
-the installation, ticked by default, and `neural_stack.py` runs the same fetch later from a Start
-Menu entry or the command line, into `stack` in that same folder, with the Vulkan layer in
-`ReShade` beside it and the downloads in `downloads`
-until the self test passes. The lens keeps its state, logs and screenshots in `data` there
-too. So an install is one folder plus one registry value naming the layer, and the uninstaller
-runs the exe's own `--uninstall-stack` for the value and deletes the folder. A DLL the user
-points the setup at is copied in after its hash check and only the copy is recorded, so an
-uninstall never reaches the original.
+The lens is frozen with PyInstaller from `installer\NeuralLens.spec` into two programs sharing one
+folder, `NeuralLens.exe` and `lens-presenter.exe`, and wrapped by Inno Setup into a per user
+installer, `PrivilegesRequired=lowest`, into a folder the user chooses,
+`%LOCALAPPDATA%\Programs\NeuralLens` by default. The installer holds the lens and nothing else.
+Setup fetches the neural stack during the installation, ticked by default, and `neural_stack.py`
+runs the same fetch later from a Start Menu entry or the command line, into the install folder
+itself, with the Vulkan layer in `ReShade` beside it and the downloads in `downloads` until the
+self test passes. The lens keeps its state, logs and screenshots in `data` there too. So an
+install is one folder plus one registry value naming the layer, and the uninstaller runs the
+exe's own `--uninstall-stack` for the value and deletes the folder. A DLL the user points the
+setup at is copied in after its hash check and only the copy is recorded, so an uninstall never
+reaches the original.
 
-Nothing is bundled, and licences force that rather than taste. mpv's `Copyright` file makes
-the build GPL, since it carries the `direct3d` output; bundling would oblige us to provide
-source for a binary we did not build. A new install gets ReshadeMotionEstimation,
-CC BY-NC 4.0, provider 0 in `DLSS5_Feed.fx`, chosen by the measurement below, with VORT, MIT,
-provider 2 with `V_MV_MODE=1`, as the alternative. NVIDIA's runtimes come from
-the RHI project's manifest, which carries no hashes, so the hashes live in `neural_stack.py`
-and a download matching none is refused. ReShade's DLL comes straight out of its setup exe,
-which is a zip, with nothing of ReShade's executed.
+Nothing of the stack is bundled, and licences force that rather than taste: NVIDIA's runtimes are
+NVIDIA's, the RenoDX add-on has no published licence, and the default motion vector estimator is
+CC BY-NC 4.0. NVIDIA's runtimes come from the RHI project's manifest, which carries no hashes, so
+the hashes live in `neural_stack.py` and a download matching none is refused; the add-on and the
+Cost Scaler are pinned releases whose archives and files are checked the same way. ReShade's DLL
+comes straight out of its setup exe, which is a zip, with nothing of ReShade's executed.
 
-Three facts measured while building it:
+Facts measured while building it:
 
-- **The RHI manifest's `310.8.SF-v2` build is not the one people already hold.** Its zip
+- **The RHI manifest's `310.8.SF-v2` build is not the one many people already hold.** Its zip
   unpacks to a file of 165,830,144 bytes, version 310.8.SF.0, unsigned, hash
   6EB209E7...; the earlier community build is 165,840,496 bytes, version 310.8.0.0, signed by
-  NVIDIA with a hash mismatch, hash 8270B350.... Both run Neural Rendering on an RTX 4070 SUPER,
-  so both are accepted.
-- **A per user Vulkan layer coexists with a machine wide ReShade only under a different
-  name.** The loader loads one implicit layer per name, HKLM before HKCU, so a per user copy
-  named `VK_LAYER_reshade` is skipped wherever a machine wide one exists. The layer is
-  registered as `VK_LAYER_reshade_neural_lens`, with its own `ReShadeApps.ini` listing only
-  the stack's mpv, so each ReShade hooks only what it lists. Verified on a machine with the
-  machine wide layer present: the self test attached, loaded both add-ons and evaluated.
+  NVIDIA with a hash mismatch, hash 8270B350.... Both run Neural Rendering, so both are accepted.
+- **A per user Vulkan layer coexists with a machine wide ReShade only under a different name.**
+  The loader loads one implicit layer per name, HKLM before HKCU, so a per user copy named
+  `VK_LAYER_reshade` is skipped wherever a machine wide one exists. The layer is registered as
+  `VK_LAYER_reshade_neural_lens`, with its own `ReShadeApps.ini` listing only the presenter, so
+  each ReShade hooks only what it lists. Verified on a machine with the machine wide layer
+  present: the self test attached, loaded both add-ons and evaluated. The same rule means two
+  installs of the lens on one account share one layer, whichever was registered first.
 - **`ReShadeApps.ini` is an allow list**, so the per user layer is loaded into every Vulkan
   process and leaves each one alone unless it is listed.
 
 The card is checked by compute capability from the driver's own `nvidia-smi`, 7.5 or higher
-meaning the RTX 20 series and newer, rather than by marketing names; one model serves every
-card that passes. The self test feeds this mpv raw frames on stdin, as the lens does, for nine
-seconds and reads `ReShade.log` for `feature 18 created` and `evaluation succeeded`;
-`0xbad00001` is reported as the model refusing the card.
+meaning the RTX 20 series and newer, rather than by marketing names; one model serves every card
+that passes. The self test runs the presenter on its pattern source in a 960x540 window at the top
+left for nine seconds, and reads `ReShade.log` for `feature 18 created` and `evaluation succeeded`,
+the Feed's log for its motion vector provider, and the Cost Scaler's log for its load of the real
+model. `0xbad00001` is reported as the model refusing the card.
 
-`install-record.json` in the stack folder lists every file written and the registry value
-set, and `--uninstall-stack` removes that, plus any layer value pointing inside the install that
-the record did not know about. The Inno uninstaller calls it without asking and then deletes the
-whole install folder, so uninstalling removes the download too.
+`install-record.json` lists every file written and the registry value set, and
+`--uninstall-stack` removes that, plus any layer value pointing inside the install that the record
+did not know about. The Inno uninstaller calls it without asking and then deletes the whole
+install folder.
 
-Four things the first run offer did that the Start Menu entry did not, found by driving the
-offer end to end against the built exe:
+**Upgrading from 0.1.0.** A record whose components include mpv marks a stack 0.1.0 assembled,
+in `stack` inside the install, or in the same stack folder from source. The setup moves NVIDIA's
+two runtimes to where it keeps them when their hashes check out, keeps ReShade's DLL when the
+version matches, removes the rest by that record, the layer registration and the allow list that
+named mpv included, and, installed, removes what is left of `stack`.
+
+Four things the lens's own offer of the setup did that the Start Menu entry did not, found by
+driving the offer end to end against the built exe:
 
 - **The setup window was blank for five seconds.** The first console program started while a
   shown topmost Tk window is up took 5.2 seconds under pythonw and the exe, 0.1 seconds with
   the window hidden or from a console, measured with `nvidia-smi` alone. Console children now
   run with `CREATE_NO_WINDOW` and a null stdin, and the card is identified before the window
   exists: laid out in 0.6 seconds from the exe.
-- **The install folder showed empty, and typing into it changed nothing.** At the offer that
-  follows a found but bare mpv, the lens's own Tk root already exists and is tkinter's default
-  root, so a `StringVar()` without a master lived in that interpreter while the entries lived
-  in the setup window's. Every variable in the wizard is now made on the window's own Tk. The
-  Start Menu entry, which has one Tk, never showed it.
+- **The install folder showed empty, and typing into it changed nothing.** At the offer, the
+  lens's own Tk root already exists and is tkinter's default root, so a `StringVar()` without a
+  master lived in that interpreter while the entries lived in the setup window's. Every variable
+  in the wizard is made on the window's own Tk.
 - **Set it up failed with "main thread is not in main loop".** The install thread read the
   fields with `.get()`, which Tk allows from another thread only while the main thread is in
   `mainloop`; at the offer it is in `wait_window`. The fields are read on the main thread when
   the button is pressed and the thread gets strings.
-- **A relaunch after the setup found the bare mpv again.** The relaunch reused the arguments
-  it was started with, so an `--mpv-dir` or ini `mpv_dir` that led to the offer was found
-  first and the offer came back. The wizard now returns the folder it installed into and the
-  relaunch names it first.
+- **A relaunch after the setup found the incomplete folder again.** The relaunch reused the
+  arguments it was started with, so a folder named on the command line or in the ini that led to
+  the offer was found first and the offer came back. The wizard returns the folder it installed
+  into and the relaunch names it first.
 
 ### VORT's includes, and the measure that agrees with the eye
 
 The self test passed with VORT's shader failing to compile, because a still needs no motion
 vectors: four of its includes were missing from a hand picked list, the Feed logged "no known
-VORT shader is installed: motion vectors will be zero", and nothing else said so. The setup now
+VORT shader is installed: motion vectors will be zero", and nothing else said so. The setup
 fetches VORT's whole include folder and its blue noise texture, and the self test reads the
 Feed's provider line and fails on "none".
 
@@ -840,8 +606,8 @@ the share of pixels between 40 and 160 out of 255 on a black on white page, wher
 bimodal and a ghost adds mid greys. VORT's own options (its rest mode is for engine vectors)
 and the Feed's validation values did not change its result.
 
-Every provider the Feed lists was put through the same page at three scroll speeds,
-plus a control with no provider enabled at all, which the Feed answers with zero vectors:
+Every provider the Feed lists was put through the same page at three scroll speeds, plus a
+control with no provider enabled at all, which the Feed answers with zero vectors:
 
 ```
                                                     slow    reading   fast    licence
@@ -864,8 +630,3 @@ different case or an older build. VORT is fetched as well and can be chosen inst
 measured best of all, but its licence requires its author's explicit permission to use it as
 part of another project, so it is not fetched. qUINT is all rights reserved and no longer ships
 a motion shader.
-
-The washed out frames seen in the first, governed run over motion at 85 fps were the rate, not
-the provider: at a fixed 30 no stack showed them, and the brightness of that run sat 8 percent
-high, inside the runaway margin. A washout over moving content at a rate the chain cannot
-carry is not yet caught.

@@ -10,42 +10,52 @@
 # and the LICENSE file beside this one for the text.
 """Fetch and assemble the DLSS Neural Rendering stack the lens drives.
 
-Nothing is bundled. Every component is downloaded from the project that
-publishes it, into a folder of the user's own, and registered for the current
-user only, so no elevation is needed and nothing shared with other software is
-touched. Licences force most of this: mpv is GPL and must come from upstream,
-NVIDIA's runtimes are NVIDIA's, and a new install gets ReshadeMotionEstimation
-(CC BY-NC 4.0) for motion vectors, chosen by measurement, with VORT (MIT) as
-the alternative.
+Nothing of the stack is bundled. Every component is downloaded from the
+project that publishes it, into the lens's own folder, and registered for the
+current user only, so no elevation is needed and nothing shared with other
+software is touched. Licences force this: NVIDIA's runtimes are NVIDIA's, the
+RenoDX add-on has no published licence, and a new install gets
+ReshadeMotionEstimation (CC BY-NC 4.0) for motion vectors, chosen by
+measurement, with VORT (MIT) as the alternative.
 
-What ends up where. APP is the lens's own folder, and TARGET defaults to APP\\stack:
+What ends up where. APP is the lens's own folder. TARGET, the stack folder, is
+APP itself for the installed program and APP\\stack when run from source:
 
-    TARGET\\mpv.exe and the rest of the mpv build      shinchiro's mpv-winbuild-cmake
-    TARGET\\nvngx_dlss.dll                             NVIDIA, via the RHI manifest
-    TARGET\\nvngx_dlssnr.dll                           NVIDIA, the 310.8.SF-v2 model
-    TARGET\\dlss5-feed.addon64                         DLSS5-Feeder
-    TARGET\\renodx-dlss5.addon64                       RenoDX, via the RHI repository
-    TARGET\\reshade-shaders\\Shaders\\...               DLSS5_Feed.fx, DRME, VORT, ReShade headers
-    TARGET\\portable_config\\mpv.conf, input.conf
+    TARGET\\lens-presenter.exe                  installed, part of the program; from
+                                               source, a copy of the Python running this
+    TARGET\\pyvenv.cfg, Lib\\site-packages\\lens-presenter.pth   from source only
+    TARGET\\nvngx_dlss.dll                      NVIDIA, via the RHI manifest
+    TARGET\\nvngx_dlssnr_real.dll               NVIDIA, the 310.8.SF-v2 Neural Rendering model
+    TARGET\\nvngx_dlssnr.dll, nvngx_dlssnr.ini  DLSSNR-Cost-Scaler, the proxy in front of it
+    TARGET\\dlss5-feed.addon64                  DLSS5-Feeder
+    TARGET\\renodx-dlss5.addon64                RenoDX, via the RHI repository
+    TARGET\\reshade-shaders\\Shaders\\...        DLSS5_Feed.fx, DRME, VORT, ReShade headers
     TARGET\\ReShade.ini, ReShadePreset.ini, dlss5-feed.cfg
-    TARGET\\install-record.json                        everything above, for uninstall
+    TARGET\\install-record.json                 everything above, for uninstall
     APP\\ReShade\\ReShade64.dll, ReShade64.json, ReShadeApps.ini
-    APP\\downloads\\...                                  while installing; removed once the self test passes
+    APP\\downloads\\...                           while installing; removed once the self test passes
     HKCU\\SOFTWARE\\Khronos\\Vulkan\\ImplicitLayers\\<APP\\ReShade\\ReShade64.json> = 0
 
-A DLL the user points at is hash checked and copied into TARGET; the record
-names the copy, so uninstalling never touches the original.
+The stack folder has to be the folder lens-presenter.exe is in. ReShade reads
+its configuration from the executable's own folder: started from elsewhere with
+the stack as its working directory, the layer did not attach, measured.
+
+A DLL the user points at is hash checked and copied in; the record names the
+copy, so uninstalling never touches the original.
 
 The layer is registered under a name of its own, VK_LAYER_reshade_neural_lens,
-with its own allow list holding only this mpv. The Vulkan loader loads one
+with its own allow list holding only the presenter. The Vulkan loader loads one
 layer per name, so a copy named like a machine wide ReShade would be skipped
 where one exists, and this way the two coexist and each hooks only what it
 lists.
 
+The add-on's section of ReShade.ini starts with nothing but its ConfigVersion,
+so a new install runs the add-on's own defaults. A repair keeps that section.
+
 Command line, for testing and for people who prefer it:
 
     python neural_stack.py                  install into the default folder
-    python neural_stack.py --target D:\\nr   install somewhere else
+    python neural_stack.py --target D:\\nr   install somewhere else, from source
     python neural_stack.py --dlssnr X --dlss Y   use NVIDIA DLLs you already have (hash checked)
     python neural_stack.py --provider vort  estimate motion vectors with VORT instead of DRME
     python neural_stack.py --verify         only run the self test on an existing stack
@@ -61,35 +71,45 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.request
 import winreg
 import zipfile
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
+FROZEN = getattr(sys, "frozen", False)
 # Everything lives in the lens's own folder, the one the installer put it in or
 # the one this script is in: the stack, the ReShade layer, the downloads while
 # they are needed, and (in neural_lens.py) the state and logs. Uninstalling is
 # then removing that one folder plus the registry value that names it.
-APP_DIR = (os.path.dirname(sys.executable) if getattr(sys, "frozen", False)
+APP_DIR = (os.path.dirname(sys.executable) if FROZEN
            else os.path.dirname(os.path.abspath(__file__)))
 NO_WINDOW = 0x08000000        # CREATE_NO_WINDOW, for console children of a windowless lens
-DEFAULT_TARGET = os.path.join(APP_DIR, "stack")
+DEFAULT_TARGET = APP_DIR if FROZEN else os.path.join(APP_DIR, "stack")
 LAYER_DIR = os.path.join(APP_DIR, "ReShade")
 CACHE_DIR = os.path.join(APP_DIR, "downloads")
 LAYER_NAME = "VK_LAYER_reshade_neural_lens"
 LAYER_KEY = r"SOFTWARE\Khronos\Vulkan\ImplicitLayers"
 
+# What the download comes to, for the installer's page, the wizard and the
+# lens's offer: ReShade's setup 4 MB, NVIDIA's two runtimes 29 and 111 MB as the
+# manifest serves them zipped, and everything else under 2 MB together.
+DOWNLOAD_MB = 150
+
 RESHADE_VERSION = "6.8.0"
+RENODX_VERSION = "5.2.1"
+COST_SCALER_VERSION = "1.0.6"
 SOURCES = {
-    "mpv_api": "https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest",
-    "7zr": "https://www.7-zip.org/a/7zr.exe",
     "reshade": "https://reshade.me/downloads/ReShade_Setup_%s_Addon.exe" % RESHADE_VERSION,
     "manifest": "https://raw.githubusercontent.com/RankFTW/RHI/main/dlss_manifest.json",
     "feeder_api": "https://api.github.com/repos/jlrouzies-fr/DLSS5-Feeder/releases/latest",
-    "renodx": "https://github.com/RankFTW/rhi-repo/releases/download/renodx-dlss5-4.70/renodx-dlss5_4.70.zip",
+    "renodx": ("https://github.com/RankFTW/rhi-repo/releases/download/renodx-dlss5-%s/renodx-dlss5_%s.zip"
+               % (RENODX_VERSION, RENODX_VERSION)),
+    "cost_scaler": ("https://github.com/xenmods/DLSSNR-Cost-Scaler/releases/download/v%s/DLSSNR-Cost-Scaler-v%s.zip"
+                    % (COST_SCALER_VERSION, COST_SCALER_VERSION)),
     "vort": "https://raw.githubusercontent.com/vortigern11/vort_Shaders/main/",
     "vort_api": "https://api.github.com/repos/vortigern11/vort_Shaders/contents/Shaders/Includes",
     # ReshadeMotionEstimation by Jakob Wapenhensch, CC BY-NC 4.0, pinned to its
@@ -101,9 +121,9 @@ DRME_FILES = ["MotionEstimation.fx", "MotionEstimation.fxh", "MotionEstimationUI
 # Which shader estimates motion vectors for the Feed. Measured on scrolling
 # text as the partial ink fraction of the page, lower is crisper, at a slow,
 # a reading and a fast scroll: DRME 0.075, 0.096, 0.102; VORT 0.099, 0.109,
-# 0.106; no provider 0.114, 0.123. DRME is
-# CC BY-NC 4.0, so it may be fetched and used with credit in a free tool and
-# is the default; VORT is MIT and stays as the alternative.
+# 0.106; no provider 0.114, 0.123. DRME is CC BY-NC 4.0, so it may be fetched
+# and used with credit in a free tool and is the default; VORT is MIT and stays
+# as the alternative.
 PROVIDERS = {"drme": 0, "vort": 2}
 # vort_Motion.fx pulls in most of its Includes folder through nested includes
 # (Depth, ColorTex, BlueNoise, Tonemap and more, four of which a hand picked
@@ -118,7 +138,8 @@ HEADER_FILES = ["ReShade.fxh", "ReShadeUI.fxh"]
 # matches none is refused, not installed. The 310.8.SF-v2 entry accepts two
 # known builds: the one the repository serves (version 310.8.SF.0, 165,830,144
 # bytes) and an earlier community build (165,840,496 bytes, version 310.8.0.0)
-# that many people already hold.
+# that many people already hold. The add-on and the Cost Scaler are pinned
+# releases, so both their archives and the files taken out of them are checked.
 DLSS_VERSION = "310.8.0"
 HASHES = {
     "nvngx_dlss.dll": ["c85f971ce023c9f3492fc7455f0b01a24ba18ea39636407a846902c4360b0b7e"],
@@ -127,6 +148,10 @@ HASHES = {
         "310.8.SF-v2": ["6eb209e764f39872625debd6abaf45e2bb6322f6f270f781f70c059ae30b3927",
                         "8270b350cd82de5ce89806872cdd6b6a9249b80836b91bbeb3573470744cc206"],
     },
+    "renodx-dlss5.zip": ["125506b22edd8e0d6f8117579fe2a516288440fc068a5310680065db5d027129"],
+    "renodx-dlss5.addon64": ["a1b78052b58fc285f018362ac8652df8a01d31be9f3ecbb9e31776866ead5887"],
+    "cost-scaler.zip": ["525cc45b00dcb1ba03ce6c25905ff02c3ff3458b5e90ebf4138b307f46e13095"],
+    "cost-scaler.dll": ["975b0a063b32463a8812209810f338f3025b47b97d7cb621330c11a7d13898e8"],
 }
 # One Neural Rendering model serves every RTX card. The SF-v2 build was thought
 # to be 40 series only until it was measured running on a 5090 on 2026-09-12:
@@ -136,17 +161,15 @@ HASHES = {
 # for identification only: step_nvidia accepts the MODEL's builds and nothing else.
 MODEL = "310.8.SF-v2"
 
-MPV_CONF = """# written by the Neural Lens stack setup
-gpu-api=vulkan
-vo=gpu-next
-profile=high-quality
-keep-open=yes
-"""
-INPUT_CONF = """# written by the Neural Lens stack setup
-# Home is ReShade's overlay key; keep mpv from swallowing it
-HOME ignore
-Shift+HOME seek 0 absolute
-"""
+# The Cost Scaler is written with its own settings apart from these. The lens
+# switches the proxy on for fullscreen and off when windowed, so it starts off.
+# Its hotkeys are polled globally, and a desktop program must not answer
+# Ctrl+Alt+PageUp in every window. Its depth aware resolve works from the depth
+# the Feed synthesises for content that has none, and every measurement of the
+# proxy in the lens was taken with it off.
+COST_SCALER_SETTINGS = {"EnableProxy": "0", "EnableHotkeys": "0",
+                        "EnableDepthAwareResolve": "0", "EnableGovernor": "0"}
+
 RESHADE_INI = """[ADDON]
 AddonPath=.\\
 
@@ -173,21 +196,18 @@ ShowFrameTime=0
 TutorialProgress=4
 
 [RenoDX.DLSS5]
-EnableHooks=2
-NeuralUplift=1
-NRAutoMask=1
-NRDepthMode=0
-NRIntensity=1.58
-NRLocalStructure=1
-NRSkinStructure=-1
-NRStyle=0
-NRTransferStrength=1
-NRUICorrection=0
+ConfigVersion=2
 
 [SCREENSHOT]
 SavePath=.\\
 FileFormat=1
 """
+# The add-on resets its whole section to its built-in defaults when ConfigVersion
+# is missing or older than its own, and otherwise fills any key that is absent
+# with its default. Measured with 5.2.1 and this section alone: it ran at its
+# defaults, wrote back EnableHooks=2, NeuralUplift=1 and NREnableUpscaling=0,
+# and feature 18 created and evaluated.
+ADDON_SECTION = "[RenoDX.DLSS5]"
 RESHADE_PRESET = """Techniques=vort_MotionEffects@vort_Motion.fx,DLSS5_Feed@DLSS5_Feed.fx
 TechniqueSorting=vort_MotionEffects@vort_Motion.fx,DLSS5_Feed@DLSS5_Feed.fx
 """
@@ -266,12 +286,37 @@ def fetch_json(url):
         return json.loads(r.read().decode("utf-8"))
 
 
+def check_hash(path, want, label):
+    """Refuse a file whose hash is not one of the known ones, and remove it."""
+    got = sha256(path)
+    if got not in want:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        raise StackError("%s matches no known hash\n  got      %s\n  known    %s\nNot installed. The "
+                         "project may have replaced the file; the lens's release notes will say when a "
+                         "new one is verified." % (label, got, ", ".join(want)))
+    return path
+
+
+def set_ini_values(text, values):
+    """Set each key = value line of an ini's text, wherever the key is, and keep
+    everything else as it was, comments included."""
+    for key, value in values.items():
+        text, n = re.subn(r"(?im)^([ \t]*%s[ \t]*=)[^\r\n]*" % re.escape(key),
+                          lambda m: m.group(1) + " " + value, text)
+        if not n:
+            raise StackError("the Cost Scaler's ini has no %s setting" % key)
+    return text
+
+
 def gpu_supported():
     """(True, capability) when Neural Rendering can run here, else (False, why).
 
-    One model now serves every generation, so the question is no longer which
-    card this is but whether it is one at all. Compute capability 7.5 is Turing,
-    the first RTX line and where Neural Rendering starts; a machine with no
+    One model serves every generation, so the question is not which card this
+    is but whether it is one at all. Compute capability 7.5 is Turing, the
+    first RTX line and where Neural Rendering starts; a machine with no
     nvidia-smi has no NVIDIA driver. Capability is steadier than marketing
     names, which fragment into "RTX 4090 Laptop GPU" and "RTX 4000 Ada
     Generation".
@@ -308,6 +353,20 @@ def write_text(path, text):
     return path
 
 
+def same_path(a, b):
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def presenter_command(target):
+    """How to start the presenter in a stack folder: the program itself when
+    installed, and from source the interpreter's copy, which has a pyvenv.cfg
+    beside it, with the script."""
+    exe = os.path.join(target, "lens-presenter.exe")
+    if FROZEN or not os.path.isfile(os.path.join(target, "pyvenv.cfg")):
+        return [exe]
+    return [exe, os.path.join(APP_DIR, "lens_presenter.py")]
+
+
 # ---------------------------------------------------------------- steps
 class Install:
     def __init__(self, target=DEFAULT_TARGET, dlssnr=None, dlss=None, log=None, provider="drme"):
@@ -322,16 +381,23 @@ class Install:
         say(self.log, text)
 
     def add(self, path):
-        self.record["files"].append(os.path.abspath(path))
+        path = os.path.abspath(path)
+        if path not in self.record["files"]:
+            self.record["files"].append(path)
         return path
 
     def run(self):
+        if FROZEN and not same_path(self.target, APP_DIR):
+            raise StackError("the installed lens keeps its stack in its own folder, %s, beside "
+                             "lens-presenter.exe; --target is for running from source" % APP_DIR)
+        self.retire_old_stack()
         os.makedirs(self.target, exist_ok=True)
         os.makedirs(CACHE_DIR, exist_ok=True)
         self.say("Installing the Neural Rendering stack into %s" % self.target)
-        self.step_mpv()
+        self.step_presenter()
         self.step_reshade()
         self.step_nvidia()
+        self.step_cost_scaler()
         self.step_feeder()
         self.step_renodx()
         self.step_shaders()
@@ -344,36 +410,93 @@ class Install:
         self.say(detail)
         if ok:
             # the downloads served their purpose; a failed run keeps them so a
-            # retry does not fetch 230 MB again
+            # retry can be looked into with them still there
             shutil.rmtree(CACHE_DIR, ignore_errors=True)
         return ok
 
-    # mpv: the current build from shinchiro, which is the one mpv.io points at
-    def step_mpv(self):
-        if os.path.isfile(os.path.join(self.target, "mpv.exe")):
-            self.say("mpv: already present, keeping it")
+    def retire_old_stack(self):
+        """Take out a stack that 0.1.0 assembled, which held mpv.
+
+        Installed, 0.1.0 kept its stack in APP\\stack; from source it used the
+        same stack folder this installs into. Its record lists what it wrote.
+        NVIDIA's two runtimes and ReShade's DLL are kept where this install
+        wants them when they check out, so they are not downloaded again, and
+        the rest goes the way the record's uninstall takes it, the layer
+        registration and the allow list that named mpv included. Installed,
+        whatever is still in APP\\stack after that goes too: the folder
+        belonged to the setup.
+        """
+        old = os.path.join(APP_DIR, "stack") if FROZEN else self.target
+        try:
+            with open(os.path.join(old, "install-record.json"), encoding="utf-8") as f:
+                record = json.load(f)
+        except (OSError, ValueError):
             return
-        self.say("mpv: looking up the current build")
-        rel = fetch_json(SOURCES["mpv_api"])
-        asset = None
-        for a in rel.get("assets", []):
-            if re.match(r"^mpv-x86_64-\d{8}-git-[0-9a-f]+\.7z$", a["name"]):
-                asset = a
-                break
-        if not asset:
-            raise StackError("no mpv-x86_64 build in the latest release")
-        self.record["components"]["mpv"] = asset["name"]
-        archive = fetch(asset["browser_download_url"], os.path.join(CACHE_DIR, asset["name"]),
-                        self.log, "mpv " + rel.get("tag_name", ""))
-        sevenzr = fetch(SOURCES["7zr"], os.path.join(CACHE_DIR, "7zr.exe"), self.log, "7zr")
-        self.say("mpv: unpacking")
-        r = subprocess.run([sevenzr, "x", "-y", "-o" + self.target, archive], capture_output=True, text=True,
-                           stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
-        if r.returncode != 0 or not os.path.isfile(os.path.join(self.target, "mpv.exe")):
-            raise StackError("unpacking mpv failed: %s" % (r.stderr or r.stdout)[-400:])
-        for root, dirs, files in os.walk(self.target):
-            for f in files:
-                self.add(os.path.join(root, f))
+        if "mpv" not in record.get("components", {}):
+            return
+        self.say("Removing the stack an earlier version assembled, which held mpv")
+        os.makedirs(self.target, exist_ok=True)
+        model = HASHES["nvngx_dlssnr.dll"][MODEL]
+        moves = (("nvngx_dlss.dll", "nvngx_dlss.dll", HASHES["nvngx_dlss.dll"]),
+                 ("nvngx_dlssnr_real.dll", "nvngx_dlssnr_real.dll", model),
+                 ("nvngx_dlssnr.dll", "nvngx_dlssnr_real.dll", model))
+        keep = []
+        for name, dest_name, want in moves:
+            src, dest = os.path.join(old, name), os.path.join(self.target, dest_name)
+            try:
+                if not os.path.isfile(src) or sha256(src) not in want:
+                    continue
+                if same_path(src, dest):
+                    keep.append(dest)
+                elif not os.path.isfile(dest):
+                    os.replace(src, dest)
+                    keep.append(dest)
+                else:
+                    continue
+                self.say("    kept %s" % dest_name)
+            except OSError:
+                pass
+        if record.get("components", {}).get("reshade") == RESHADE_VERSION:
+            keep.append(os.path.join(LAYER_DIR, "ReShade64.dll"))
+        uninstall(old, log=self.log, keep=keep)
+        if FROZEN:
+            shutil.rmtree(old, ignore_errors=True)
+
+    # the presenter: what the layer's allow list names, in the stack folder
+    def step_presenter(self):
+        """Installed, lens-presenter.exe is part of the program and already in
+        its folder, which is the stack folder. From source it is a copy of the
+        Python running this, which runs lens_presenter.py beside this file: a
+        pyvenv.cfg beside the copy points it at this Python's library, and a
+        .pth file at the packages this Python sees, a virtual environment's
+        included. Its packages are checked first, before anything is downloaded.
+        """
+        exe = os.path.join(self.target, "lens-presenter.exe")
+        if FROZEN:
+            if not os.path.isfile(exe):
+                raise StackError("lens-presenter.exe is missing from %s; reinstall the lens" % self.target)
+            self.say("presenter: lens-presenter.exe, part of the lens")
+            return
+        import importlib.util
+        import site
+        need = {"glfw": "glfw", "vulkan": "vulkan", "numpy": "numpy", "windows_capture": "windows-capture"}
+        missing = [pip for mod, pip in need.items() if importlib.util.find_spec(mod) is None]
+        if missing:
+            raise StackError("the presenter needs %s for this Python first:\n  pip install %s"
+                             % (", ".join(missing), " ".join(missing)))
+        base = os.path.dirname(getattr(sys, "_base_executable", None) or sys.executable)
+        python = os.path.join(base, "python.exe")
+        if not os.path.isfile(python):
+            raise StackError("there is no python.exe beside %s to copy as the presenter" % base)
+        shutil.copy2(python, exe)
+        self.add(exe)
+        self.add(write_text(os.path.join(self.target, "pyvenv.cfg"),
+                            "home = %s\ninclude-system-site-packages = true\nversion = %d.%d\n"
+                            % (base, sys.version_info[0], sys.version_info[1])))
+        paths = [p for p in site.getsitepackages() + [site.getusersitepackages()] if os.path.isdir(p)]
+        self.add(write_text(os.path.join(self.target, "Lib", "site-packages", "lens-presenter.pth"),
+                            "\n".join(paths) + "\n"))
+        self.say("presenter: a copy of %s, running lens_presenter.py" % python)
 
     # ReShade: the DLL is read straight out of the setup exe, which is a zip, so
     # nothing of ReShade's is executed here. The layer manifest is written below.
@@ -399,7 +522,7 @@ class Install:
                 "library_path": ".\\ReShade64.dll",
                 "api_version": "1.3.268",
                 "implementation_version": "1",
-                "description": "ReShade, installed for the Neural Lens's mpv only",
+                "description": "ReShade, installed for the Neural Lens's presenter only",
                 "device_extensions": [{"name": "VK_EXT_tooling_info", "spec_version": "1",
                                        "entrypoints": ["vkGetPhysicalDeviceToolPropertiesEXT"]}],
                 "disable_environment": {"DISABLE_VK_LAYER_reshade_neural_lens": "1"},
@@ -410,9 +533,10 @@ class Install:
         self.add(os.path.join(LAYER_DIR, "ReShade64.json"))
         # the allow list is this layer's own, so it holds exactly one program
         self.add(write_text(os.path.join(LAYER_DIR, "ReShadeApps.ini"),
-                            "Apps=%s\n" % os.path.join(self.target, "mpv.exe")))
+                            "Apps=%s\n" % os.path.join(self.target, "lens-presenter.exe")))
 
-    # NVIDIA: both runtimes, hash checked. One model serves every RTX card.
+    # NVIDIA: both runtimes, hash checked. One model serves every RTX card, and
+    # it goes in as nvngx_dlssnr_real.dll, behind the Cost Scaler.
     def step_nvidia(self):
         ok, detail = gpu_supported()
         if not ok:
@@ -422,18 +546,21 @@ class Install:
         self.record["components"]["dlssnr"] = model
         self.record["components"]["dlss"] = DLSS_VERSION
         self.say("NVIDIA: compute capability %s, Neural Rendering model %s" % (detail, model))
-        manifest = fetch_json(SOURCES["manifest"])
+        manifest = {}
 
         def url_for(key, version):
+            if not manifest:
+                manifest.update(fetch_json(SOURCES["manifest"]))
             for entry in manifest.get(key, []):
                 if entry.get("version") == version:
                     return entry["url"]
             raise StackError("the manifest has no %s %s" % (key, version))
 
-        wanted = {"nvngx_dlss.dll": (HASHES["nvngx_dlss.dll"], "dlss", DLSS_VERSION),
-                  "nvngx_dlssnr.dll": (HASHES["nvngx_dlssnr.dll"][model], "dlssnr", model)}
-        for name, (want, key, version) in wanted.items():
-            dest = os.path.join(self.target, name)
+        wanted = (("nvngx_dlss.dll", "nvngx_dlss.dll", HASHES["nvngx_dlss.dll"], "dlss", DLSS_VERSION),
+                  ("nvngx_dlssnr.dll", "nvngx_dlssnr_real.dll", HASHES["nvngx_dlssnr.dll"][model],
+                   "dlssnr", model))
+        for name, dest_name, want, key, version in wanted:
+            dest = os.path.join(self.target, dest_name)
             given = self.given.get(name)
             if given:
                 got = sha256(given)
@@ -443,7 +570,7 @@ class Install:
                 shutil.copy2(given, dest)
                 self.say("%s: using your copy, hash verified" % name)
             elif os.path.isfile(dest) and sha256(dest) in want:
-                self.say("%s: already present and verified" % name)
+                self.say("%s: already present and verified" % dest_name)
             else:
                 z = fetch(url_for(key, version), os.path.join(CACHE_DIR, "%s_%s.zip" % (key, version)),
                           self.log, "%s %s" % (name, version))
@@ -459,8 +586,39 @@ class Install:
                                      "have published a new build; the lens's release notes will say when "
                                      "one is verified." % (name, got, ", ".join(want)))
                 os.replace(dest + ".part", dest)
-                self.say("%s: downloaded, hash verified" % name)
+                self.say("%s: downloaded, hash verified" % dest_name)
             self.add(dest)
+
+    # DLSSNR-Cost-Scaler: the proxy as nvngx_dlssnr.dll, forwarding to the model
+    def step_cost_scaler(self):
+        name = "DLSSNR-Cost-Scaler-v%s.zip" % COST_SCALER_VERSION
+        z = fetch(SOURCES["cost_scaler"], os.path.join(CACHE_DIR, name), self.log,
+                  "DLSSNR Cost Scaler " + COST_SCALER_VERSION)
+        check_hash(z, HASHES["cost-scaler.zip"], name)
+        dest = os.path.join(self.target, "nvngx_dlssnr.dll")
+        ini_path = os.path.join(self.target, "nvngx_dlssnr.ini")
+        with zipfile.ZipFile(z) as zf:
+            names = zf.namelist()
+            dll = next((n for n in names if n.lower().endswith("nvngx_dlssnr.dll")), None)
+            ini = next((n for n in names if n.lower().endswith("nvngx_dlssnr.ini")), None)
+            if not dll or not ini:
+                raise StackError("the Cost Scaler's archive holds no nvngx_dlssnr.dll or nvngx_dlssnr.ini")
+            self._extract(zf, dll, dest + ".part")
+            check_hash(dest + ".part", HASHES["cost-scaler.dll"], "the Cost Scaler's nvngx_dlssnr.dll")
+            os.replace(dest + ".part", dest)
+            self.add(dest)
+            if os.path.isfile(ini_path):
+                kept = " Its settings were already there and are kept."
+            else:
+                # latin-1 both ways, so every byte of its comments survives
+                text = set_ini_values(zf.read(ini).decode("latin-1"), COST_SCALER_SETTINGS)
+                with open(ini_path, "wb") as f:
+                    f.write(text.encode("latin-1"))
+                kept = ""
+            self.add(ini_path)
+        self.record["components"]["cost_scaler"] = COST_SCALER_VERSION
+        self.say("DLSSNR Cost Scaler %s: in front of the model, off until the lens asks for it.%s"
+                 % (COST_SCALER_VERSION, kept))
 
     def step_feeder(self):
         rel = fetch_json(SOURCES["feeder_api"])
@@ -479,12 +637,20 @@ class Install:
         self.say("DLSS5-Feeder: %s" % rel.get("tag_name"))
 
     def step_renodx(self):
-        z = fetch(SOURCES["renodx"], os.path.join(CACHE_DIR, "renodx-dlss5.zip"), self.log, "RenoDX DLSS 5")
+        name = "renodx-dlss5_%s.zip" % RENODX_VERSION
+        z = fetch(SOURCES["renodx"], os.path.join(CACHE_DIR, name), self.log, "RenoDX DLSS 5 " + RENODX_VERSION)
+        check_hash(z, HASHES["renodx-dlss5.zip"], name)
+        dest = os.path.join(self.target, "renodx-dlss5.addon64")
         with zipfile.ZipFile(z) as zf:
-            member = next(n for n in zf.namelist() if n.lower().endswith(".addon64"))
-            self.add(self._extract(zf, member, os.path.join(self.target, "renodx-dlss5.addon64")))
-        self.record["components"]["renodx"] = SOURCES["renodx"].rsplit("/", 2)[-2]
-        self.say("RenoDX DLSS 5 add-on: %s" % self.record["components"]["renodx"])
+            member = next((n for n in zf.namelist() if n.lower().endswith(".addon64")), None)
+            if not member:
+                raise StackError("the RenoDX archive holds no add-on")
+            self._extract(zf, member, dest + ".part")
+        check_hash(dest + ".part", HASHES["renodx-dlss5.addon64"], "the RenoDX DLSS 5 add-on")
+        os.replace(dest + ".part", dest)
+        self.add(dest)
+        self.record["components"]["renodx"] = RENODX_VERSION
+        self.say("RenoDX DLSS 5 add-on: %s, hash verified" % RENODX_VERSION)
 
     def step_shaders(self):
         base = os.path.join(self.target, "reshade-shaders", "Shaders")
@@ -511,17 +677,41 @@ class Install:
         self.say("motion vectors: %s will provide them" % self.record["components"]["motion_vectors"])
 
     def step_config(self):
-        self.add(write_text(os.path.join(self.target, "portable_config", "mpv.conf"), MPV_CONF))
-        self.add(write_text(os.path.join(self.target, "portable_config", "input.conf"), INPUT_CONF))
         # the templates are written for VORT; the chosen provider is substituted
         ini, preset = RESHADE_INI, RESHADE_PRESET
         if self.provider == "drme":
             ini = ini.replace("DLSS5_MV_PROVIDER=2,V_MV_MODE=1", "DLSS5_MV_PROVIDER=0")
             preset = preset.replace("vort_MotionEffects@vort_Motion.fx", "DRME@MotionEstimation.fx")
-        self.add(write_text(os.path.join(self.target, "ReShade.ini"), ini))
+        path = os.path.join(self.target, "ReShade.ini")
+        kept = self._addon_section(path)
+        if kept:
+            ini = ini.replace(ADDON_SECTION + "\nConfigVersion=2\n",
+                              ADDON_SECTION + "\n" + "\n".join(kept) + "\n")
+            self.say("config: the Neural Rendering add-on's settings in the existing ReShade.ini are kept")
+        self.add(write_text(path, ini))
         self.add(write_text(os.path.join(self.target, "ReShadePreset.ini"), preset))
         self.add(write_text(os.path.join(self.target, "dlss5-feed.cfg"), FEED_CFG))
-        self.say("config: mpv, ReShade, the preset and the feed written")
+        self.say("config: ReShade, the preset and the feed written")
+
+    @staticmethod
+    def _addon_section(path):
+        """The lines of the add-on's section in an existing ReShade.ini, or None."""
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                lines = f.read().splitlines()
+        except OSError:
+            return None
+        out, inside = [], False
+        for line in lines:
+            bare = line.strip()
+            if bare.startswith("["):
+                if inside:
+                    break
+                inside = bare.lower() == ADDON_SECTION.lower()
+                continue
+            if inside and bare:
+                out.append(bare)
+        return out or None
 
     def step_layer(self):
         manifest = os.path.join(LAYER_DIR, "ReShade64.json")
@@ -545,61 +735,75 @@ class Install:
 
 # ---------------------------------------------------------------- verify
 def verify(target, log=None, seconds=9.0):
-    """Run this mpv on a synthetic stream and read what ReShade says.
+    """Run the presenter on a still and read what ReShade says.
 
-    The lens feeds mpv raw frames on stdin, so the self test does the same:
-    a still with detail, long enough for the Feed's warm up and the first
-    Neural Rendering evaluation. The verdict is read from ReShade.log.
+    The presenter is what the lens runs, so the self test runs it too, on its
+    pattern source rather than a capture: a still with detail in a 960x540
+    window at the top left of the primary monitor, long enough for the Feed's
+    warm up and the first Neural Rendering evaluations. The verdict is read
+    from ReShade.log and the Feed's log.
     """
-    import numpy as np
-    mpv = os.path.join(target, "mpv.exe")
-    if not os.path.isfile(mpv):
-        return False, "FAIL: no mpv.exe in %s" % target
+    cmd = presenter_command(target)
+    if not os.path.isfile(cmd[0]):
+        return False, "FAIL: no lens-presenter.exe in %s" % target
     logfile = os.path.join(target, "ReShade.log")
-    try:
-        os.remove(logfile)
-    except OSError:
-        pass
-    w, h = 960, 540
-    cmd = [mpv, "-", "--demuxer=rawvideo", "--demuxer-rawvideo-w=%d" % w, "--demuxer-rawvideo-h=%d" % h,
-           "--demuxer-rawvideo-mp-format=bgra", "--demuxer-rawvideo-fps=60", "--no-audio",
-           "--really-quiet", "--geometry=%dx%d+40+40" % (w, h), "--no-border", "--force-window=immediate",
-           "--keep-open=yes", "--cache=no", "--title=NeuralLensSelfTest"]
+    proxy_log = os.path.join(target, "nvngx_dlssnr_proxy.log")
+    for stale in (logfile, proxy_log):
+        try:
+            os.remove(stale)
+        except OSError:
+            pass
     env = dict(os.environ, DISABLE_DLSS5_VK_BRIDGE="1")
-    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL, cwd=target, env=env)
-    rng = np.random.default_rng(1)
-    frame = rng.integers(0, 255, (h, w, 4), np.uint8)
-    frame[::7, :, :] = 230
-    stop = {"x": False}
+    err = tempfile.TemporaryFile()
+    started = time.time()
+    proc = subprocess.Popen(cmd + ["--source", "pattern", "--at", "40", "40", "--size", "960", "540",
+                                   "--title", "NeuralLensSelfTest"],
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err, cwd=target,
+                            env=env, text=True, creationflags=NO_WINDOW)
+    said = []
 
-    def feed():
-        while not stop["x"]:
-            try:
-                proc.stdin.write(frame.tobytes())
-            except Exception:
-                return
-            time.sleep(1 / 60)
+    def drain():
+        for line in proc.stdout:
+            said.append(line.rstrip())
 
-    threading.Thread(target=feed, daemon=True).start()
-    say(log, "    self test: mpv window for %.0f seconds" % seconds)
-    time.sleep(seconds)
-    stop["x"] = True
+    threading.Thread(target=drain, daemon=True).start()
+    say(log, "    self test: a presenter window at the top left for %.0f seconds" % seconds)
+    while time.time() - started < seconds and proc.poll() is None:
+        time.sleep(0.2)
+    early = proc.poll()
     try:
-        proc.kill()
+        proc.stdin.write("quit\n")
+        proc.stdin.flush()
     except Exception:
         pass
     try:
+        proc.wait(timeout=5)
+    except Exception:
+        proc.kill()
+    if early is not None:
+        err.seek(0)
+        tail = err.read().decode("utf-8", "replace").strip()[-900:]
+        return False, ("FAIL: the presenter stopped after %.0f seconds with exit code %s.\n%s"
+                       % (time.time() - started, early, tail or "\n".join(said[-5:]) or "It printed nothing."))
+    try:
         text = open(logfile, encoding="utf-8", errors="replace").read()
     except OSError:
-        return False, ("FAIL: ReShade wrote no log, so it did not attach to mpv. Is the Vulkan layer "
-                       "registered, and is %s on its Apps list?" % mpv)
+        return False, ("FAIL: ReShade wrote no log, so it did not attach to the presenter. Is the Vulkan "
+                       "layer registered, and is %s on its Apps list?" % cmd[0])
     created = "feature=18" in text and "feature 18 created" in text
     evaluated = len(re.findall(r"feature 18 evaluation succeeded", text))
     failed = re.search(r"feature 18 create failed with (0x[0-9a-fA-F]+)", text)
     addons = ("DLSS 5 Neural Rendering" in text, "DLSS 5 Feed" in text)
     lines = ["    ReShade attached: yes",
              "    add-ons loaded: Neural Rendering %s, Feed %s" % tuple("yes" if a else "NO" for a in addons)]
+    # the Cost Scaler logs as it loads, whether it is switched on or off
+    try:
+        proxy = open(proxy_log, encoding="utf-8", errors="replace").read()
+        lines.append("    Cost Scaler: %s" % ("loaded, in front of the model" if "Loaded real module successfully"
+                                                 in proxy else "its log says it did not load the model"))
+    except OSError:
+        if os.path.isfile(os.path.join(target, "nvngx_dlssnr_real.dll")):
+            lines.append("    Cost Scaler: it wrote no log")
     # A still needs no motion vectors, so Neural Rendering can run with the
     # provider missing and nobody would know until something moved. The Feed
     # says which provider it found; read that rather than trust the picture.
@@ -659,11 +863,13 @@ def _unregister_stray(log=None):
     return removed
 
 
-def uninstall(target=DEFAULT_TARGET, log=None):
+def uninstall(target=DEFAULT_TARGET, log=None, keep=()):
+    """Remove what the install record in target lists, the layer registration,
+    and what running the stack wrote. Paths in keep are left in place."""
     path = os.path.join(target, "install-record.json")
     try:
         record = json.load(open(path, encoding="utf-8"))
-    except OSError:
+    except (OSError, ValueError):
         # No record, so no files are known. The layer value can still be there:
         # an install stopped after step_layer and before write_record registered
         # it and never recorded it, and left alone it would point the Vulkan
@@ -679,15 +885,19 @@ def uninstall(target=DEFAULT_TARGET, log=None):
         except OSError:
             pass
     _unregister_stray(log)
+    kept = {os.path.normcase(os.path.abspath(k)) for k in keep}
     for f in record.get("files", []):
+        if os.path.normcase(os.path.abspath(f)) in kept:
+            continue
         try:
             os.remove(f)
         except OSError:
             pass
-    # what running the stack wrote: the logs and their rotations, and mpv's
-    # shader cache, none of which the record could know about
+    # what running the stack wrote: the logs and their rotations, the Cost
+    # Scaler's log, and the shader cache of the mpv that 0.1.0 ran
     for extra in ("ReShadePreset.ini", "ReShade.ini", "install-record.json") + tuple(
-            f for f in os.listdir(target) if f.startswith(("ReShade.log", "dlss5-feed.log"))):
+            f for f in os.listdir(target)
+            if f.startswith(("ReShade.log", "dlss5-feed.log", "nvngx_dlssnr_proxy.log"))):
         try:
             os.remove(os.path.join(target, extra))
         except OSError:
@@ -715,7 +925,7 @@ def wizard(parent=None, target=DEFAULT_TARGET):
     Returns the folder the stack was installed into when it installed and
     passed the self test, otherwise False. The install runs on a thread; the
     window only ever appends to its log from the mainloop, so it stays
-    responsive while 230 MB come down.
+    responsive while the download comes down.
     """
     import queue
     import tkinter as tk
@@ -733,9 +943,9 @@ def wizard(parent=None, target=DEFAULT_TARGET):
     root.configure(bg=BG)
     root.attributes("-topmost", True)
     root.resizable(False, False)
-    intro = ("The lens needs an mpv with NVIDIA's DLSS Neural Rendering stack. Nothing is bundled: "
-             "about 230 MB is downloaded from the projects that publish each part, into the lens's "
-             "own folder, and registered for your user only. No administrator prompt.\n\n"
+    intro = ("The lens needs NVIDIA's DLSS Neural Rendering stack. Nothing of it is bundled: about "
+             "%d MB is downloaded from the projects that publish each part, into the lens's own "
+             "folder, and registered for your user only. No administrator prompt.\n\n" % DOWNLOAD_MB
              + ("This card reports compute capability %s, which is supported. The %s model is used for every RTX card."
                 % (detail, MODEL) if supported else
                 "Neural Rendering cannot run on this machine: %s." % detail))
@@ -745,10 +955,10 @@ def wizard(parent=None, target=DEFAULT_TARGET):
         row=1, column=0, sticky="w", padx=14)
     tk.Label(root, text=target, bg=BG, fg=FG, font=("Consolas", 9), anchor="w").grid(
         row=1, column=1, columnspan=2, sticky="w", padx=(6, 14))
-    # every variable is made on this window's own Tk. At the offer that follows
-    # a found but bare mpv the lens's root already exists and is the default
-    # root, so a variable without a master lived there while the entries lived
-    # here: the fields showed empty and anything typed was never seen
+    # every variable is made on this window's own Tk. At the offer the lens
+    # makes when its stack is incomplete, the lens's root already exists and is
+    # the default root, so a variable without a master lived there while the
+    # entries lived here: the fields showed empty and anything typed was never seen
     have = {"nvngx_dlssnr.dll": tk.StringVar(master=root), "nvngx_dlss.dll": tk.StringVar(master=root)}
     tk.Label(root, text="If you already have NVIDIA's DLLs, point at them and copies are used instead "
                         "of downloaded, once their hashes check out. Otherwise leave these empty.",
@@ -801,7 +1011,7 @@ def wizard(parent=None, target=DEFAULT_TARGET):
 
     def work(target, dlssnr, dlss):
         # plain strings only: Tk may be touched from the main thread alone, and
-        # at the first run offer the main thread is in wait_window, not mainloop,
+        # at the lens's offer the main thread is in wait_window, not mainloop,
         # so a .get() here raised "main thread is not in main loop"
         try:
             ok = Install(target, dlssnr or None, dlss or None, log=q.put).run()
@@ -845,7 +1055,8 @@ def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(description="fetch and assemble the Neural Rendering stack for the lens")
     ap.add_argument("--target", default=DEFAULT_TARGET,
-                    help="the folder to install the stack into (default: stack, beside the lens)")
+                    help="the folder to install the stack into; installed, the lens's own folder is the "
+                         "only one that works, and from source the default is stack, beside the script")
     ap.add_argument("--dlssnr", help="an nvngx_dlssnr.dll you already have; its hash is checked")
     ap.add_argument("--dlss", help="an nvngx_dlss.dll you already have; its hash is checked")
     ap.add_argument("--provider", choices=sorted(PROVIDERS), default="drme",
@@ -864,9 +1075,12 @@ def main(argv=None):
             return 0 if ok else 1
         ok = Install(a.target, a.dlssnr, a.dlss, provider=a.provider).run()
         print("")
-        print("OK: the stack works in %s. The lens finds its default stack folder on its own; "
-              "use --mpv-dir for any other." % a.target if ok else
-              "The stack was installed but the self test did not pass; see above.")
+        if not ok:
+            print("The stack was installed but the self test did not pass; see above.")
+        elif FROZEN or same_path(a.target, DEFAULT_TARGET):
+            print("OK: the stack works in %s." % a.target)
+        else:
+            print("OK: the stack works in %s. Point the lens at it with --stack-dir." % a.target)
         return 0 if ok else 1
     except StackError as exc:
         print("")

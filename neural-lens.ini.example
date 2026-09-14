@@ -1,18 +1,15 @@
 # Copy this file to neural-lens.ini and edit, or do not: the Settings dialog in
-# the lens's menu has a control for every setting here and writes this file.
+# the lens's menu has a control for most settings here and writes this file.
 # Every setting is optional. Where a command line flag or an environment
-# variable exists for a setting, it wins over this file: --mpv-dir and
-# NEURAL_LENS_MPV_DIR for the mpv folder, NEURAL_LENS_DATA for the data folder.
+# variable exists for a setting, it wins over this file: --stack-dir and
+# NEURAL_LENS_STACK for the stack folder, NEURAL_LENS_DATA for the data folder.
 
-# The mpv install carrying the DLSS 5 Neural Rendering stack, meaning ReShade
-# as the Vulkan layer plus dlss5-feed.addon64, renodx-dlss5.addon64,
-# nvngx_dlss.dll and NVIDIA's nvngx_dlssnr.dll.
-#
-# If this is not set, the lens looks for an "mpv" folder beside the program and
-# then the "stack" folder its own setup writes into the install. Nothing else on
-# the machine is guessed at, so leave this commented out unless your stack lives
-# somewhere of your own choosing.
-# mpv_dir = D:\path\to\mpv
+# The folder holding the Neural Rendering stack: ReShade.ini, the two add-ons,
+# NVIDIA's DLLs and lens-presenter.exe. The installed lens keeps its stack in
+# its own folder, and from source neural_stack.py writes a "stack" folder
+# beside the script; the lens finds both without this. mpv_dir, the name 0.1.0
+# used, is read too.
+# stack_dir = D:\path\to\stack
 
 # Where the lens keeps its window position and its archived logs.
 # Defaults to the data folder beside the program
@@ -22,49 +19,9 @@
 # Defaults to data\screenshots beside the program
 # screenshot_dir = D:\Screenshots\NeuralLens
 
-# Frame pacing. Both default to the display's own refresh rate, so a 240 Hz
-# monitor is paced at 240. Only set these to force something else.
-#
-# fps is a ceiling, not the rate the lens actually asks for. Five sixths of it
-# is where the visible stage starts, divided by the number of neural passes. The
-# lens then lowers the rate whenever the chain falls short, the output runs away
-# in brightness, or the picture shimmers on still content, and probes back up
-# while the picture stays clean. The margin is deliberate: asking a stage for
-# even exactly what arrives makes mpv present frames that are not there yet,
-# and the picture shimmers. Asking for far more makes it crush toward black or
-# white and recover, repeatedly.
-# fps = 120
-# pump_hz = 120
-
-# Set adaptive = 0 to keep the fixed rule above instead of adjusting it live.
-# min_fps is the lowest rate the adjustment will go to. A full screen lens on a
-# mid range card can need the floor.
-# adaptive = 1
-# min_fps = 12
-
-# Highest number of neural passes the plus button will go to when the passes
-# are chained as stages, which is what an add-on before the v5 line gets. With
-# the passes inside the add-on the bar goes to four, the add-on's own limit,
-# and this is not used. Three is the chain's default and the highest tested.
-#
-# Beyond three is experimental and may not work properly. At four passes the
-# rate search has been measured hunting over a 40 fps spread on a still image,
-# so the frame rate can swing and the picture can wander. Raising this is
-# allowed because the ceiling is yours to set, not because four is ready.
-# max_passes = 3
-
-# How the passes are made. auto, the default, looks at the add-on in the mpv
-# folder: the RenoDX DLSS 5 add-on from its v5 line runs the passes itself,
-# inside one mpv, and the lens writes the count to NRPasses in ReShade.ini
-# and restarts its one stage when the count is applied. Older add-ons get a
-# chain of stages, each neural rendering the one before. addon or chain
-# forces one or the other.
-# passes_mode = auto
-
-# The DLSSNR Cost Scaler proxy, when it is in the mpv folder: the model renamed
-# to nvngx_dlssnr_real.dll, the proxy as nvngx_dlssnr.dll with its ini beside
-# it. fullscreen, the default, switches it on for a fullscreen lens and off for
-# a windowed one; always applies the same rule to any lens; off keeps it off;
+# The DLSSNR Cost Scaler, which the setup puts in front of NVIDIA's model.
+# fullscreen, the default, switches it on for a fullscreen lens and off for a
+# windowed one; always applies the same rule to any lens; off keeps it off;
 # manual leaves its ini alone. The scale is chosen so the model's work over all
 # the passes comes to about cost_scaler_mpx megapixels: 8 is 6144x2560 at 0.70
 # for one pass and 0.50 for two, 3840x2160 at native for one pass and 0.65 for
@@ -72,23 +29,16 @@
 # cost_scaler = fullscreen
 # cost_scaler_mpx = 8
 
-# What the title bar shows beside the size: fps, the frame rate the visible
-# pass actually presents; detail, the capture rate in and the rate asked out;
-# or size. The Settings dialog has this too.
+# What the title bar shows beside the size: fps, the new pictures the lens shows
+# each second; detail, the frames captured and the new pictures shown, each per
+# second; or size. The Settings dialog has this too.
 # readout = fps
 
-# Show the delay from capture to display beside the frame rate. See the README
-# under Frame rate for what it measures. The Settings dialog has this too.
+# Show the delay from capture to display beside the frame rate. The Settings
+# dialog has this too.
 # latency = 0
 
-# What hosts the picture. mpv is what shipped. presenter is the lens's own Vulkan
-# window, which captures the monitor itself and presents each frame as it arrives,
-# about 8 ms behind the screen against 70 through mpv. It needs lens-presenter.exe
-# in the mpv folder, see the README under The presenter.
-# host = mpv
-
-# Experimental. Cover the whole monitor the lens is on. This is the least
-# tested part of the lens, so try it rather than rely on it. The Settings
-# dialog has a checkbox for this and writes it here. Pass count and best held
-# rate for the fullscreen chain are kept apart from the windowed ones.
+# Cover the whole monitor the lens is on. The Settings dialog has a checkbox for
+# this and writes it here. The pass count for fullscreen is kept apart from the
+# windowed one.
 # fullscreen = 0

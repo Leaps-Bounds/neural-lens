@@ -9,26 +9,31 @@
 ; fetched instead, during setup: a page of this installer offers it, ticked by
 ; default, and the fetch runs after the files are copied with its progress on
 ; the status line, so the user meets one installer and no second wizard after.
+; The stack lands in the install folder itself, beside lens-presenter.exe,
+; because ReShade reads its configuration from the folder of the program it
+; attaches to.
 ;
 ; Build, from the repository root:
-;   python -m PyInstaller --noconfirm --clean --noconsole --onedir --name NeuralLens ^
-;       --icon ..\assets\neural-lens.ico --add-data "..\assets\neural-lens.ico;assets" ^
-;       --collect-all windows_capture --copy-metadata opencv-python --hidden-import neural_stack ^
-;       --exclude-module charset_normalizer ^
-;       --distpath build\dist --workpath build\work --specpath build neural_lens.py
-;   The icon and add-data paths are relative to the spec folder, build, hence the ..
-;   copy-metadata carries OpenCV's licence texts into the bundle; its hook does not.
-;   exclude-module drops charset_normalizer, an optional import of numpy's f2py that
-;   nothing in the lens uses.
+;   python -m PyInstaller --noconfirm --clean --distpath build\dist --workpath build\work installer\NeuralLens.spec
 ;   "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" installer\NeuralLens.iss
 ; Output: build\installer\NeuralLens-Setup-<version>.exe
+;
+; A test build that installs beside a real install without touching it takes a
+; name and an AppId of its own from the command line, for example:
+;   ISCC /DAppName="DLSS 5 Neural Lens Test" /DAppGuid=<another GUID> /FNeuralLens-Setup-test installer\NeuralLens.iss
 
-#define AppName "DLSS 5 Neural Lens"
-#define AppVersion "0.1.0"
+#ifndef AppName
+  #define AppName "DLSS 5 Neural Lens"
+#endif
+#ifndef AppGuid
+  #define AppGuid "6B0B1D6E-4C7A-4D6E-9B7D-2A6C1E9F0A11"
+#endif
+#define AppVersion "0.2.0"
 #define AppExe "NeuralLens.exe"
+#define DownloadMB "150"
 
 [Setup]
-AppId={{6B0B1D6E-4C7A-4D6E-9B7D-2A6C1E9F0A11}
+AppId={{{#AppGuid}}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion} beta
@@ -69,6 +74,10 @@ Source: "..\CHANGELOG.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\neural-lens.ini.example"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion
 
+[InstallDelete]
+; the program's libraries are replaced whole, so none from an earlier version is left beside the new ones
+Type: filesandordirs; Name: "{app}\_internal"
+
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"
 Name: "{autoprograms}\{#AppName} stack setup"; Filename: "{app}\{#AppExe}"; Parameters: "--setup-stack"; Comment: "Fetch or repair the Neural Rendering stack"
@@ -88,22 +97,23 @@ procedure InitializeWizard();
 begin
   DownloadPage := CreateInputOptionPage(wpSelectTasks,
     'Neural Rendering stack',
-    'Setup can download about 230 MB now.',
-    'The lens drives NVIDIA''s DLSS Neural Rendering through mpv and ReShade. None of that is' + #13#10 +
-    'included here, because those parts are published by other projects under licences that do' + #13#10 +
-    'not allow this installer to carry copies. Setup fetches them from the projects themselves.' + #13#10 + #13#10 +
+    'Setup can download about {#DownloadMB} MB now.',
+    'The lens drives NVIDIA''s DLSS Neural Rendering through ReShade and two community add-ons.' + #13#10 +
+    'None of that is included here, because those parts are published by other projects under' + #13#10 +
+    'licences that do not allow this installer to carry copies. Setup fetches them from the' + #13#10 +
+    'projects themselves.' + #13#10 + #13#10 +
     'Everything lands inside the folder you chose, is registered for your user only, and is' + #13#10 +
     'removed completely when you uninstall. Nothing asks for administrator rights.' + #13#10 + #13#10 +
     'If you clear this, the lens is installed on its own and you can fetch the stack later from' + #13#10 +
     'the Start Menu entry "' + '{#AppName}' + ' stack setup". The lens cannot render until you do.',
     False, False);
-  DownloadPage.Add('Download the Neural Rendering stack now (about 230 MB)');
+  DownloadPage.Add('Download the Neural Rendering stack now (about {#DownloadMB} MB)');
   DownloadPage.Values[0] := True;
 end;
 
-{ There is no card page any more. One Neural Rendering model serves every RTX
-  card, so there is nothing to choose and nothing to get wrong. The stack setup
-  checks for an RTX card itself and says so plainly if there is not one. }
+{ There is no card page. One Neural Rendering model serves every RTX card, so
+  there is nothing to choose and nothing to get wrong. The stack setup checks
+  for an RTX card itself and says so plainly if there is not one. }
 
 { ExecAndLogOutput calls this once per line the stack setup prints, and pumps
   the message queue itself, so the wizard stays alive without a busy wait. }
@@ -125,8 +135,9 @@ end;
   and hands the exit code back directly.
 
   A failure warns and lets Setup finish rather than rolling back: losing a whole
-  install to a dropped connection at 200 MB would be worse than finishing
-  without the stack, and the Start Menu entry exists to complete it later. }
+  install to a dropped connection near the end of the download would be worse
+  than finishing without the stack, and the Start Menu entry exists to complete
+  it later. }
 procedure RunStackSetup();
 var
   Res: Integer;

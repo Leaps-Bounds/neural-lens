@@ -1,6 +1,6 @@
 # DLSS 5 Neural Lens
 
-**Beta, version 0.1.0.** See [CHANGELOG.md](CHANGELOG.md). While the version starts with 0,
+**Beta, version 0.2.0.** See [CHANGELOG.md](CHANGELOG.md). While the version starts with 0,
 settings, the state file format and behaviour may change between releases.
 
 A floating see-through window for Windows. Drag it over anything on your desktop and the
@@ -13,8 +13,8 @@ integrates DLSS. This puts it on anything that can be drawn on your screen: a br
 an emulator, a photo, a remote desktop session. Nothing is injected into the target application,
 and the target does not need to know anything about DLSS.
 
-It can also apply **several neural passes**, chosen with plus and minus in the title bar and
-applied with Set, while it runs.
+It can apply **up to four neural passes**, chosen with plus and minus in the title bar and
+applied with Set, and its picture runs about one refresh behind the screen.
 
 ## Requirements
 
@@ -22,7 +22,7 @@ applied with Set, while it runs.
   path uses Windows.Graphics.Capture. It has only ever been tested here on Windows 11 25H2.
 - An NVIDIA RTX card with a driver new enough for DLSS Neural Rendering. The setup reads the
   compute capability from `nvidia-smi` and stops below 7.5, which is the RTX 20 series and newer.
-- Room on disk for about 540 MB once the stack is in place, of which about 230 MB is downloaded
+- Room on disk for about 400 MB once the stack is in place, of which about 150 MB is downloaded
   during installation.
 
 The installed lens does not need Python. That is only for running from source, below.
@@ -43,34 +43,46 @@ adds two Start Menu entries, the lens and its stack setup, an uninstaller, and a
 if you tick that. The installer itself contains only the lens.
 
 Setup offers to fetch the neural stack as part of the installation, as a checkbox that is
-already ticked. Left ticked, it downloads about 230 MB and assembles the stack before setup
-finishes, reporting each step as it goes. **A small mpv window opens for about nine seconds
-near the end**: that is the self test checking that Neural Rendering really ran, and it closes
-itself. If that step fails, setup still completes and tells you which log to read, and you can
-run it again afterwards from the Start Menu's stack setup entry. Untick the box and nothing is
-downloaded, and that same entry is how you set it up later.
+already ticked. Left ticked, it downloads about 150 MB and assembles the stack before setup
+finishes, reporting each step as it goes. **A small window opens at the top left of the screen
+for about nine seconds near the end**: that is the self test checking that Neural Rendering
+really ran, and it closes itself. If that step fails, setup still completes and tells you which
+log to read, and you can run it again afterwards from the Start Menu's stack setup entry. Untick
+the box and nothing is downloaded, and that same entry is how you set it up later.
 
-Everything the lens has lives in its one folder: the program, the stack in `stack`, the layer in
-`ReShade`, and its state, logs and screenshots in `data`. ReShade is registered as a Vulkan layer
-for your user only, under its own name with its own allow list, so an existing ReShade on the
-machine is neither touched nor doubled. Uninstalling removes that folder and that one registry
-value, and nothing else: a DLL you pointed the setup at was copied in, so the original stays
-where it was, and a `data_dir` you moved outside the install is left alone.
+Everything the lens has lives in its one folder: the program, its presenter and the stack beside
+them, the layer in `ReShade`, and its state, logs and screenshots in `data`. The stack sits beside
+the presenter because ReShade reads its configuration from the folder of the program it attaches
+to. ReShade is registered as a Vulkan layer for your user only, under its own name with its own
+allow list, so an existing ReShade on the machine is neither touched nor doubled. Uninstalling
+removes that folder and that one registry value, and nothing else: a DLL you pointed the setup at
+was copied in, so the original stays where it was, and a `data_dir` you moved outside the install
+is left alone.
+
+**Installing over 0.1.0** removes the stack 0.1.0 assembled in its `stack` folder, mpv included.
+NVIDIA's two runtimes and ReShade's DLL are moved across when they check out, so they are not
+downloaded again. The window position and pass count are kept.
 
 What it fetches, and from where:
 
 | part | from |
 |---|---|
-| mpv | shinchiro's mpv-winbuild-cmake, the current release |
 | ReShade 6.8.0 with add-on support | reshade.me, the DLL taken out of the setup without running it |
-| `nvngx_dlss.dll` 310.8.0 and the `310.8.SF-v2` Neural Rendering model | the RHI project's manifest, sha256 checked against the hashes held in `neural_stack.py`; the model's are listed below |
+| `nvngx_dlss.dll` 310.8.0 and the `310.8.SF-v2` Neural Rendering model | the RHI project's manifest; the model's builds are listed below |
+| `renodx-dlss5.addon64` 5.2.1 | the RHI repository |
+| DLSSNR-Cost-Scaler 1.0.6 | its release on GitHub |
 | `dlss5-feed.addon64` and `DLSS5_Feed.fx` | DLSS5-Feeder, the current release |
-| `renodx-dlss5.addon64` | the RHI repository |
 | ReshadeMotionEstimation (CC BY-NC 4.0), VORT (MIT) and ReShade's two shader headers | their repositories |
 
-Only NVIDIA's two runtimes are verified against a published hash, the ones listed above. The
-rest are taken from the current release each project publishes, with the RenoDX add-on pinned to
-a version and ReshadeMotionEstimation pinned to a commit.
+NVIDIA's two runtimes, the add-on and the Cost Scaler are checked against sha256 hashes held in
+`neural_stack.py`, and a download that matches none is refused. The Feeder comes from its current
+release, ReshadeMotionEstimation is pinned to a commit, and the other shaders come from their
+repositories as they stand.
+
+**The Neural Rendering add-on starts at its own defaults.** The setup writes nothing into its
+section of `ReShade.ini` but the add-on's config version, so a new install shows the add-on the
+way its authors set it up. Change anything from the menu's Tweak NR settings, in the ReShade
+overlay; a repair from the Start Menu keeps what you set.
 
 If you already have NVIDIA's two DLLs, the Start Menu's stack setup entry has a field for each,
 and `neural_stack.py` takes `--dlssnr` and `--dlss` on the command line; the installer's own page
@@ -79,26 +91,26 @@ builds listed under [The Neural Rendering model](#the-neural-rendering-model) ar
 
 Motion vectors come from ReshadeMotionEstimation by Jakob Wapenhensch, CC BY-NC 4.0, which
 measured crisper on scrolling text than every other estimator that may be fetched. With it, the
-setup is for personal, non-commercial use, which is what that licence allows. VORT (MIT) is fetched too and carries no such limit; it can be chosen only
-from the command line, with `NeuralLens.exe --install-stack --provider vort` from an install or
+setup is for personal, non-commercial use, which is what that licence allows. VORT (MIT) is
+fetched too and carries no such limit; it can be chosen only from the command line, with
+`NeuralLens.exe --install-stack --provider vort` from an install or
 `python neural_stack.py --provider vort` from source, since the Start Menu entry always uses the
-default. The setup ends with a self test that opens an mpv window for about nine seconds and
-reads ReShade's log, and says plainly whether Neural Rendering ran. The Start Menu also has a
-"stack setup" entry to fetch or repair the stack later.
+default.
 
 ### From source
 
 If you would rather run it from the repository:
 
 1. Put this folder anywhere you like. It runs in place.
-2. Python 3 with tkinter, then `pip install numpy windows-capture`.
+2. Python 3 with tkinter, then `pip install numpy windows-capture glfw vulkan`.
 3. Get a stack. `python neural_stack.py` fetches and assembles one into a `stack` folder beside
-   the script, the same as the installer does, and the lens finds it there. Or point the lens at
-   an mpv install of your own that already carries the stack, whichever way suits you:
-   - `Launch-LensNR.cmd --mpv-dir "D:\path\to\mpv"`
-   - `set NEURAL_LENS_MPV_DIR=D:\path\to\mpv`
-   - copy `neural-lens.ini.example` to `neural-lens.ini` and set `mpv_dir`
-   - or put an `mpv` folder beside `neural_lens.py`
+   the script, the same as the installer does, and the lens finds it there. The presenter in it
+   is a copy of the Python that ran the setup, named `lens-presenter.exe`, the name ReShade's
+   allow list holds, so run the lens with that same Python. A stack somewhere else can be named
+   in any of these ways:
+   - `Launch-LensNR.cmd --stack-dir "D:\path\to\stack"`
+   - `set NEURAL_LENS_STACK=D:\path\to\stack`
+   - copy `neural-lens.ini.example` to `neural-lens.ini` and set `stack_dir`
 4. Run `Launch-LensNR.cmd`. No console window opens. Everything the lens prints goes to
    `data\logs\lens.log` beside the script, and anything that stops it from starting is shown
    as a dialog. To watch it live instead, run `python neural_lens.py`.
@@ -112,22 +124,25 @@ Screenshots can also be pointed somewhere else on their own, from the menu's Set
 **The lens is the window. It does not do the neural rendering itself.** That is done by an
 experimental community stack, and none of it is included or redistributed here. The installer
 fetches each piece from the project that publishes it, see [Install](#install), and from source
-`neural_stack.py` does the same. What has to be present is:
+`neural_stack.py` does the same. What the lens runs:
 
 | component | what it does | comes from |
 |---|---|---|
-| ReShade, installed as its Vulkan layer | hosts the two add-ons below | reshade.me |
+| `lens-presenter.exe` | captures the screen under the lens and presents it in a Vulkan window of its own | this repository |
+| ReShade, installed as its Vulkan layer | hosts the two add-ons below inside the presenter | reshade.me |
 | `dlss5-feed.addon64` | synthesises the inputs DLSS expects, such as depth and motion vectors, for content that has none of its own | its own project |
 | `renodx-dlss5.addon64` | performs the neural rendering pass | its own project |
 | `nvngx_dlss.dll` | NVIDIA's DLSS runtime | NVIDIA |
-| `nvngx_dlssnr.dll` | NVIDIA's Neural Rendering model | NVIDIA |
+| `nvngx_dlssnr_real.dll` | NVIDIA's Neural Rendering model | NVIDIA |
+| `nvngx_dlssnr.dll` | DLSSNR-Cost-Scaler, which can run the model at a fraction of the resolution | its own project |
 
 ### The Neural Rendering model
 
-`nvngx_dlssnr.dll` is NVIDIA's model, and the version this was built against is **310.8**. One
-build covers every RTX card, so there is nothing to choose and the setup does not ask. It checks
-only that an NVIDIA RTX card is present, meaning compute capability 7.5 or higher, which is the
-RTX 20 series and newer, and says so plainly when there is not one.
+NVIDIA's model is `nvngx_dlssnr.dll`, installed here as `nvngx_dlssnr_real.dll` behind the Cost
+Scaler, and the version this was built against is **310.8**. One build covers every RTX card, so
+there is nothing to choose and the setup does not ask. It checks only that an NVIDIA RTX card is
+present, meaning compute capability 7.5 or higher, which is the RTX 20 series and newer, and says
+so plainly when there is not one.
 
 The build used is `310.8.SF-v2`. It was published for the RTX 40 series and its author states it
 also covers RTX 20 and 30 and runs identically on RTX 50. It was measured here creating and
@@ -151,33 +166,32 @@ and the last above. A DLL you point the setup at is checked the same way, so NVI
 310.8 is listed here so you can identify it, and is not accepted: the SF-v2 build is what runs on
 every card.
 
-If you are bringing an mpv install of your own, the test is simple: open a video in it and see
-whether Neural Rendering is applied. If it is not, fix that first.
-
 ## Using it
 
 - **Move it** by dragging the title bar. The viewport is click-through, so clicking inside it
-  reaches whatever is underneath rather than the lens.
-- **Close it** with the X. Because the viewport can never take keyboard focus, mpv's usual `q`
-  will not reach it, which is why the X is there.
+  reaches whatever is underneath rather than the lens. Let go of it on another monitor and it
+  takes a second to start again there.
+- **Close it** with the X. The viewport never takes keyboard focus, so no key closes it.
 - The **menu** at the left opens the ReShade overlay in place so you can adjust Neural
   Rendering settings live, and also holds the pass controls and a Neural Rendering on and off
   toggle. The menu button opens and closes it; so does a click anywhere else, or Escape.
 - **Save a before and after screenshot** from the menu. It writes three PNGs: the untouched
   content the lens captured, the neural rendered result, and the two joined side by side. Both
-  halves come from the same live pipeline a fraction of a second apart, so on still content they
-  line up pixel for pixel. It pauses briefly first, so the menu you just used is not in the shot.
-- **Passes** are chosen with the plus and minus on the title bar and applied with **Set**, so
-  going from one pass to three is one rebuild rather than two. The number turns amber while
-  it differs from what is running. The menu's add and remove entries apply at once.
+  come from the presenter at the same moment, the capture it holds and the picture it presented,
+  read back, so on still content they line up pixel for pixel.
+- **Passes** are chosen with the plus and minus on the title bar, up to four, and applied with
+  **Set**, so going from one pass to three is one restart rather than two. The number turns
+  amber while it differs from what is running. The menu's add and remove entries apply at once,
+  and a count chosen in the ReShade overlay reaches the title bar by itself.
 - **Live A/B split** from the menu puts a draggable divider across the lens, with Neural
   Rendering on the left of it and the untouched source on the right, both live. It costs
   nothing: the lens is see-through, so the right side is simply the screen underneath. Works
   at any pass count and in fullscreen. Pick the menu entry again to end it.
 - **Resize it** from the menu. A translucent outline appears over the lens showing its live
   size. Drag any edge, let go, and confirm. See [Limits](#limits) for why this restarts.
-- **Settings** in the menu chooses where screenshots are saved, and remembers the choice in
-  `neural-lens.ini`.
+- **Settings** in the menu holds the screenshot folder, fullscreen, what the title bar shows,
+  the delay meter, and the stack and data folders, each with an explanation. It writes
+  `neural-lens.ini`; nothing needs editing by hand.
 - **F6 turns Neural Rendering off and on** in every pass at once, from the menu or the key
   itself. The add-on reads the physical key, so F6 pressed anywhere toggles it. While it is off
   the title bar says `NR off` and the pass controls wait, because a pass with Neural Rendering
@@ -187,245 +201,144 @@ whether Neural Rendering is applied. If it is not, fix that first.
   top again. The button's Close window closes the lens. A maximised or full screen window,
   which Windows puts above everything when it becomes the foreground, is handled on its own:
   the lens notices and comes back within a fifth of a second.
-- **Fullscreen** is a checkbox in Settings, and is **experimental**: it is the least tested
-  part of the lens, included to be tried and reported on rather than relied on. The lens
-  covers the whole monitor it is on, with the title bar over the top edge of the picture, as a
-  short bar in the bottom right corner instead while the ReShade overlay is open from the menu,
-  and cannot be dragged. Changing it restarts the lens, like a resize, and the windowed position
-  and size are kept for the way back. A whole monitor is a lot of pixels: expect the frame
-  rate to settle well below the windowed one, and see [Frame rate](#frame-rate) for what it
-  does about that. If the Cost Scaler proxy is in the stack, fullscreen is where the lens
-  switches it on; see [The Cost Scaler proxy](#the-cost-scaler-proxy).
+- **Fullscreen** is a checkbox in Settings. The lens covers the whole monitor it is on, with the
+  title bar over the top edge of the picture, as a short bar in the bottom right corner instead
+  while the ReShade overlay is open from the menu, and cannot be dragged. Changing it restarts
+  the lens, like a resize, and the windowed position and size are kept for the way back. A whole
+  monitor is a lot of pixels, so the frame rate is lower, and fullscreen is where the lens
+  switches the Cost Scaler on; see [The Cost Scaler](#the-cost-scaler).
 
 ## How it works
 
-The obstacle this works around is that you cannot simply capture the screen area underneath a
-window. Windows does not draw the desktop behind an opaque window, so ordinary screen capture
-of that region comes back empty.
+The obstacle this works around is that capturing the screen region under a window returns the
+window, not what is behind it.
 
 ```
-A Magnification API host window sits UNDER the lens, on the same rectangle, with all of the
-lens's own windows on its exclude list
-      -> Windows renders the true desktop content for that rectangle, the same mechanism the
-         built-in Magnifier uses. This is a render request, not a screen capture.
-Windows.Graphics.Capture captures that host window by its handle
-      -> window capture reads a window's own buffer, so the lens sitting on top of it and
-         hiding it makes no difference
-raw BGRA frames go straight into mpv's standard input
-      -> no encoder, no codec, no intermediate file
-mpv's ReShade stack applies Neural Rendering, and mpv is drawn on top: click-through,
-always on top, and never moved by clicks
+Windows.Graphics.Capture captures the monitor the lens is on, with every window of the lens
+excluded from capture
+      -> the capture composes the desktop underneath excluded windows, so the region under
+         the lens comes back as if the lens were not there
+the presenter crops that region and copies it into a Vulkan swapchain the moment it arrives
+      -> no encoder, no player, no buffer
+ReShade's add-ons apply Neural Rendering as the presenter presents, and its window sits on the
+lens region: click-through, always on top, and never moved by clicks
 ```
 
-Moving the lens only repositions those windows and re-aims the magnifier. Nothing restarts.
+Moving the lens only repositions its windows and moves the crop. Nothing restarts, unless the
+lens is let go on another monitor.
+
+Between captures the presenter presents the last frame again at the display's rate, copied in
+afresh each time, so Neural Rendering always works on the captured picture and never on its own
+output. A frame that arrives while the previous one is still waiting replaces it rather than
+queueing behind it, so the picture never falls behind.
 
 ### Multiple passes
 
-How the extra passes are made depends on the add-on in the stack.
+The RenoDX DLSS 5 add-on runs the passes itself, inside the presenter, and takes the count from
+`NRPasses` in its section of ReShade.ini when its process starts. The lens writes the count there
+and restarts the presenter whenever the count is applied with Set, and a count chosen in the
+ReShade overlay's own control reaches the title bar within about two seconds while the overlay
+is open. The add-on's own limit is four passes.
 
-The RenoDX DLSS 5 add-on from its v5 line runs the passes itself, inside the one mpv, and
-takes the count from `NRPasses` in its section of ReShade.ini when its process starts. The lens
-recognises such an add-on, writes the count there, and restarts its single stage whenever the
-count is applied with Set. Measured against chaining on an RTX 5090, a 2400x1800 lens over a
-still image: two passes inside the add-on presented up to 69 frames a second where two chained
-stages presented 51, three passes 53 where three stages presented 33, and the change to the image
-was the same within 2 out of 255. The add-on's own limit is four passes. The lens switches the
-add-on's chained temporal history on with the count, since its passes beyond the first are
-stateless by default and flicker without it. `passes_mode` in the ini
-forces either way. The stack the setup fetches still carries the 4.70 add-on, which chains, so an
-installed lens runs the passes inside the add-on only once the add-on in its stack is replaced
-by a v5 build.
+The add-on's passes beyond the first are stateless unless its chained temporal history, a toggle
+in its overlay, is on, and whether that steadies the picture depends on the other settings. Over
+a still, as the change between consecutive presented pictures out of 255, it took two passes from
+0.46 to 0.37 and three from 0.60 to 0.34 with NRIntensity at 1.7 and style 0, but at the add-on's
+defaults it took two passes from 0.51 to 0.59, left three at 0.65, and took four from 0.76 to
+0.68. So the lens leaves it to the add-on, which keeps it off by default.
 
-Add-ons before that line offer no setting for running the pass more than once, so with those the
-extra passes are produced by running the whole pipeline again: a second stage captures the first
-stage's mpv window and neural renders that already neural rendered image, and so on. The stages
-stack on the same rectangle, and only the last one is visible.
+The passes genuinely accumulate, and each one costs frame rate. Measured on an RTX 5090 with a
+120 Hz display, a 1400x1000 lens over a still, with the add-on at its defaults. The change is
+from the untouched source, as mean absolute difference out of 255, and the delay is what the
+title bar's meter reads:
 
-The passes genuinely accumulate rather than merely looking different. Cumulative change from
-the untouched source, as mean absolute difference out of 255:
+| passes | frame rate | delay | change |
+|---|---|---|---|
+| 1 | 118 fps | 10 ms | 2.30 |
+| 2 | 107 fps | 13 ms | 3.58 |
+| 3 | 89 fps | 23 ms | 4.89 |
+| 4 | 74 fps | 29 ms | 6.21 |
 
-| passes | cumulative | added by that pass |
+### Frame rate and delay
+
+Nothing in the lens buffers frames, so there is no rate to set. The presenter shows each captured
+frame as soon as it has been neural rendered, and a frame that arrives while the neural pass is
+still busy replaces the one waiting, so the delay stays close to one refresh plus the neural pass
+itself.
+
+Measured on an RTX 5090 with a 120 Hz display, a window flipping between black and white took
+8 ms to show the change in the presenter's output, one refresh, both read through the
+compositor. With the lens itself at one pass, the title bar's delay meter reads:
+
+| lens | frame rate | delay |
 |---|---|---|
-| 1 | 7.71 | 7.71 |
-| 2 | 14.05 | 6.34 |
-| 3 | 19.45 | 5.40 |
+| 1400x1000 | 118 fps | 10 ms |
+| fullscreen 6144x2560, the Cost Scaler on as the lens sets it | 58 fps | 33 ms |
+| fullscreen 6144x2560, the Cost Scaler off | 42 fps | 47 ms |
 
-Running the same chain with Neural Rendering switched off changes the image by only 0.24, so
-the round trip through capture and mpv is very nearly lossless, and what accumulates really is
-neural work. With the passes inside the add-on the title bar goes up to four, the add-on's own
-limit, and a count chosen in the ReShade overlay's own control reaches the title bar within about
-two seconds while the overlay is open. Chained, three is the ceiling and the highest that is
-tested; `max_passes` in the ini raises it, and going above three that way is experimental: at four
-chained stages the rate search has been measured hunting across a 40 fps spread on a still image,
-so the frame rate can swing and the picture can wander.
+The title bar shows the frame rate the lens is showing you, averaged over the last few seconds.
+Settings can change that to the frames captured and the new pictures shown, each per second, or
+to the size alone. **Show the delay from capture to display**, in Settings under Title bar, adds
+the delay: the presenter's own measure from the moment Windows composed a captured frame to the
+moment it presented it, plus a refresh and a half for the composition and scanout that follow,
+which it cannot see. Against a window flipping black and white it read 8 ms where
+the flip measured 8 at 120 Hz. The bar marks it with a tilde because that last part is an
+estimate.
 
-**Each pass lowers the frame rate on purpose.** Every pass is another full capture and present
-stage, so the chain delivers fewer frames per second, and each stage is asked for a little less
-than the stage feeding it. The visible stage starts at five sixths of your display's refresh
-rate at one pass, and at that divided by the pass count beyond, and the rate is then adjusted to
-what the machine actually manages (see Frame rate below). With the passes inside the add-on there
-is one stage, so only the neural work grows with the count; the rate starts by the same rule and
-the adjustment finds the rest.
+### The Cost Scaler
 
-Asking a stage for more than it can deliver makes it present frames that have not arrived yet,
-and Neural Rendering then re-runs over its own output. A large mismatch crushes the picture
-toward black or white and recovers, over and over. A small one makes it shimmer instead.
+DLSSNR-Cost-Scaler, by xenmods, MIT, is a proxy `nvngx_dlssnr.dll` that runs the neural model at
+a fraction of the frame's resolution and composites the result back onto the full frame. The
+setup puts it in front of NVIDIA's model, which it installs as `nvngx_dlssnr_real.dll`, with the
+proxy switched off and its global hotkeys off. Neural Rendering in the lens runs as a D3D12 NGX
+session behind the Feed's Vulkan transport, which is what the proxy hooks, so it works here as it
+does in a game.
 
-Two passes is usually the sweet spot. Three is visibly heavy on most content.
+The lens switches it on for a fullscreen lens and off for a windowed one, writing its ini before
+the presenter starts and again whenever the pass count changes. The scale is chosen so the
+model's work over all the passes comes to about 8 megapixels: 6144x2560 gets 0.70 at one pass
+and 0.50 at two, 3840x2160 stays at native for one pass and gets 0.65 at two, and 2560x1440 stays
+at native up to two passes, since below a saving of about a fifth the proxy's own cost is all
+that is left. `cost_scaler_mpx` in the ini changes that budget; `cost_scaler` set to `always`
+applies the rule to a windowed lens as well, `off` keeps the proxy off, and `manual` leaves the
+proxy's ini alone. Anamorphic scaling is switched off with the scale, and the proxy's other
+settings are left as they are.
 
-### Frame rate
+Measured on an RTX 5090, fullscreen at 6144x2560 over a still, with the add-on at its defaults.
+The change is from the untouched source, as mean absolute difference out of 255, and the delay is
+what the title bar's meter reads:
 
-The rate the lens asks for is adjusted while it runs, because what a chain can deliver depends
-on the GPU, the size of the lens, the number of passes and whatever else the GPU is doing at the
-time. Measured on an RTX 4070 SUPER, a 1400x1000 lens at one pass held 100 with the GPU idle and
-about 60 with a video playing beside it; the same lens at two passes held about 35; a 2000x1400
-lens held 41. On an RTX 5090 the same 1400x1000 lens held 100 at one pass.
+| | frame rate | delay | change |
+|---|---|---|---|
+| one pass, off | 42 fps | 47 ms | 1.63 |
+| one pass, on at 0.70 | 58 fps | 33 ms | 1.22 |
+| two passes, off | 26 fps | 78 ms | 2.98 |
+| two passes, on at 0.50 | 54 fps | 36 ms | 2.22 |
 
-Once a second the lens compares three things: the frames the visible stage presents against the
-rate it was asked for, the brightness of what comes out against the range of brightness that has
-gone in over the last second and a half, and, while the content under the lens is still, how
-much the output changes from frame to frame. A shortfall, a brightness runaway or a shimmer
-lowers the rate. The brightness test uses a range rather than the latest value because the
-output lags the input slightly, and over a video with scene changes the two would otherwise
-disagree while nothing is wrong: that false alarm alone took a lens from 100 to 12 fps. When
-the picture has been stable for a while and the content is still, the rate probes upward again
-in small steps, never above five sixths of the display rate. A rate the lens has already held
-is retaken much faster, in a few steps a few seconds apart and over moving content too, since
-it is known to work: after a fifteen second knock down, a 4070 was back at its level in 16
-seconds.
-
-A rate that failed is not held against the lens for ever. Something else using the GPU, a video
-or another application, lowers what the chain can carry for as long as it runs, and a limit
-learned then is wrong once it stops. So a limit is tried again after the picture has been clean for a while, on
-a wait that doubles each time the limit turns out to be real. Measured on an RTX 5090 at one
-pass: 100 with the GPU to itself, 62 under load, and back to 99 about half a minute after the
-load stopped. The highest rate the chain actually held is saved with the window position, so
-the next launch starts from that rather than from whatever it happened to be running when it
-closed.
-
-The picture in the lens runs a little behind what is under it, since every frame is captured,
-handed to mpv, neural rendered and presented again. Measured at one pass and 99 fps with a
-window flipping between black and white under the lens, from the flip on screen to the flip in
-the output: 68 ms. It was 136 ms until mpv's readahead was cut from eight frames to two; the
-lens plays slower than frames arrive, so that buffer was always full and every frame in it was
-delay. Over a video this is the gap between the sound and the lens's picture, and it grows at
-lower frame rates, because each buffered frame lasts longer.
-
-The title bar can show that delay: **Show the delay from capture to display** in Settings, under
-Title bar. The lens logs every frame it sends with the time Windows composed it, asks mpv four
-times a second which frame it is showing, and takes the difference, plus an allowance for the
-steps that cannot see: the magnifier's repaint and composition before the capture, and the
-present, composition and scanout after. Calibrated against the flip measurement above on an
-RTX 5090 with a 120 Hz display, it read 70 ms where the flip measured 70 at 99 fps, and 181
-where the flip measured 183 at 33 fps; the measured part alone was 34 and 137. The bar marks
-it with a tilde because the allowance is an estimate.
-
-The title bar shows the frame rate the lens is actually showing you, averaged over the last few
-seconds, with a word beside it when the adjustment has just acted. Settings can change that to
-the input and output sides instead, where `120 in  33 out` means capture delivers 120 frames a
-second into the first stage and the visible stage is asked for 33, or to the size alone. It
-also has a switch to turn the adjustment off and keep the fixed rule, a slider for the lowest rate it may
-go to, and sliders for the frame rate ceiling and the capture refresh, each with an explanation
-of what it does. Everything the lens can be told lives in that dialog; the ini file is only
-where it writes the answers.
-
-The single biggest factor in the input rate was a library default rather than anything
-expensive: the capture binding's `minimum_update_interval` throttles delivery to about 60 fps
-unless it is set to 0. See [docs/NOTES.md](docs/NOTES.md).
-
-### The presenter
-
-The lens can host its stage in a presenter of its own instead of mpv: `host = presenter` in the
-ini, or `--presenter` on the command line. The presenter, `lens_presenter.py`, is a Vulkan
-window that captures the monitor itself, cropped to the lens with the lens's own windows
-excluded from capture, and presents each frame the moment it arrives; between arrivals it
-presents the last frame again at the display's rate, copied in afresh each time so Neural
-Rendering never works on its own output. Nothing buffers, so there is no rate to govern and no
-magnifier to drive, and the delay meter reads the presenter's own figure. ReShade, the Feed and
-the add-on attach to it as they do to mpv, because it runs as the stack folder's own
-`lens-presenter.exe`, which the layer's allow list names.
-
-Measured on an RTX 5090 with a 120 Hz display, from a change on screen to the change in the
-output, both read through the compositor:
-
-| | mpv | presenter |
-|---|---|---|
-| 1400x1000, one pass | 70 ms at 99 fps | 8 ms at 118 fps |
-| fullscreen 6144x2560, one pass | 183 ms at 33 fps | 33 ms at 58 fps |
-
-The change Neural Rendering makes to the image is the same through either host on the same
-still, with the same settings. The presenter cannot chain stages, since a chained stage would
-have to capture a window it excludes from capture, so with an add-on before the v5 line it
-runs one pass; with a v5 add-on the passes run inside the add-on as usual. Screenshots come
-from the presenter: the frame it captured, and the picture it presented last, read back from
-its swapchain.
-
-Until the setup does it, the presenter is put in place by hand: `pip install glfw vulkan` for
-the Python the lens runs with, a copy of that Python's `python.exe` in the stack folder named
-`lens-presenter.exe` beside a `pyvenv.cfg` holding `home = <that Python's folder>` and
-`include-system-site-packages = true`, and the copy's full path added to `Apps=` in the
-`ReShade\ReShadeApps.ini` of the install, comma separated after mpv's.
-
-### The Cost Scaler proxy
-
-DLSSNR-Cost-Scaler, by xenmods, MIT, is a proxy `nvngx_dlssnr.dll` that runs the neural model
-at a fraction of the frame's resolution and composites the result back onto the full frame. The
-setup does not fetch it. To put it in the stack by hand, rename `nvngx_dlssnr.dll` in the stack
-folder to `nvngx_dlssnr_real.dll`, then copy the proxy's `nvngx_dlssnr.dll` and `nvngx_dlssnr.ini`
-from its release zip beside it. Neural Rendering in mpv runs as a D3D12 NGX session behind the
-Feed's Vulkan transport, which is what the proxy hooks, so it works here as it does in a game.
-
-When it is there, the lens switches it on for a fullscreen lens and off for a windowed one,
-writing its ini before the stage starts and again whenever the pass count changes. The scale is
-chosen so the model's work over all the passes comes to about 8 megapixels: 6144x2560 gets 0.70
-at one pass and 0.50 at two, 3840x2160 stays at native for one pass and gets 0.65 at two, and
-2560x1440 stays at native up to two passes, since below a saving of about a fifth the proxy's
-own cost is all that is left. `cost_scaler_mpx` in the ini changes that budget;
-`cost_scaler` set to `always` applies the rule to a windowed lens as well, `off` keeps the proxy
-off, and `manual` leaves the proxy's ini alone. Anamorphic scaling is switched off with the scale,
-and the proxy's other settings are left as they are.
-
-Measured on an RTX 5090 with the passes inside the add-on, as the most frames a second the visible
-stage presented:
-
-| | off | 0.75 | 0.50 | 0.35 |
-|---|---|---|---|---|
-| fullscreen 6144x2560, one pass | 30 | 43 | 43 | 44 |
-| fullscreen 6144x2560, two passes | 23 | 31 | 43 | 43 |
-| windowed 2400x1800, one pass | 97 | 88 | | |
-| windowed 2400x1800, two passes | 69 | 86 | 91 | |
-
-The price is detail: the change the neural pass makes to the image is about a fifth smaller at
-0.75 and almost half at 0.50, because the model sees fewer pixels of what, under a lens, is all
-detail. That is why it stays off windowed, where the neural pass is rarely what limits the frame
-rate; the one pass windowed row shows the proxy's own per frame cost when it is not.
+The price is detail: the change the neural pass makes to the picture is about a quarter smaller,
+because the model sees fewer pixels of what, under a lens, is all detail. That is why it stays
+off windowed, where the neural pass is rarely what limits the frame rate.
 
 ## Limits
 
-- **Resizing restarts the lens.** It cannot resize in place, because that recreates mpv's
-  swapchain, which makes the Neural Rendering add-on release its DLSS feature and crash. The
-  menu's resize therefore takes the size you drag out, saves it, and relaunches at that size and
-  position with the same number of passes. It takes a second or two. Pass count is unaffected by
-  any of this and still changes live.
-- **Over fast moving content the picture can wash out at a rate the chain cannot carry**, going
-  pale for a few seconds and recovering, without the automatic frame rate noticing, because the
-  brightness stays inside the margin it watches. Seen once at 85 fps over a scrolling page on a
-  4070; at 30 it did not happen. Lowering the frame rate ceiling in Settings avoids it.
-- **Applications in exclusive fullscreen are invisible to it**, because the Magnification API
-  cannot see them. Borderless windowed works. An application with real DLSS support can usually
+- **Resizing restarts the lens.** A new size needs a new swapchain, and the Neural Rendering
+  add-on crashes when its swapchain is recreated, so the menu's resize takes the size you drag
+  out, saves it, and relaunches at that size and position with the same number of passes. It
+  takes a second or two. Applying a new pass count restarts the presenter the same way.
+- **The lens shows one monitor at a time.** The presenter captures the monitor the lens is on. A
+  lens hanging over the edge of that monitor shows a picture that no longer lines up with what is
+  under it, and a lens larger than its monitor shows nothing.
+- **Applications in exclusive fullscreen cannot be under the lens**, because nothing else is
+  drawn over them. Borderless windowed works. An application with real DLSS support can usually
   take Neural Rendering directly through the add-on anyway, without this.
-- **Never add `--untimed` to mpv.** It makes mpv present the same frame repeatedly, and Neural
-  Rendering then processes its own output over and over until the picture collapses.
 
 ## Troubleshooting
 
-**The lens warned at startup that Neural Rendering will probably not run.** It checks the mpv
-folder for `dlss5-feed.addon64`, `renodx-dlss5.addon64`, `nvngx_dlss.dll` and
-`nvngx_dlssnr.dll`, and names any that are missing. Finding the folder only proves `mpv.exe` is in it, so an ordinary mpv install
-is accepted and the lens opens normally: it simply shows the screen back to you unchanged, which
-looks like the app doing nothing rather than an install that is incomplete. See
-[What makes the picture](#what-makes-the-picture) for what the mpv install has to carry. None of
-it is included or redistributed here.
+**The lens warned at startup that Neural Rendering will probably not run.** It checks the stack
+folder for `ReShade.ini`, `dlss5-feed.addon64`, `renodx-dlss5.addon64`, `nvngx_dlss.dll` and
+`nvngx_dlssnr.dll`, and names any that are missing, since the lens would otherwise open and
+simply show the screen back to you unchanged. It offers to run the stack setup, which fetches all
+of them. None of it is included or redistributed here.
 
 **Neural Rendering looks like it is doing nothing.** If the startup check above said nothing,
 the install is fine and this is almost certainly the content. Its strength depends heavily on the
@@ -439,21 +352,21 @@ detailed areas of the image.
 
 **The lens disappeared after you confirmed a resize.** Resizing relaunches the lens, so a
 relaunch that fails looks exactly like the app closing on its own. Nothing is lost: the size you
-chose was saved before the restart, so starting it again with the launcher brings it back at
-that size. If it happens repeatedly, `data\logs\restart.log` in the lens folder holds whatever
-the replacement printed before it gave up.
+chose was saved before the restart, so starting it again brings it back at that size. If it
+happens repeatedly, `data\logs\restart.log` in the lens folder holds whatever the replacement
+printed before it gave up.
 
 **Something went wrong and you want to know why.** Every launch copies the previous session's
-`ReShade.log` and `dlss5-feed.log` into `data\logs` in the lens folder, keeping the 80 most
-recent files, so evidence from a failed run survives restarting. Anything mpv itself wrote to
-its error stream is in `mpv-stderr.log` in the same folder, which is where to look when a stage
-never opened a window. The lens's own output, including every frame rate decision, is in
-`lens.log` there, with the previous session's copy stamped beside it. In an archived
-`ReShade.log`, the
-line that confirms Neural Rendering was really running is `feature=18 (DLSSNR`, which means the
-feature was created. Do not judge it by counting `evaluation succeeded (count=` lines: that is a
-milestone message, emitted at the first evaluation and the sixtieth and then not again, so a
-healthy session that ran for several minutes still shows only two of them.
+`ReShade.log`, `dlss5-feed.log` and the Cost Scaler's `nvngx_dlssnr_proxy.log` into `data\logs`
+in the lens folder, keeping the 80 most recent files, so evidence from a failed run survives
+restarting. Anything the presenter itself wrote to its error stream is in `presenter-stderr.log`
+in the same folder, which is where to look when the picture never appeared. The lens's own
+output is in `lens.log` there, with the previous session's copy stamped beside it. In an archived
+`ReShade.log`, the line that confirms Neural Rendering was really running is
+`feature=18 (DLSSNR`, which means the feature was created. Do not judge it by counting
+`evaluation succeeded (count=` lines: that is a milestone message, emitted at the first
+evaluation and the sixtieth and then not again, so a healthy session that ran for several minutes
+still shows only two of them.
 
 Bug reports are welcome as GitHub issues. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -461,8 +374,8 @@ Bug reports are welcome as GitHub issues. See [CONTRIBUTING.md](CONTRIBUTING.md)
 
 [docs/NOTES.md](docs/NOTES.md) is the engineering record: approaches that were tried and
 abandoned, each with the measurement that ruled it out, and the Windows API details that are
-easy to get wrong. Worth reading before changing how capture or the pass chain works, because
-several of the discarded approaches look perfectly reasonable until measured.
+easy to get wrong. Worth reading before changing how capture, the presenter or the passes work,
+because several of the discarded approaches look perfectly reasonable until measured.
 
 ## Credits
 
@@ -472,22 +385,26 @@ ship inside the installer. Each keeps its own licence:
 
 | what | by | licence |
 |---|---|---|
-| ReShade, whose add-on build hosts the two add-ons and whose Vulkan layer hooks mpv | crosire | BSD 3-Clause |
+| ReShade, whose add-on build hosts the two add-ons and whose Vulkan layer hooks the presenter | crosire | BSD 3-Clause |
 | DLSS5-Feeder, the add-on that builds the inputs DLSS expects, and `DLSS5_Feed.fx` | Jean-Laurent Rouzies | MIT |
 | the `renodx-dlss5` add-on that runs the neural pass, built on RenoDX | the RenoDX community; RenoDX itself by Carlos Lopez Jr. | the add-on has no published licence; RenoDX is MIT |
+| DLSSNR-Cost-Scaler, the proxy that runs the model at a fraction of the resolution | xenmods | MIT |
 | RHI and its repository, which publish the DLSS manifest and host the add-on and runtimes | RankFTW | GPL-3.0 |
-| mpv, and the Windows builds the setup fetches | the mpv project; builds by shinchiro | GPL |
 | ReshadeMotionEstimation, the default motion vector estimator | Jakob Wapenhensch | CC BY-NC 4.0 |
 | vort_Shaders, the alternative estimator | Vortigern | MIT |
 | DLSS, the DLSS runtime and the Neural Rendering model | NVIDIA | NVIDIA's terms |
 | windows-capture, the screen capture binding | NiiightmareXD | MIT |
 | OpenCV, which windows-capture requires, and which is most of the installer's size | the OpenCV team | Apache 2.0 |
 | NumPy | the NumPy developers | BSD 3-Clause |
+| GLFW, the window library the presenter is built on, whose licence text is installed as `licenses\GLFW-LICENSE.txt`, and pyGLFW, its Python binding | Marcus Geelnard and Camilla Löwy; Florian Rhiem | zlib licence; MIT |
+| vulkan, the Python binding for Vulkan, and CFFI, which it is built on | realitix; the CFFI developers | Apache 2.0; MIT-0 |
 | Python 3.12, with the libffi and Tcl/Tk libraries its Windows build carries, bundled by PyInstaller; its licence text is installed as `licenses\PYTHON-LICENSE.txt` | the Python Software Foundation; the Tcl core team | PSF; Tcl/Tk licence |
 | OpenSSL, the `libcrypto` and `libssl` libraries Python's build carries; its licence text is installed as `licenses\OPENSSL-LICENSE.txt` | the OpenSSL Project | Apache 2.0 |
 | zlib, the `zlib1.dll` Python's build carries; its licence text is installed as `licenses\ZLIB-LICENSE.txt` | Jean-loup Gailly and Mark Adler | zlib licence |
-| 7-Zip's `7zr`, fetched to unpack mpv | Igor Pavlov | LGPL |
 | PyInstaller and Inno Setup, which build the installer | their authors | GPL with exception; Inno Setup licence |
+
+The licence texts of the Python packages ship with them, in their `.dist-info` folders under
+`_internal` in the install.
 
 The installer's shape, one small program that bundles nothing and fetches every part from
 upstream, follows FeedKit by ntqueryinformation (MIT).

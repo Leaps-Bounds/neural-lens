@@ -38,7 +38,7 @@
 # dialog has this too.
 # latency = 0
 
-# Cover the whole monitor the lens is on. The Settings dialog has a checkbox for
-# this and writes it here. The pass count for fullscreen is kept apart from the
-# windowed one.
+# Fill the monitor the lens is on, apart from the taskbar, with the title bar
+# across the top. The Settings dialog has a checkbox for this and writes it here.
+# The pass count for fullscreen is kept apart from the windowed one.
 # fullscreen = 0

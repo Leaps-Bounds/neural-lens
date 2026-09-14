@@ -446,42 +446,64 @@ otherwise open a console of its own under a lens that has none.
 
 ### Per monitor DPI awareness
 
-A 1400x760 lens on the 5090's secondary monitor once produced a 1680x912 picture: ReShade created
-its Neural Rendering resources at 1680x912 and the Feed delivered frames at 1680x912, while
-`GetWindowRect` from inside the lens said 1400x760. The ratio, 1.2, is not a scaling factor, it
-is the ratio of two: 150 percent over 125. A system DPI aware process keeps the DPI the session
-logged on with and lives in a coordinate space Windows virtualizes against each monitor, so a
-window placed on a monitor whose scaling differed from that was rescaled by Windows on the way.
-The lens and the presenter are per monitor DPI aware, version 2, so every coordinate either uses
-is a physical pixel on whichever monitor it is on.
+On the test computer with the RTX 5090, a 1400x760 lens on its secondary monitor once produced a
+1680x912 picture: ReShade created its Neural Rendering resources at 1680x912 and the Feed delivered
+frames at 1680x912, while `GetWindowRect` from inside the lens said 1400x760. The ratio, 1.2, is not
+a scaling factor, it is the ratio of two: 150 percent over 125. A system DPI aware process keeps the
+DPI the session logged on with and lives in a coordinate space Windows virtualizes against each
+monitor, so a window placed on a monitor whose scaling differed from that was rescaled by Windows on
+the way. The lens and the presenter are per monitor DPI aware, version 2, so every coordinate either
+uses is a physical pixel on whichever monitor it is on.
 
-Verified on the 4070 with the primary monitor switched to 125 percent while the session had
-logged on at 100: the lens asked for 1400x760, a per monitor aware probe measured the picture's
-window at 1400x760 physical, ReShade created its resources at 1400x760, and the chrome measured
-1404x796 with both windows reporting 120 DPI, so nothing is bitmap stretched either. Fonts follow
-the monitor's DPI; the bar is 34 pixels and holds a 10 point label up to 200 percent.
+Verified on a second test computer, which has an RTX 4070 SUPER, with its primary monitor switched
+to 125 percent while the session had logged on at 100: the lens asked for 1400x760, a per monitor
+aware probe measured the picture's window at 1400x760 physical, ReShade created its resources at
+1400x760, and the chrome measured 1404x796 with both windows reporting 120 DPI, so nothing is bitmap
+stretched either. Fonts follow the monitor's DPI; the bar is 34 pixels and holds a 10 point label up
+to 200 percent.
 
 ### Fullscreen
 
 - **A layered window larger than the screen comes up blank.** The windowed chrome is the picture
-  plus a title bar plus a border, so over a whole monitor it was 3844x2194 on a 3840x2160
-  display. It existed, was visible and topmost, and drew nothing. Fullscreen the chrome is
-  therefore just the bar, laid over the top edge of the picture.
-- **A borderless window that covers a monitor exactly is taken over by the compositor's
-  fullscreen path**, and the title bar on top of it stops being drawn. The picture is two pixels
-  short of the monitor's height.
-- **The picture's window can climb above the chrome.** The lens walks the z-order above its
-  chrome on the 200 ms timer and raises the chrome again whenever the presenter is found there.
-  Menus and dialogs are not the presenter, so they stay above.
-- **The ReShade overlay keeps its tabs along the top edge, under the bar.** In tweak mode the bar
-  becomes an 840 pixel strip in the bottom right corner and returns on Done. Not the whole bottom
-  edge: the overlay reaches nearly to the bottom of the monitor, with its Reload button spanning
-  its width there, and it is anchored top left, so the far corner is clear. At 780 pixels Tk's
-  packer dropped the minus button. The picture's origin is fixed when the lens starts rather than
-  derived from the bar, which moves.
+  plus a title bar plus a border, so over a whole monitor it was 3844x2194 on a 3840x2160 display.
+  It existed, was visible and topmost, and drew nothing. Fullscreen the chrome is therefore just the
+  bar.
+- **The picture fills the work area below the bar.** The ReShade overlay opens at the picture's top
+  left with its tabs along its top edge, so a bar laid over the picture would cover them, and with
+  the picture below the bar nothing has to move for tweak mode. The work area rather than the whole
+  monitor keeps the lens clear of the taskbar, which is always on top as well. Measured over flat
+  grey on a 6144x2560 monitor at 125 percent, the picture was 6144x2466 at (0,34) and the open
+  overlay lay wholly below the bar and above the taskbar.
+- **A borderless window that covers a monitor exactly is taken over by the compositor's fullscreen
+  path**, and a title bar on top of it stops being drawn. A picture that starts below the bar never
+  covers its monitor exactly.
+- **The picture's window can climb above the chrome.** The lens walks the z-order above its chrome
+  on the 200 ms timer and raises the chrome again whenever the presenter is found there. Menus and
+  dialogs are not the presenter, so they stay above.
 
 The fullscreen lens keeps its pass count in `lens-state-fullscreen.txt`, because the windowed
 state file is what the way back restores.
+
+### Tweak mode
+
+Tweak mode makes the presenter interactive, gives it the keyboard and posts Home, so the ReShade
+overlay opens in place and takes the lens's clicks and keys. It ends in either of two ways, and both
+make the presenter click-through again and give the keyboard back to the window that had it, so a
+key pressed next goes where the user expects instead of to ReShade:
+
+- **Done** posts Home again, which closes the overlay, and waits for the key's release before the
+  styles change back, since dropping the focus makes ReShade forget a key it holds.
+- **Home pressed by the user.** It reaches ReShade only while the presenter is the foreground
+  window, so the lens counts a press of the physical key only then, reading it with
+  `GetAsyncKeyState` as it does F6, and ends tweak mode once the key is up, without posting Home,
+  which would open the overlay again. The presses the lens posts itself never show in that key
+  state. Measured over flat grey with Home injected: the presented picture matched the grey again,
+  the presenter was click-through, and the window that had the keyboard before had it back. Done
+  gave the same.
+
+Replacing the presenter during tweak mode, as Set does, ends it the same way: measured with Set to
+two passes and back, the new presenter was click-through and the keyboard was back with the window
+that had it.
 
 ### The A/B divider
 

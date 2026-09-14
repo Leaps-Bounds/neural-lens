@@ -142,8 +142,9 @@ Effect is the mean absolute difference of the after screenshot from the before, 
 two two-pass outputs differ from each other by 1.6.
 
 Through the presenter, a 1400x1000 lens over a still with the add-on at its defaults, chained
-history off as it ships: frames a second, the delay meter's reading, the change to the picture,
-and the change between consecutive presented pictures, both out of 255:
+history off and the Anchored codec, as 0.2.0 shipped: frames a second, the delay meter's reading,
+the change to the picture, and the change between consecutive presented pictures, both out of
+255:
 
 ```
 passes   frame rate   delay   change   consecutive
@@ -153,11 +154,16 @@ passes   frame rate   delay   change   consecutive
 4           74 fps    29 ms    6.21      0.76
 ```
 
-**Flicker at two passes and up.** The add-on's own text: passes beyond the first are stateless by
-default and can flicker; try the chained history toggle. Measured with the presenter's readback of
-consecutive presented pictures over a still, mean absolute difference out of 255, first with
-`NRIntensity=1.7` and `NRStyle=0`, then at the add-on's defaults. At the defaults the two and
-three pass pairs were measured twice, in both orders, with the same result, and four passes once:
+**Pulsing at two passes and up.** The add-on's own text: passes beyond the first are stateless by
+default and can flicker; try the chained history toggle. With `NRChainedHistory` off, a model in
+Blender and a still image under the lens visibly pulsed at two passes and up, and with it on they
+did not. So the lens writes `NRChainedHistory=1` where the add-on's section holds no value for it.
+
+The still the measurements here use is a screenshot of text on a dark window, and on it the
+presenter's readback does not show that pulsing. Consecutive presented pictures, mean absolute
+difference out of 255, first with `NRIntensity=1.7` and `NRStyle=0`, then at the add-on's
+defaults, where the two and three pass pairs were measured twice, in both orders, with the same
+result, and four passes once:
 
 ```
             NRIntensity 1.7, style 0        the add-on's defaults
@@ -168,9 +174,26 @@ passes      chained off     on              chained off     on
 4                           0.35              0.76          0.68
 ```
 
-So whether chained history steadies the picture depends on the settings and the pass count, and
-the lens leaves `NRChainedHistory` to the add-on, which keeps it off by default. The settings set
-the floor as well: `NRIntensity=1.31` with `NRStyle=1` gave 0.12 at one pass.
+The same still was also read back as 30 pictures over about 30 seconds, at the add-on's defaults
+with the Classic codec. Spread is the per-pixel standard deviation over time, averaged over the
+picture; regions is the same over 16x16 pixel block means; swing is the largest minus the smallest
+mean of a whole picture; all out of 255. The captured input did not change at all, and one pass,
+run first and last, gave the same spread, regions and consecutive change both times:
+
+```
+passes   chained   frame rate   spread   regions   swing   consecutive
+1          off      113.5 fps    0.425    0.116    0.082      0.399
+2          off      110.5 fps    0.481    0.143    0.104      0.471
+2          on       108.5 fps    0.574    0.153    0.078      0.556
+3          off       88.5 fps    0.593    0.175    0.108      0.610
+3          on        88.0 fps    0.672    0.184    0.265      0.638
+4          off       73.5 fps    0.685    0.199    0.095      0.720
+4          on        73.0 fps    0.752    0.214    0.320      0.684
+1          off      116.5 fps    0.424    0.116    0.055      0.398
+```
+
+The settings set the floor as well: `NRIntensity=1.31` with `NRStyle=1` gave 0.12 consecutive at
+one pass.
 
 Traps: this add-on line resets its whole section to built-in defaults when `ConfigVersion` is
 missing or older than its own, and writes `ConfigVersion=2`, without a log line. Its own working
@@ -187,13 +210,17 @@ With a section holding only `ConfigVersion=2`, 5.2.1 ran at its defaults, logged
 `intensity=1.000000 color_strength=1.000000 transfer=1.000000 paper_white=2.537500 preset=0
 style=0 enabled=ON`, wrote back `EnableHooks=2`, `NeuralUplift=1` and `NREnableUpscaling=0`, and
 created and evaluated feature 18 at one pass. So that is all the setup writes into the section,
-and a repair keeps whatever the section holds.
+and a repair keeps whatever the section holds. Before each presenter starts, the lens writes
+`NRChainedHistory=1` and `NRCodecMode=0` where the section holds no value for them and leaves a
+value that is there, so a choice made in the add-on's overlay, which the add-on writes back to
+the section, stays.
 
 The add-on's developer asked, for the v5 line, that the proxy codec be set to Classic,
-`NRCodecMode=0`. Interleaved over a still at the defaults, one pass, twice each: the change
-between consecutive presented pictures measured 0.42 with the default codec and 0.40 with
-Classic, the change to the picture 2.30 and 2.19, and the frame rate 118 and 116. So the default
-stays.
+`NRCodecMode=0`, where the add-on's default is Anchored, `NRCodecMode=1`. Over a still the two
+measure alike: interleaved at the defaults, one pass, twice each, the change between consecutive
+presented pictures measured 0.42 with Anchored and 0.40 with Classic, the change to the picture
+2.30 and 2.19, and the frame rate 118 and 116. Over a model in Blender, Anchored left ghosting
+around the model and Classic did not.
 
 ## The Cost Scaler
 

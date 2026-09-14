@@ -28,7 +28,7 @@
 #ifndef AppGuid
   #define AppGuid "6B0B1D6E-4C7A-4D6E-9B7D-2A6C1E9F0A11"
 #endif
-#define AppVersion "0.2.0"
+#define AppVersion "0.2.1"
 #define AppExe "NeuralLens.exe"
 #define DownloadMB "150"
 

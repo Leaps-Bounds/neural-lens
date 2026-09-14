@@ -1,6 +1,6 @@
 # DLSS 5 Neural Lens
 
-**Beta, version 0.2.0.** See [CHANGELOG.md](CHANGELOG.md). While the version starts with 0,
+**Beta, version 0.2.1.** See [CHANGELOG.md](CHANGELOG.md). While the version starts with 0,
 settings, the state file format and behaviour may change between releases.
 
 A floating see-through window for Windows. Drag it over anything on your desktop and the
@@ -79,10 +79,12 @@ NVIDIA's two runtimes, the add-on and the Cost Scaler are checked against sha256
 release, ReshadeMotionEstimation is pinned to a commit, and the other shaders come from their
 repositories as they stand.
 
-**The Neural Rendering add-on starts at its own defaults.** The setup writes nothing into its
-section of `ReShade.ini` but the add-on's config version, so a new install shows the add-on the
-way its authors set it up. Change anything from the menu's Tweak NR settings, in the ReShade
-overlay; a repair from the Start Menu keeps what you set.
+**The Neural Rendering add-on starts at its own defaults, apart from two.** The setup writes
+nothing into its section of `ReShade.ini` but the add-on's config version. Before the presenter
+starts, the lens switches the add-on's chained temporal history on, since without it two passes
+and up pulse, and sets its codec to Classic, as the add-on's developer asks. It sets each only
+while the section holds no value for it. Change anything from the menu's Tweak NR settings, in
+the ReShade overlay; what you set there stays, and a repair from the Start Menu keeps it.
 
 If you already have NVIDIA's two DLLs, the Start Menu's stack setup entry has a field for each,
 and `neural_stack.py` takes `--dlssnr` and `--dlss` on the command line; the installer's own page
@@ -244,12 +246,11 @@ and restarts the presenter whenever the count is applied with Set, and a count c
 ReShade overlay's own control reaches the title bar within about two seconds while the overlay
 is open. The add-on's own limit is four passes.
 
-The add-on's passes beyond the first are stateless unless its chained temporal history, a toggle
-in its overlay, is on, and whether that steadies the picture depends on the other settings. Over
-a still, as the change between consecutive presented pictures out of 255, it took two passes from
-0.46 to 0.37 and three from 0.60 to 0.34 with NRIntensity at 1.7 and style 0, but at the add-on's
-defaults it took two passes from 0.51 to 0.59, left three at 0.65, and took four from 0.76 to
-0.68. So the lens leaves it to the add-on, which keeps it off by default.
+The add-on resets its passes beyond the first every frame unless its chained temporal history, a
+toggle in its overlay, is on, and its own help says such passes can flicker. With it off, a model
+in Blender and a still image under the lens pulsed at two passes and up; with it on they did not.
+So the lens switches it on where the add-on's section holds no value for it, and a choice made in
+the overlay stays.
 
 The passes genuinely accumulate, and each one costs frame rate. Measured on an RTX 5090 with a
 120 Hz display, a 1400x1000 lens over a still, with the add-on at its defaults. The change is

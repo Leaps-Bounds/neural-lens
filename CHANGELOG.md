@@ -3,6 +3,20 @@
 Versions follow semantic versioning. While the major version is 0 the project is beta, and
 settings, the state file format and behaviour may change between releases.
 
+## 0.2.1, 2026-09-14
+
+The lens switches on two of the add-on's settings: chained temporal history and the Classic codec.
+
+- **Chained temporal history is on.** The RenoDX DLSS 5 add-on resets its passes beyond the first
+  every frame unless its chained temporal history is on, and with it off the picture pulsed at two
+  passes and up, over a model in Blender and over a still image. Before the presenter starts, the
+  lens now writes `NRChainedHistory=1` into the add-on's section of ReShade.ini where the section
+  holds no value for it, so a choice made in the ReShade overlay stays.
+- **The codec is Classic.** The lens writes `NRCodecMode=0` the same way, the codec the add-on's
+  developer asks for on its v5 line. With the add-on's default, Anchored, a model in Blender showed
+  ghosting around it, and with Classic it did not.
+- An install made by 0.2.0 gets both at the lens's next start, unless they were set in the overlay.
+
 ## 0.2.0, 2026-09-13
 
 The lens draws its picture with a presenter of its own, and mpv is gone.

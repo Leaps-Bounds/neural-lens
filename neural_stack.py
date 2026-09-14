@@ -50,7 +50,9 @@ where one exists, and this way the two coexist and each hooks only what it
 lists.
 
 The add-on's section of ReShade.ini starts with nothing but its ConfigVersion,
-so a new install runs the add-on's own defaults. A repair keeps that section.
+so a new install runs the add-on's own defaults, apart from two that the lens
+sets before its presenter starts, where the section holds no value for them:
+chained temporal history on, and the Classic codec. A repair keeps that section.
 
 Command line, for testing and for people who prefer it:
 
@@ -78,7 +80,7 @@ import urllib.request
 import winreg
 import zipfile
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 FROZEN = getattr(sys, "frozen", False)
 # Everything lives in the lens's own folder, the one the installer put it in or

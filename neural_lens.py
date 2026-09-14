@@ -240,28 +240,30 @@ def _pass_limit():
     return ADDON_MAX_PASSES if ADDON_PASSES else 1
 
 
-def _write_nr_passes(n):
-    """Set NRPasses in the add-on's section of ReShade.ini, keeping the rest.
+def _write_addon_settings(n):
+    """Write the add-on's section of ReShade.ini for a presenter about to start,
+    keeping the rest: NRPasses as n, and chained temporal history and the codec
+    where the section holds no value for them.
 
-    The add-on reads it only when its process starts: measured, an edit while
-    it ran had changed nothing twelve seconds later, and a process that is
-    terminated does not write the file back. So this runs after the old
+    The add-on reads its settings only when its process starts: measured, an
+    edit while it ran had changed nothing twelve seconds later, and a process
+    that is terminated does not write the file back. So this runs after the old
     presenter is gone and before the new one spawns. Returns whether the file
     was written.
 
-    The add-on's chained temporal history is left as the add-on has it. Its
-    passes beyond the first are stateless unless that is on, and whether it
-    steadies the picture depends on the other settings. Measured over a still
-    through the presenter as the change between consecutive presented pictures,
-    out of 255: with NRIntensity 1.7 and style 0 it took two passes from 0.46
-    to 0.37 and three from 0.60 to 0.34, and at the add-on's defaults it took
-    two passes from 0.51 to 0.59, left three at 0.65, and took four from 0.76
-    to 0.68.
+    Chained temporal history goes on, NRChainedHistory=1: without it the add-on
+    resets its passes beyond the first every frame, and the picture pulses at
+    two passes and up. The codec goes to Classic, NRCodecMode=0, which the
+    add-on's developer asks for on the v5 line: with the add-on's default,
+    Anchored, a model in Blender showed ghosting around it. A value the section
+    already holds stays, so a choice made in the add-on's overlay, which the
+    add-on writes back, is kept. The measurements are in docs/NOTES.md.
     """
     if not STACK_DIR:
         return False
     path = os.path.join(STACK_DIR, "ReShade.ini")
-    keys = {"NRPasses": str(n)}
+    keys = {"NRPasses": str(n), "NRChainedHistory": "1", "NRCodecMode": "0"}
+    keep = {"NRChainedHistory", "NRCodecMode"}      # a value already there wins
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
             lines = fh.read().splitlines(True)
@@ -286,7 +288,7 @@ def _write_nr_passes(n):
             for k, v in keys.items():
                 if name == k.lower():
                     if k not in done:
-                        out.append("%s=%s\n" % (k, v))
+                        out.append(line if k in keep else "%s=%s\n" % (k, v))
                         done.add(k)
                     break
             else:
@@ -448,7 +450,7 @@ def _write_proxy(enabled, scale):
 # process's id, so two lenses at once, one per monitor say, never pick up each
 # other's presenter.
 TITLE = "LensNR %d" % os.getpid()
-__version__ = "0.2.0"        # beta; see CHANGELOG.md
+__version__ = "0.2.1"        # beta; see CHANGELOG.md
 
 DATA_DIR = (os.environ.get("NEURAL_LENS_DATA") or _INI.get("data_dir")
             or os.path.join(_script_dir(), "data"))
@@ -992,10 +994,11 @@ class Lens:
         u.SetWindowLongPtrW(self.chrome, GWL_EXSTYLE, _ex | WS_EX_NOACTIVATE)
         u.SetWindowDisplayAffinity(self.chrome, WDA_EXCLUDEFROMCAPTURE)
 
-        # ---- the presenter. The pass count goes into ReShade.ini before it
-        # starts, and the Cost Scaler's ini is set for this size and count.
+        # ---- the presenter. The add-on's settings go into ReShade.ini before
+        # it starts, see _write_addon_settings, and the Cost Scaler's ini is set
+        # for this size and count.
         if ADDON_PASSES:
-            _write_nr_passes(passes)
+            _write_addon_settings(passes)
         self.apply_proxy()
         self._build_presenter(x, y)
         self.raise_chrome()
@@ -1438,7 +1441,7 @@ class Lens:
         self.stages = []
         self.apply_proxy()
         if ADDON_PASSES:
-            _write_nr_passes(self.passes)
+            _write_addon_settings(self.passes)
         self.latency_ms = None
         self.frames, self.t_first = 0, None
         x, y = self.inner()

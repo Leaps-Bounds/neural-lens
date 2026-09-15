@@ -138,6 +138,11 @@ fetches each piece from the project that publishes it, see [Install](#install), 
 | `nvngx_dlssnr_real.dll` | NVIDIA's Neural Rendering model | NVIDIA |
 | `nvngx_dlssnr.dll` | DLSSNR-Cost-Scaler, which can run the model at a fraction of the resolution | its own project |
 
+What it shows is what Neural Rendering does to this image. A game hands DLSS depth and motion
+vectors from its engine; here the Feed synthesises them from the picture alone. So the lens is
+a preview of how the model treats the material, edges and fine detail in front of it, not of
+what an asset will look like in an engine with DLSS on.
+
 ### The Neural Rendering model
 
 NVIDIA's model is `nvngx_dlssnr.dll`, installed here as `nvngx_dlssnr_real.dll` behind the Cost
@@ -371,6 +376,10 @@ off windowed, where the neural pass is rarely what limits the frame rate.
 - **Applications in exclusive fullscreen cannot be under the lens**, because nothing else is
   drawn over them. Borderless windowed works. An application with real DLSS support can usually
   take Neural Rendering directly through the add-on anyway, without this.
+- **HDR content has not been measured.** The presenter captures 8 bit frames and presents them
+  in an 8 bit window in the standard colour space, so what the lens shows over HDR content is
+  whatever Windows hands an 8 bit capture of it. A 10 bit swapchain exists behind
+  `LENS_PRESENTER_10BIT` for that measurement, which has not been made.
 
 ## Troubleshooting
 

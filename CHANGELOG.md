@@ -3,6 +3,56 @@
 Versions follow semantic versioning. While the major version is 0 the project is beta, and
 settings, the state file format and behaviour may change between releases.
 
+## 0.3.0, 2026-09-14
+
+Minimise and maximise buttons, resizing by the edges, and a picture that restarts in place.
+
+- **Minimise, to the taskbar.** The title bar has the three buttons every window has: minimise,
+  maximise and close. Minimise hides the lens and pauses the presenter: it ends its capture and
+  presents nothing, so no neural pass runs and the lens costs the GPU nothing while it is away.
+  Clicking its taskbar button brings it back as it was, with Neural Rendering as it was left.
+  Measured on an RTX 5090, a 1400x1000 lens minimised over a square bouncing 33 times a second:
+  the GPU read 1 percent and 51 W and the presenter used no CPU time in five seconds, where in
+  view over the same square it read 21 percent and 114 W; frames were arriving again half a
+  second after the click, with every window back in its place.
+- **Maximise, and back**: fullscreen, and back to the last windowed position and size. It
+  replaces the Fullscreen checkbox in Settings; `fullscreen` in the ini stays, written by the
+  button, so the lens opens the way it was left.
+- **Resize by dragging the edges.** The border is now an 8 pixel frame to drag by its sides and
+  bottom corners, with the cursors any window shows and the size on the title bar as you go.
+  Letting go replaces the picture at the new size. It replaces the menu's resize outline and its
+  confirmation.
+- **A new size, and fullscreen or back, no longer restart the lens.** The picture restarts in
+  place, the way a new pass count does: the presenter is replaced at the new size and the title
+  bar and frame laid out again around it, so the taskbar button stays and it takes a second or
+  two rather than several. A lens that has to shrink to fit its monitor does the same, and only
+  the folder settings still relaunch the lens.
+- **Nothing runs when nothing changes.** A captured frame the same as the last is not presented,
+  so over content that is not changing the neural pass rests and the title bar says idle. Up to
+  0.2.1 the lens ran the model at the display's rate over a still, because its own presents came
+  back to it as captures. A present every quarter second keeps ReShade's keys and the capture
+  alive, and the overlay, a key press, a screenshot and a probe get the display's rate. The frame
+  rate on the title bar is now the rate of new pictures: a video's own rate over a video.
+  Measured on an RTX 5090, a 1400x1000 lens at one pass over a still: 0 percent of the GPU and
+  53 W idling, against 57 percent and 222 W presenting at the display's rate; over a square
+  bouncing 33 times a second, 21 percent and 114 W with 34 new pictures a second, and at 60
+  times a second, 36 percent and 166 W with 59. A fresh presenter presents at the display's rate
+  for its first twelve seconds whatever arrives, since the add-on builds its neural feature on
+  the first frames it is shown.
+- **The Cost Scaler in Settings**: a switch for a fullscreen lens, on to begin with, and one for
+  a windowed lens too, which keeps the first on. They write `cost_scaler` in the ini, whose
+  `manual` value disables them, and a change applies straight away. Measured on an RTX 5090,
+  windowed at 2400x1800 with three passes over a source changing 60 times a second: with the
+  scaler at 0.75 the GPU read 90 percent and 440 W, without it 99 percent and 566 W, and the
+  lens showed 58 to 70 new pictures a second against 53.
+- **The title bar shows the delay from capture to display by default**, and the frame rate on
+  request, in Settings under Title bar, where it used to be the other way round. The frame rate
+  is the rate of new pictures the content under the lens hands it, which the lens never limits,
+  and read as the lens's own rate it misled. `readout` in the ini now defaults to `size` and
+  `latency` to on.
+- The title bar's close, maximise and minimise buttons use Windows' own caption glyphs, from
+  the Segoe icon fonts.
+
 ## 0.2.1, 2026-09-14
 
 The lens switches on two of the add-on's settings: chained temporal history and the Classic codec.

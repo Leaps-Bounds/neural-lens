@@ -1,6 +1,6 @@
 # DLSS 5 Neural Lens
 
-**Beta, version 0.2.1.** See [CHANGELOG.md](CHANGELOG.md). While the version starts with 0,
+**Beta, version 0.3.0.** See [CHANGELOG.md](CHANGELOG.md). While the version starts with 0,
 settings, the state file format and behaviour may change between releases.
 
 A floating see-through window for Windows. Drag it over anything on your desktop and the
@@ -177,6 +177,13 @@ every card.
 - **Monitors can change while it runs.** Switch a monitor on or off, or rearrange them, and the
   lens starts its picture again a couple of seconds later, still on its monitor.
 - **Close it** with the X. The viewport never takes keyboard focus, so no key closes it.
+- **Minimise it** with the first of the three buttons at the right of the title bar, which are
+  minimise, maximise and close, as on any window. The lens disappears to its taskbar button and
+  the picture pauses: its capture ends and nothing is presented, so no neural pass runs and the
+  lens costs the GPU nothing while it is away. Click the taskbar button and it comes back as it
+  was, with Neural Rendering as you left it.
+- **Maximise it** with the middle button, and back again. That is fullscreen, as described
+  below.
 - The **menu** at the left opens the ReShade overlay in place so you can adjust Neural Rendering
   settings live, and also holds the pass controls and a Neural Rendering on and off toggle. The menu
   button opens and closes it; so does a click anywhere else, or Escape. While the overlay is open
@@ -194,25 +201,28 @@ every card.
   Rendering on the left of it and the untouched source on the right, both live. It costs
   nothing: the lens is see-through, so the right side is simply the screen underneath. Works
   at any pass count and in fullscreen. Pick the menu entry again to end it.
-- **Resize it** from the menu. A translucent outline appears over the lens showing its live
-  size. Drag any edge, let go, and confirm. See [Limits](#limits) for why this restarts.
-- **Settings** in the menu holds the screenshot folder, fullscreen, what the title bar shows,
-  the delay meter, and the stack and data folders, each with an explanation. It writes
+- **Resize it** by dragging its edges: the frame around the picture can be dragged by its sides
+  and bottom corners, the way any window is resized, and the title bar shows the size as you go.
+  Let go and the picture restarts at the new size, which takes a second or two; see
+  [Limits](#limits) for why.
+- **Settings** in the menu holds the screenshot folder, the Cost Scaler, what the title bar
+  shows, the delay meter, and the stack and data folders, each with an explanation. It writes
   `neural-lens.ini`; nothing needs editing by hand.
 - **F6 turns Neural Rendering off and on** in every pass at once, from the menu or the key
   itself. The add-on reads the physical key, so F6 pressed anywhere toggles it. While it is off
   the title bar says `NR off` and the pass controls wait, because a pass with Neural Rendering
   off is only a copy of the last one.
-- **It has a taskbar button.** A window that is itself set to stay on top can leave the lens
-  underneath it. Click the lens on the taskbar and it comes back to the front and stays on
-  top again. The button's Close window closes the lens. A maximised or full screen window,
-  which Windows puts above everything when it becomes the foreground, is handled on its own:
-  the lens notices and comes back within a fifth of a second.
-- **Fullscreen** is a checkbox in Settings. The lens fills the monitor it is on apart from the
-  taskbar, with the title bar across the top and the picture below it, and cannot be dragged.
-  Changing it restarts the lens, like a resize, and the windowed position and size are kept for the
-  way back. A whole monitor is a lot of pixels, so the frame rate is lower, and fullscreen is where
-  the lens switches the Cost Scaler on; see [The Cost Scaler](#the-cost-scaler).
+- **It has a taskbar button.** Click it and a minimised lens comes back. Otherwise the lens
+  comes back to the front and stays on top again, for the case where a window that is itself
+  set to stay on top has left it underneath. The button's Close window closes the lens. A
+  maximised or full screen window, which Windows puts above everything when it becomes the
+  foreground, is handled on its own: the lens notices and comes back within a fifth of a second.
+- **Fullscreen** is the maximise button. The lens fills the monitor it is on apart from the
+  taskbar, with the title bar across the top and the picture below it, and cannot be dragged or
+  resized. Going fullscreen or back restarts the picture, like a resize, and the windowed
+  position and size are kept for the way back. A whole monitor is a lot of pixels, so the frame
+  rate is lower, and fullscreen is where the lens switches the Cost Scaler on; see
+  [The Cost Scaler](#the-cost-scaler). `fullscreen = 1` in the ini opens the lens that way.
 
 ## How it works
 
@@ -233,10 +243,19 @@ lens region: click-through, always on top, and never moved by clicks
 Moving the lens only repositions its windows and moves the crop. Nothing restarts, unless the
 lens is let go on another monitor.
 
-Between captures the presenter presents the last frame again at the display's rate, copied in
-afresh each time, so Neural Rendering always works on the captured picture and never on its own
-output. A frame that arrives while the previous one is still waiting replaces it rather than
-queueing behind it, so the picture never falls behind.
+Every present copies the captured picture in afresh, so Neural Rendering always works on that
+and never on its own output, and a frame that arrives while the previous one is still waiting
+replaces it rather than queueing behind it, so the picture never falls behind. A captured frame
+that is the same as the last one is not presented at all. The lens's own presents come back to
+it as captures, since it is excluded from capture, and without this the loop would drive itself
+at the display's rate over a still, running the neural model 120 times a second on the same
+pixels. So over content that is not changing nothing runs, the neural pass rests and the title
+bar says idle, with a present every quarter second to keep ReShade's keys and the capture alive.
+Measured on an RTX 5090 with a 120 Hz display, a 1400x1000 lens at one pass over a still: idling,
+the GPU read 0 percent and 53 W, against 57 percent and 222 W presenting at the display's rate
+the way every version before did. Over a square bouncing 33 times a second it read 21 percent
+and 114 W with 34 new pictures a second, and over one bouncing 60 times a second, 36 percent and
+166 W with 59.
 
 ### Multiple passes
 
@@ -281,14 +300,16 @@ compositor. With the lens itself at one pass, the title bar's delay meter reads:
 | fullscreen 6144x2560, the Cost Scaler on as the lens sets it | 58 fps | 33 ms |
 | fullscreen 6144x2560, the Cost Scaler off | 42 fps | 47 ms |
 
-The title bar shows the frame rate the lens is showing you, averaged over the last few seconds.
-Settings can change that to the frames captured and the new pictures shown, each per second, or
-to the size alone. **Show the delay from capture to display**, in Settings under Title bar, adds
-the delay: the presenter's own measure from the moment Windows composed a captured frame to the
-moment it presented it, plus a refresh and a half for the composition and scanout that follow,
-which it cannot see. Against a window flipping black and white it read 8 ms where
-the flip measured 8 at 120 Hz. The bar marks it with a tilde because that last part is an
-estimate.
+The title bar shows the size and, beside it, the delay from capture to display, and it reads
+idle over content that is not changing, since the neural pass then rests. The delay is the
+presenter's own measure from the moment Windows composed a captured frame to the moment it
+presented it, plus a refresh and a half for the composition and scanout that follow, which it
+cannot see. Against a window flipping black and white it read 8 ms where the flip measured 8 at
+120 Hz. The bar marks it with a tilde because that last part is an estimate, and Settings under
+Title bar can switch it off. Settings can also add the frame rate, which is the rate of new
+pictures the content under the lens hands it, averaged over the last few seconds: a 30 frame a
+second video gives 30, a 60 one 60, and the lens never limits it; or the frames captured and the
+new pictures shown, each per second.
 
 ### The Cost Scaler
 
@@ -306,8 +327,10 @@ and 0.50 at two, 3840x2160 stays at native for one pass and gets 0.65 at two, an
 at native up to two passes, since below a saving of about a fifth the proxy's own cost is all
 that is left. `cost_scaler_mpx` in the ini changes that budget; `cost_scaler` set to `always`
 applies the rule to a windowed lens as well, `off` keeps the proxy off, and `manual` leaves the
-proxy's ini alone. Anamorphic scaling is switched off with the scale, and the proxy's other
-settings are left as they are.
+proxy's ini alone. Settings has the first three as two switches, one for a fullscreen lens, on
+to begin with, and one for a windowed lens too, which keeps the first on; a change applies
+straight away. Anamorphic scaling is switched off with the scale, and the proxy's other settings
+are left as they are.
 
 Measured on an RTX 5090, fullscreen at 6144x2560 over a still, with the add-on at its defaults.
 The change is from the untouched source, as mean absolute difference out of 255, and the delay is
@@ -326,10 +349,10 @@ off windowed, where the neural pass is rarely what limits the frame rate.
 
 ## Limits
 
-- **Resizing restarts the lens.** A new size needs a new swapchain, and the Neural Rendering
-  add-on crashes when its swapchain is recreated, so the menu's resize takes the size you drag
-  out, saves it, and relaunches at that size and position with the same number of passes. It
-  takes a second or two. Applying a new pass count restarts the presenter the same way.
+- **Resizing restarts the picture.** The presenter's size is fixed when it starts, and the
+  Neural Rendering add-on crashes when a swapchain is recreated under it, so a new size, and
+  fullscreen or back, replaces the presenter at the new size with the same number of passes, the
+  way a new pass count does. It takes a second or two.
 - **The lens stays on one monitor.** The presenter captures one monitor, so the lens opens
   fitted to the monitor it is on, a resize is kept within that monitor, and a lens let go over an
   edge slides back onto it. While it is being dragged across an edge, its picture does not line
@@ -356,11 +379,12 @@ and compare them. For scale, over a desktop of flat interface the average differ
 1.3 out of 255 while Neural Rendering was fully live, and almost all of that change sat in the
 detailed areas of the image.
 
-**The lens disappeared after you confirmed a resize.** Resizing relaunches the lens, so a
-relaunch that fails looks exactly like the app closing on its own. Nothing is lost: the size you
-chose was saved before the restart, so starting it again brings it back at that size. If it
-happens repeatedly, `data\logs\restart.log` in the lens folder holds whatever the replacement
-printed before it gave up.
+**The lens disappeared after you changed a folder in Settings.** The stack and data folders
+take effect at the next launch, so changing one relaunches the lens, and a relaunch that fails
+looks exactly like the app closing on its own. Nothing is lost: the settings were saved before
+the restart, so starting it again brings it back. If it happens repeatedly,
+`data\logs\restart.log` in the lens folder holds whatever the replacement printed before it
+gave up.
 
 **Something went wrong and you want to know why.** Every launch copies the previous session's
 `ReShade.log`, `dlss5-feed.log` and the Cost Scaler's `nvngx_dlssnr_proxy.log` into `data\logs`

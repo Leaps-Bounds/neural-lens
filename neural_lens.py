@@ -18,9 +18,11 @@ How it works. Every piece below was measured before it was built:
   1. The picture is drawn by the presenter, lens_presenter.py, a Vulkan window
      placed exactly on the lens rect, click-through and on top. It captures the
      monitor with Windows.Graphics.Capture, cropped to the rect, and presents
-     each frame the moment it arrives. Between arrivals it presents the last
-     frame again at the display's rate, copied in afresh each time, so Neural
-     Rendering never works on its own output.
+     each frame the moment it arrives, copying the original in afresh each
+     time, so Neural Rendering never works on its own output. A captured
+     frame the same as the last is not presented at all, so over content that
+     is not changing nothing runs, and a present every quarter second keeps
+     ReShade's keys and the capture alive.
 
   2. Every window of the lens's own, the presenter included, is excluded from
      capture (WDA_EXCLUDEFROMCAPTURE). Monitor capture then composes the
@@ -45,11 +47,18 @@ How it works. Every piece below was measured before it was built:
      screen to the change in the output, both read through the compositor:
      8 ms windowed at 120 Hz, one refresh.
 
-  6. RESIZING restarts the process. A new size needs a new swapchain, and the
-     Neural Rendering add-on releases its DLSS feature and crashes when its
-     swapchain is recreated. So the menu's resize saves the new geometry and
-     relaunches at that size. That handover must not use os.execv: on Windows
+  6. RESIZING restarts the picture. The presenter's size is fixed when it
+     starts, and the add-on crashes when a swapchain is recreated under it, so
+     a new size, fullscreen and back, or a lens that has to shrink to fit its
+     monitor replaces the presenter, the way a new pass count does, and the
+     chrome is laid out again around the new one. Only the folder settings
+     restart the process, and that handover must not use os.execv: on Windows
      it does not quote arguments containing spaces.
+
+  7. MINIMISED to the taskbar, the lens hides its windows and tells the
+     presenter to pause. It stops its capture and presents nothing, so no
+     neural pass runs and the GPU is free, and the taskbar button brings
+     everything back as it was.
 
 Configuration: see neural-lens.ini.example. State, logs and screenshots live
 in a data folder beside the program by default, so an install is one folder.
@@ -64,6 +73,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import filedialog, messagebox
 
 
@@ -363,6 +373,14 @@ except (TypeError, ValueError):
     COST_SCALER_MPX = 8.0
 
 
+def _set_cost_scaler(mode):
+    """Change the Cost Scaler rule in force, from Settings, and record it in
+    the ini, where the default is left unwritten. The caller applies it."""
+    global COST_SCALER
+    COST_SCALER = mode
+    _save_ini("cost_scaler", None if mode == "fullscreen" else mode)
+
+
 def _proxy_installed():
     return bool(STACK_DIR) and all(os.path.isfile(os.path.join(STACK_DIR, n))
                                    for n in ("nvngx_dlssnr_real.dll", "nvngx_dlssnr.ini"))
@@ -450,7 +468,7 @@ def _write_proxy(enabled, scale):
 # process's id, so two lenses at once, one per monitor say, never pick up each
 # other's presenter.
 TITLE = "LensNR %d" % os.getpid()
-__version__ = "0.2.1"        # beta; see CHANGELOG.md
+__version__ = "0.3.0"        # beta; see CHANGELOG.md
 
 DATA_DIR = (os.environ.get("NEURAL_LENS_DATA") or _INI.get("data_dir")
             or os.path.join(_script_dir(), "data"))
@@ -488,11 +506,36 @@ if sys.stdout is None:
 SHOT_DIR = (os.environ.get("NEURAL_LENS_SHOTS") or _INI.get("screenshot_dir")
             or os.path.join(DATA_DIR, "screenshots"))
 
-BAR, EDGE = 34, 2
+BAR = 34
+# The frame around the picture, which the lens is resized by: EDGE pixels down
+# each side and along the bottom, the outer LINE of them the border's line and
+# the rest a strip the mouse can catch. The top edge is the bar.
+LINE, EDGE = 2, 8
+CORNER = 16                  # how far from a grip's end still counts as the corner
+MIN_W, MIN_H = 240, 120      # the smallest lens a drag can make
 DIVIDER = 14                 # grab width of the A/B divider; the line drawn is 4
 KEY_HOLD = 350               # ms a posted key stays down, longer than any frame
 KEY, BG, FG, ACCENT = "#010203", "#1b2430", "#cbd5e1", "#4ade80"
 DIM, WARN = "#64748b", "#fbbf24"
+
+# The title bar's minimise, maximise, restore and close buttons use Windows'
+# own caption glyphs, from whichever Segoe icon font the machine has, so they
+# read as the buttons every window has. Without either they fall back to plain
+# characters Segoe UI draws.
+CAPTION_FONTS = (("Segoe Fluent Icons", {"min": "", "max": "", "restore": "",
+                                         "close": ""}),
+                 ("Segoe MDL2 Assets", {"min": "", "max": "", "restore": "",
+                                        "close": ""}))
+CAPTION_PLAIN = {"min": "─", "max": "□", "restore": "❐", "close": "✕"}
+
+
+def _caption_glyphs(families):
+    """The font and the glyphs for the caption buttons, given the font families
+    the machine has."""
+    for fam, glyphs in CAPTION_FONTS:
+        if fam in families:
+            return (fam, 9), glyphs
+    return ("Segoe UI", 12), CAPTION_PLAIN
 
 
 def _display_hz():
@@ -534,16 +577,18 @@ DISPLAY_HZ = _display_hz()
 FULLSCREEN = str(_INI.get("fullscreen", "0")).strip().lower() in ("1", "yes", "on", "true")
 FULL_STATE = os.path.join(DATA_DIR, "lens-state-fullscreen.txt")
 
-# What the title bar shows beside the size. fps is the rate of new pictures the
-# presenter shows, averaged over the last few seconds, which is the number a
-# person means by it. detail is the frames captured and the new pictures shown,
-# each per second. size is just the size.
-READOUT = str(_INI.get("readout", "fps")).strip().lower()
+# What the title bar shows beside the size. size, the default, is the size
+# alone. fps is the rate of new pictures the presenter shows, averaged over the
+# last few seconds, which is the rate the content under the lens hands it and
+# never a limit of the lens's own: off by default, since read as the lens's
+# own rate it misleads. detail is the frames captured and the new pictures
+# shown, each per second.
+READOUT = str(_INI.get("readout", "size")).strip().lower()
 if READOUT not in ("fps", "detail", "size"):
-    READOUT = "fps"
-# The delay meter on the title bar, off unless the ini says latency = 1. See
+    READOUT = "size"
+# The delay meter on the title bar, on unless the ini says latency = 0. See
 # Lens._read_presenter for what it measures and what it adds.
-LATENCY = str(_INI.get("latency", "0")).strip().lower() in ("1", "yes", "on", "true")
+LATENCY = str(_INI.get("latency", "1")).strip().lower() in ("1", "yes", "on", "true")
 
 u = ctypes.windll.user32
 k32 = ctypes.windll.kernel32
@@ -572,6 +617,7 @@ WDA_EXCLUDEFROMCAPTURE = 0x00000011
 HWND_TOPMOST = ctypes.c_void_p(-1)          # pointer sized, NOT int -1
 SWP_NOSIZE, SWP_NOMOVE, SWP_NOZORDER, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0004, 0x0010
 SWP_FRAMECHANGED = 0x0020
+SW_HIDE, SW_SHOWNA = 0, 8
 
 
 def _save_ini(key, value):
@@ -638,8 +684,8 @@ def _own_windows():
     """Every visible top-level window owned by this process.
 
     Nothing of ours may be in the picture the presenter captures. Listing them
-    by name cannot work, because the menu, the resize outline, the settings
-    dialog and any message box are created and destroyed on demand.
+    by name cannot work, because the menu, the settings dialog and any message
+    box are created and destroyed on demand.
     """
     pid = k32.GetCurrentProcessId()
     hits = []
@@ -906,7 +952,9 @@ class Lens:
         self.latency_raw = None     # the measured part alone, capture to present
         self._shown = None          # (time, out_frames) behind the fps readout
         self._fps_hist = collections.deque(maxlen=3)
-        self.restart = False        # set by the resize flow, read by main()
+        self.restart = False        # set by the folder settings, read by main()
+        self.minimized = False      # hidden, with the presenter paused, until the taskbar button
+        self.rs = None              # a resize by the frame in progress, see _grip_down
         self.shot_busy = False
         self.shot_event = threading.Event()
         self.shot_reply = None
@@ -935,14 +983,10 @@ class Lens:
         # the border. Fullscreen the bar sits above the picture too, but the
         # chrome is the bar alone: a frame around a picture that fills the
         # monitor would be larger than the screen, and a layered window that is
-        # comes up blank, with nothing drawn at all.
-        if fullscreen:
-            t.geometry("%dx%d+%d+%d" % (cw, BAR, x, y - BAR))
-        else:
-            t.geometry("%dx%d+%d+%d" % (cw + EDGE * 2, ch + BAR + EDGE, x - EDGE, y - BAR))
+        # comes up blank, with nothing drawn at all. layout_chrome places it all.
         bar = tk.Frame(t, bg=BG, height=BAR)
         self.bar = bar
-        bar.place(x=0 if fullscreen else EDGE, y=0, width=cw, height=BAR)
+        self.hole = tk.Frame(t, bg=KEY)         # the picture shows through this
 
         self.menu_btn = tk.Label(bar, text=" \u2630 ", bg=BG, fg=FG, font=("Segoe UI", 12))
         self.menu_btn.pack(side="left", padx=(6, 0))
@@ -953,16 +997,29 @@ class Lens:
                              font=("Consolas", 9))
         self.info.pack(side="left", padx=10)
 
-        self.x_btn = tk.Label(bar, text="  \u2715  ", bg=BG, fg=FG, font=("Segoe UI", 12))
-        self.x_btn.pack(side="right")
+        # the caption buttons, right to left as on every window: close,
+        # maximise or restore, minimise
+        try:
+            capfont, self.glyphs = _caption_glyphs(set(tkfont.families(root)))
+        except Exception:
+            capfont, self.glyphs = ("Segoe UI", 12), CAPTION_PLAIN
+        self.x_btn = tk.Label(bar, text=self.glyphs["close"], bg=BG, fg=FG, font=capfont, padx=11)
+        self.x_btn.pack(side="right", fill="y")
         self.x_btn.bind("<Button-1>", lambda e: self.quit())
         self.x_btn.bind("<Enter>", lambda e: self.x_btn.config(bg="#e11d48"))
         self.x_btn.bind("<Leave>", lambda e: self.x_btn.config(bg=BG))
+        self.max_btn = tk.Label(bar, text=self.glyphs["restore" if fullscreen else "max"], bg=BG,
+                                fg=FG, font=capfont, padx=11)
+        self.max_btn.pack(side="right", fill="y")
+        self.max_btn.bind("<Button-1>", lambda e: self.toggle_fullscreen())
+        self.min_btn = tk.Label(bar, text=self.glyphs["min"], bg=BG, fg=FG, font=capfont, padx=11)
+        self.min_btn.pack(side="right", fill="y")
+        self.min_btn.bind("<Button-1>", lambda e: self.minimize())
 
         # plus and minus only choose a number; Set restarts the presenter at it,
         # so going from one pass to three is one restart rather than two
         self.set_btn = tk.Label(bar, text=" Set ", bg=BG, fg=DIM, font=("Segoe UI", 10, "bold"))
-        self.set_btn.pack(side="right", padx=(2, 6))
+        self.set_btn.pack(side="right", padx=(2, 10))
         self.set_btn.bind("<Button-1>", lambda e: self.apply_passes())
         self.plus = tk.Label(bar, text=" + ", bg=BG, fg=FG, font=("Segoe UI", 13, "bold"))
         self.plus.pack(side="right")
@@ -972,18 +1029,30 @@ class Lens:
         self.minus = tk.Label(bar, text=" \u2212 ", bg=BG, fg=FG, font=("Segoe UI", 13, "bold"))
         self.minus.pack(side="right")
         self.minus.bind("<Button-1>", lambda e: self.bump_passes(-1))
-        for b in (self.plus, self.minus, self.set_btn):
+        for b in (self.plus, self.minus, self.set_btn, self.max_btn, self.min_btn):
             b.bind("<Enter>", lambda e, b=b: b.config(bg="#334155"))
             b.bind("<Leave>", lambda e, b=b: b.config(bg=BG))
 
-        tk.Frame(t, bg=KEY).place(x=EDGE, y=BAR, width=cw, height=ch)
-        nodrag = (self.x_btn, self.menu_btn, self.plus, self.minus, self.set_btn)
+        # the frame the lens is resized by: a strip down each side and one along
+        # the bottom, inside the border's line. Which way a drag on one resizes
+        # depends on where it starts, see _grip_zone.
+        self.grips = {}
+        for side in ("w", "e", "s"):
+            g = tk.Frame(t, bg=BG)
+            g.bind("<Motion>", lambda e, s=side: self._grip_hover(s, e))
+            g.bind("<ButtonPress-1>", lambda e, s=side: self._grip_down(s, e))
+            g.bind("<B1-Motion>", self._grip_move)
+            g.bind("<ButtonRelease-1>", self._grip_up)
+            self.grips[side] = g
+
+        nodrag = (self.x_btn, self.max_btn, self.min_btn, self.menu_btn, self.plus, self.minus,
+                  self.set_btn)
         for wdg in (bar,) + tuple(bar.winfo_children()):
             if wdg not in nodrag:
                 wdg.bind("<ButtonPress-1>", self.down)
                 wdg.bind("<B1-Motion>", self.move)
                 wdg.bind("<ButtonRelease-1>", self.up)
-        t.update()
+        self.layout_chrome(x, y)
         self.chrome = u.GetParent(t.winfo_id()) or t.winfo_id()
         # never take foreground: the lens is a tool window floating over whatever
         # you are actually using, and stealing focus costs the user their next
@@ -1118,7 +1187,7 @@ class Lens:
                     self.root.after(0, self.capture_lost, line[13:])
                 except Exception:
                     pass
-            elif line.startswith("presenter ready"):
+            elif line.startswith("presenter ready") or line in ("paused", "resumed"):
                 print(line, flush=True)
 
     def tell_presenter(self, text):
@@ -1157,11 +1226,12 @@ class Lens:
                 u.SetWindowDisplayAffinity(hx, WDA_EXCLUDEFROMCAPTURE)
             except Exception:
                 pass
-        try:
-            self.keep_chrome_on_top()
-            self.keep_stage_on_top()
-        except Exception:
-            pass
+        if not self.minimized:
+            try:
+                self.keep_chrome_on_top()
+                self.keep_stage_on_top()
+            except Exception:
+                pass
         try:
             self.watch_layout()
         except Exception:
@@ -1260,10 +1330,10 @@ class Lens:
     # under the lens. The hidden tk root stands in for it. It is fully
     # transparent and parked minimised, so it is never seen, but its button is
     # on the taskbar. Clicking that restores the root, which lands in
-    # _taskbar_click: the lens comes back to the top and the root is minimised
-    # again before it can be noticed. Tk toplevels on Windows are not owned by
-    # the root, so minimising it does not take the title bar with it; measured
-    # rather than assumed.
+    # _taskbar_click: a minimised lens comes back, any other comes back to the
+    # top, and the root is minimised again before it can be noticed. Tk
+    # toplevels on Windows are not owned by the root, so minimising it does
+    # not take the title bar with it; measured rather than assumed.
     def show_in_taskbar(self):
         r = self.root
         r.title("DLSS 5 Neural Lens")
@@ -1280,8 +1350,84 @@ class Lens:
     def _taskbar_click(self, _event=None):
         if self.closing:
             return
-        self.bring_back()
+        if self.minimized:
+            self.restore()
+        else:
+            self.bring_back()
         self.root.after(80, self.root.iconify)
+
+    def minimize(self):
+        """Hide the lens, leaving its taskbar button, and pause the presenter.
+
+        Paused, the presenter stops its capture and presents nothing, so no
+        neural pass runs and nothing of the lens costs the GPU or the CPU
+        anything until the taskbar button brings it back. Neural Rendering is
+        not switched off for it: the add-on only runs on a present, and with
+        none it keeps whatever state it had for the way back.
+        """
+        if self.closing or self.minimized or self.rebuilding or not self.stages or self.rs:
+            return
+        self.popup.close()
+        if self.tweak:
+            # the overlay closes on a Home the presenter has to present a frame
+            # to notice, so it gets that frame before the pause
+            self.end_tweak()
+            self.root.after(KEY_HOLD + 400, self.minimize)
+            return
+        self.minimized = True
+        self.tell_presenter("pause")
+        for s in self.stages:
+            u.ShowWindow(s["hwnd"], SW_HIDE)
+        if self.divider is not None:
+            try:
+                self.divider.withdraw()
+            except Exception:
+                pass
+        self.t.withdraw()
+        print("minimised to the taskbar", flush=True)
+
+    def restore(self):
+        """Bring a minimised lens back as it was, from the taskbar button.
+
+        The presenter is shown again where it was and told to capture and
+        present again. Had the monitors changed meanwhile, it is replaced
+        instead, as it would have been had the lens been in view.
+        """
+        if self.closing or not self.minimized:
+            return
+        self.minimized = False
+        self.t.deiconify()
+        self.t.update()
+        # the styles the chrome was given at birth, in case showing it again
+        # cost any of them, and never in the picture
+        ex = u.GetWindowLongPtrW(self.chrome, GWL_EXSTYLE)
+        u.SetWindowLongPtrW(self.chrome, GWL_EXSTYLE, ex | WS_EX_NOACTIVATE)
+        u.SetWindowDisplayAffinity(self.chrome, WDA_EXCLUDEFROMCAPTURE)
+        if self.divider is not None:
+            try:
+                self.divider.deiconify()
+            except Exception:
+                pass
+        self._fps_hist.clear()
+        self._shown = None
+        self.last_arrival = self.healthy_since = time.perf_counter()
+        now = monitor_layout()
+        if now != self.layout:
+            print("the monitors changed while minimised: %s" % (now,), flush=True)
+            self.layout = now
+            self.layout_seen = (now, time.perf_counter())
+            if self.fullscreen:
+                self.set_fullscreen(True)
+            elif not self.refit():
+                self.restart_presenter("the monitors changed, starting again ...")
+            return
+        for s in self.stages:
+            u.ShowWindow(s["hwnd"], SW_SHOWNA)
+        self.tell_presenter("resume")
+        self.bring_back()
+        self.place()
+        self.aim()
+        print("back from the taskbar", flush=True)
 
     # ---- live A/B split
     # The lens is see-through, so the raw source is already on screen under the
@@ -1477,7 +1623,7 @@ class Lens:
         stops frames as well, so the wait before each new start doubles, up to a
         minute, until a presenter has run for half a minute.
         """
-        if self.closing or self.recover_after is not None:
+        if self.closing or self.minimized or self.recover_after is not None:
             return
         if time.perf_counter() - self.healthy_since > 30.0:
             self.recover_wait = 1.0
@@ -1487,7 +1633,7 @@ class Lens:
 
     def _recover(self):
         self.recover_after = None
-        if self.closing or self.rebuilding:
+        if self.closing or self.rebuilding or self.minimized:
             return
         if time.perf_counter() - self.last_arrival < 1.5:
             return                          # frames came back by themselves
@@ -1504,19 +1650,20 @@ class Lens:
         ends the presenter's capture, so there is no point waiting for the loss to
         be reported. The layout is read on the 200 ms timer and acted on once it
         has held still for a second, since one change arrives as several.
-        Fullscreen restarts the lens, which then covers its monitor as it is now.
+        Fullscreen covers its monitor again as it is now. A minimised lens
+        waits: restore compares the layout and starts again if it must.
         """
         now = monitor_layout()
         if now != self.layout_seen[0]:
             self.layout_seen = (now, time.perf_counter())
             return
-        if (now == self.layout or self.closing or self.rebuilding
+        if (now == self.layout or self.closing or self.rebuilding or self.minimized
                 or time.perf_counter() - self.layout_seen[1] < 1.0):
             return
         print("the monitors changed: %s" % (now,), flush=True)
         self.layout = now
         if self.fullscreen:
-            self.quit(restart=True)
+            self.set_fullscreen(True)
             return
         if self.refit():
             return
@@ -1525,23 +1672,17 @@ class Lens:
     def refit(self):
         """Keep the windowed lens on one monitor as the displays are now.
 
-        A lens that only needs moving is moved. One that has to shrink cannot do
-        so in place, since a new size needs a new swapchain, so its new size is
-        saved and the lens restarts, the same way a resize does, and this returns
-        True. Fullscreen already covers exactly its monitor.
+        A lens that only needs moving is moved. One that has to shrink gets a
+        new picture at the smaller size, the same way a resize does, and this
+        returns True. Fullscreen already covers exactly its monitor.
         """
         if self.fullscreen or self.closing:
             return False
         x, y = self.inner()
         nx, ny, ncw, nch = fit_rect(x, y, self.cw, self.ch)
         if (ncw, nch) != (self.cw, self.ch):
-            print("the lens no longer fits its monitor; restarting at %d x %d" % (ncw, nch), flush=True)
-            try:
-                with open(STATE, "w") as f:
-                    f.write("%d %d %d %d %d\n" % (ncw, nch, nx, ny, self.passes))
-            except OSError:
-                pass
-            self.quit(restart=True)
+            print("the lens no longer fits its monitor; resizing to %d x %d" % (ncw, nch), flush=True)
+            self.resize_to(nx, ny, ncw, nch)
             return True
         if (nx, ny) != (x, y):
             self.t.geometry("+%d+%d" % (nx - EDGE, ny - BAR))
@@ -1577,6 +1718,36 @@ class Lens:
             # no border to count from
             return self.fs_origin
         return self.t.winfo_x() + EDGE, self.t.winfo_y() + BAR
+
+    def layout_chrome(self, x, y, cw=None, ch=None, settle=True):
+        """Lay the chrome out around a picture of this size at this place.
+
+        Windowed, the bar sits above the picture inside the frame, which draws
+        the border and carries the grips. Fullscreen the chrome is the bar
+        alone, since a layered window larger than the screen comes up blank.
+        The size is the lens's own unless one is given, which is how a drag
+        previews its outcome; settle waits for the window to be where it was
+        put, so inner() reads the new place, which a preview has no need of.
+        """
+        cw = self.cw if cw is None else cw
+        ch = self.ch if ch is None else ch
+        t = self.t
+        if self.fullscreen:
+            t.geometry("%dx%d+%d+%d" % (cw, BAR, x, y - BAR))
+            self.bar.place(x=0, y=0, width=cw, height=BAR)
+            self.hole.place_forget()
+            for g in self.grips.values():
+                g.place_forget()
+        else:
+            t.geometry("%dx%d+%d+%d" % (cw + 2 * EDGE, ch + BAR + EDGE, x - EDGE, y - BAR))
+            self.bar.place(x=EDGE, y=0, width=cw, height=BAR)
+            self.hole.place(x=EDGE, y=BAR, width=cw, height=ch)
+            grab = EDGE - LINE
+            self.grips["w"].place(x=LINE, y=0, width=grab, height=BAR + ch + grab)
+            self.grips["e"].place(x=EDGE + cw, y=0, width=grab, height=BAR + ch + grab)
+            self.grips["s"].place(x=LINE, y=BAR + ch, width=cw + 2 * grab, height=grab)
+        if settle:
+            t.update()
 
     def aim(self):
         """Tell the presenter where the lens is on its monitor."""
@@ -1632,19 +1803,22 @@ class Lens:
             self._fps_hist.clear()
         self._shown = (now, n)
         shown = sum(self._fps_hist) / len(self._fps_hist) if self._fps_hist else None
-        if self.t_first and self.frames > 30 and not self.tweak:
-            size = "%d x %d" % (self.cw, self.ch)
-            if self.readout == "size":
-                txt = size
-            elif self.readout == "detail":
-                txt = "%s   %.0f in  %.0f out" % (size, self.pres_in, self.pres_out)
-            elif shown is not None:
-                txt = "%s   %.0f fps" % (size, shown)
-            else:
-                txt = size
-            if self.latency_on and self.latency_ms is not None:
-                txt += "   delay ~%.0f ms" % self.latency_ms
-            self.info.config(text=txt, fg=DIM)
+        # not during a drag on the frame, which shows the size it is making
+        if self.t_first and self.frames > 0 and not self.tweak and self.rs is None:
+            # nothing under the lens has changed for a few seconds: the presenter
+            # shows nothing new, the neural pass rests, and the delay of the last
+            # new picture is history
+            idle = shown is not None and shown < 0.5
+            parts = ["%d x %d" % (self.cw, self.ch)]
+            if self.readout == "detail":
+                parts.append("%.0f in  %.0f out" % (self.pres_in, self.pres_out))
+            elif idle:
+                parts.append("idle")
+            elif self.readout == "fps" and shown is not None:
+                parts.append("%.0f fps" % shown)
+            if self.latency_on and self.latency_ms is not None and not idle:
+                parts.append("delay ~%.0f ms" % self.latency_ms)
+            self.info.config(text="   ".join(parts), fg=DIM)
         self.root.after(1000, self.stats)
 
     def save_state(self):
@@ -1712,7 +1886,6 @@ class Lens:
             (("End the A/B split" if self.split is not None
               else "Live A/B split      (neural left, raw right)"), self.toggle_split, True),
             None,
-            ("Resize the lens...", self.resize_dialog, not self.fullscreen),
             ("Settings...", self.settings_dialog, True),
             None,
             ("Close", self.quit, True),
@@ -1764,8 +1937,11 @@ class Lens:
         self.tweak = True
         self.tweak_prev = u.GetForegroundWindow()
         # interactive first, so the overlay that opens can be used with the
-        # mouse; the key itself does not need the focus
+        # mouse; the key itself does not need the focus. The overlay is drawn
+        # and read on every present, so the presenter presents at full rate
+        # for as long as it is open
         self.set_interactive(h, True)
+        self.tell_presenter("live 1")
         self.info.config(text="TWEAK MODE: press Home when done", fg=WARN)
         self.post_key(h, 0x24)
         self.root.after(150, lambda: self.focus(h))
@@ -1786,7 +1962,8 @@ class Lens:
             # ReShade forgets every key it is holding when that happens
             self.post_key(h, 0x24)
         self.root.after(KEY_HOLD + 200 if press_home else 200,
-                        lambda: (self.set_interactive(h, False), self.hand_focus_back(prev, h)))
+                        lambda: (self.set_interactive(h, False), self.hand_focus_back(prev, h),
+                                 self.tell_presenter("live 0")))
         self.info.config(text="%d x %d" % (self.cw, self.ch), fg=DIM)
         # the add-on's write of a change made just before Done can still be
         # on its way, so the file is followed a few seconds longer
@@ -1874,7 +2051,9 @@ class Lens:
             down = False
             while not self.closing:
                 now = bool(u.GetAsyncKeyState(0x75) & 0x8000)
-                if now and not down:
+                # a paused presenter presents no frame for the add-on to read
+                # the key on, so a press while minimised changes nothing there
+                if now and not down and not self.minimized:
                     self.root.after(0, self._nr_toggled)
                 down = now
                 time.sleep(0.05)      # a human press lasts longer than this
@@ -1884,9 +2063,24 @@ class Lens:
     def _nr_toggled(self):
         if self.closing:
             return
+        # the add-on reads the key on a present, and an idle presenter presents
+        # four times a second, so it presents at full rate for a moment; and the
+        # add-on's own answer, written to ReShade.ini within about a second and a
+        # half, is read back to keep the two in step should it have missed the key
+        self.tell_presenter("wake")
         self.nr_on = not self.nr_on
         print("Neural Rendering %s" % ("on" if self.nr_on else "off"), flush=True)
         self.update_info()
+        self.root.after(2500, self._check_nr)
+
+    def _check_nr(self):
+        if self.closing or self.rebuilding:
+            return
+        on = _read_nr_enabled()
+        if on != self.nr_on:
+            self.nr_on = on
+            print("Neural Rendering %s, as the add-on has it" % ("on" if on else "off"), flush=True)
+            self.update_info()
 
     def press_key(self, vk):
         """A genuine keystroke, since that is what the add-on reads.
@@ -1903,6 +2097,7 @@ class Lens:
             return
         h = self.visible()
         prev = u.GetForegroundWindow()
+        self.tell_presenter("wake")         # the add-on reads the key on a present
         self.set_interactive(h, True)
         self.focus(h)
 
@@ -1927,155 +2122,145 @@ class Lens:
             self.press_key(0x75)
 
     # ---- resize
-    # The lens cannot resize in place: a new size needs a new swapchain, and the
-    # add-on crashes when its swapchain is recreated. So drag a ghost to the size
-    # you want, confirm, and the lens restarts itself at that size.
-    def confirm(self, title, text):
-        """A yes or no dialog that stays above the lens.
-
-        tkinter's messagebox is not topmost and the presenter is, so the stock
-        dialog is drawn underneath the lens and half the question cannot be
-        read. This also places itself clear of the lens rather than over it.
-        """
-        t = tk.Toplevel(self.root)
-        t.title(title)
-        t.configure(bg=BG)
-        t.resizable(False, False)
-        t.attributes("-topmost", True)
-        out = {"v": False}
-        tk.Label(t, text=text, bg=BG, fg=FG, justify="left", wraplength=430,
-                 font=("Segoe UI", 10)).pack(padx=18, pady=(16, 12))
-        row = tk.Frame(t, bg=BG)
-        row.pack(padx=18, pady=(0, 14), anchor="e")
-
-        def done(v):
-            out["v"] = v
-            try:
-                t.grab_release()
-            except Exception:
-                pass
-            t.destroy()
-
-        tk.Button(row, text="Yes", width=10, relief="flat", bg=ACCENT,
-                  fg="#0b1220", command=lambda: done(True)).pack(side="left",
-                                                                 padx=(0, 10))
-        tk.Button(row, text="No", width=10, relief="flat", bg="#334155", fg=FG,
-                  command=lambda: done(False)).pack(side="left")
-        t.bind("<Escape>", lambda e: done(False))
-        t.bind("<Return>", lambda e: done(True))
-        t.protocol("WM_DELETE_WINDOW", lambda: done(False))
-        t.update_idletasks()
-
-        # Sit below the lens if there is room, otherwise above it, otherwise in
-        # the middle of the screen. Anywhere but underneath the thing it is
-        # asking about.
-        dw, dh = t.winfo_width(), t.winfo_height()
-        lx, ly = self.inner()
-        sw, sh = t.winfo_screenwidth(), t.winfo_screenheight()
-        x = min(max(0, lx + (self.cw - dw) // 2), max(0, sw - dw))
-        if ly + self.ch + 12 + dh <= sh:
-            y = ly + self.ch + 12
-        elif ly - 12 - dh >= 0:
-            y = ly - 12 - dh
-        else:
-            x, y = max(0, (sw - dw) // 2), max(0, (sh - dh) // 2)
-        t.geometry("+%d+%d" % (x, y))
-        t.grab_set()
-        t.focus_force()
-        self.root.wait_window(t)
-        return out["v"]
-
-    def resize_dialog(self):
+    # The picture cannot change size in place: the presenter's swapchain is
+    # made at its size, and the add-on crashes when a swapchain is recreated
+    # under it. So a new size replaces the presenter, the way a new pass count
+    # does, and the chrome is laid out again around the new one. The size
+    # comes from the frame around the lens, dragged the way any window is.
+    def resize_to(self, x, y, cw, ch):
+        """Give the lens this size at this place: the chrome is laid out again
+        and the presenter replaced, since its size is fixed when it starts."""
         if self.closing:
             return
+        cw, ch = max(2, cw - cw % 2), max(2, ch - ch % 2)
+        self.cw, self.ch = cw, ch
+        self.layout_chrome(x, y)
+        self.restart_presenter("resizing to %d x %d ..." % (cw, ch))
+
+    # The frame: a drag on a side moves that side, a drag on a bottom corner
+    # moves both of its sides. The chrome follows the mouse as a preview, the
+    # picture stays as it is, and letting go replaces the picture at the new
+    # size, kept within the monitor like any other.
+    def _grip_zone(self, side, e):
+        if side == "s":
+            wd = e.widget.winfo_width()
+            return "sw" if e.x < CORNER else "se" if e.x > wd - CORNER else "s"
+        ht = e.widget.winfo_height()
+        if e.y < ht - CORNER:
+            return side
+        return "sw" if side == "w" else "se"
+
+    def _grip_hover(self, side, e):
+        if self.rs is None:
+            e.widget.config(cursor={"w": "size_we", "e": "size_we", "s": "size_ns",
+                                    "sw": "size_ne_sw", "se": "size_nw_se"}[self._grip_zone(side, e)])
+
+    def _grip_down(self, side, e):
+        if self.fullscreen or self.closing or self.rebuilding or self.rs is not None:
+            return
+        self.popup.close()
         x, y = self.inner()
-        t = tk.Toplevel(self.root)
-        t.title("Resize the lens: drag the edges, then let go")
-        t.geometry("%dx%d+%d+%d" % (self.cw, self.ch, x, y))
-        t.attributes("-topmost", True)
-        t.attributes("-alpha", 0.55)
-        t.configure(bg="#101820")
-        c = tk.Canvas(t, highlightthickness=0, bg="#101820")
-        c.pack(fill="both", expand=True)
-        st = {"after": None, "done": False, "start": (self.cw, self.ch)}
+        self.rs = {"zone": self._grip_zone(side, e), "x0": e.x_root, "y0": e.y_root,
+                   "start": (x, y, self.cw, self.ch), "rect": (x, y, self.cw, self.ch)}
 
-        def draw():
-            wd, ht = t.winfo_width(), t.winfo_height()
-            c.delete("all")
-            c.create_rectangle(3, 3, wd - 3, ht - 3, outline=ACCENT, width=6)
-            c.create_text(wd // 2, ht // 2 - 26, text="%d x %d" % (wd, ht),
-                          fill=ACCENT, font=("Consolas", 34, "bold"))
-            c.create_text(wd // 2, ht // 2 + 24,
-                          text=("drag any edge, then let go"
-                                if (wd, ht) == st["start"] else "let go to confirm"),
-                          fill=FG, font=("Segoe UI", 14))
-            c.create_text(wd // 2, ht // 2 + 54, text="Esc to cancel",
-                          fill=DIM, font=("Segoe UI", 11))
+    def _grip_rect(self, e):
+        zone = self.rs["zone"]
+        x, y, cw, ch = self.rs["start"]
+        dx, dy = e.x_root - self.rs["x0"], e.y_root - self.rs["y0"]
+        if "e" in zone:
+            cw = max(MIN_W, cw + dx)
+        if "w" in zone:
+            nw = max(MIN_W, cw - dx)
+            x, cw = x + cw - nw, nw
+        if "s" in zone:
+            ch = max(MIN_H, ch + dy)
+        return x, y, cw - cw % 2, ch - ch % 2
 
-        def settled():
-            if st["done"]:
-                return
-            wd, ht = t.winfo_width(), t.winfo_height()
-            if (wd, ht) == st["start"]:
-                return
-            # Pausing in the middle of a drag looks exactly like finishing one, so
-            # never confirm while the button is still held. Tk cannot see these
-            # events during a window manager resize, because the window manager
-            # holds the mouse capture for the duration, so ask Windows directly.
-            if u.GetAsyncKeyState(0x01) & 0x8000:      # 0x01 is VK_LBUTTON
-                st["after"] = self.root.after(120, settled)
-                return
-            st["done"] = True
-            # rootx/rooty, not x/y: save_state stores the viewport origin
-            nx, ny = t.winfo_rootx(), t.winfo_rooty()
-            # kept on one monitor, the one under the outline's centre
-            nx, ny, fw, fh = fit_rect(nx, ny, wd - wd % 2, ht - ht % 2)
-            t.attributes("-topmost", False)
-            t.withdraw()
-            if self.confirm(
-                    "Resize the lens",
-                    "Resize to %d x %d ?\n\n"
-                    "The lens has to restart. A new size needs a new swapchain, and "
-                    "the Neural Rendering add-on crashes when its swapchain is "
-                    "recreated, so restarting is the safe way.\n\n"
-                    "It reopens at the new size with the same number of passes."
-                    % (fw, fh)):
-                try:
-                    with open(STATE, "w") as f:
-                        f.write("%d %d %d %d %d\n" % (fw, fh, nx, ny, self.passes))
-                except OSError:
-                    pass
-                t.destroy()
-                self.quit(restart=True)
-            else:
-                t.destroy()
+    def _grip_move(self, e):
+        if self.rs is None:
+            return
+        rect = self._grip_rect(e)
+        if rect != self.rs["rect"]:
+            self.rs["rect"] = rect
+            self.layout_chrome(*rect, settle=False)
+            self.info.config(text="%d x %d" % rect[2:], fg=WARN)
 
-        def on_conf(e):
-            if st["done"] or e.widget is not t:
-                return
-            draw()
-            if st["after"]:
-                self.root.after_cancel(st["after"])
-            st["after"] = self.root.after(450, settled)
+    def _grip_up(self, e):
+        if self.rs is None:
+            return
+        x, y, cw, ch = self._grip_rect(e)          # while the drag's record is still there
+        sx, sy, scw, sch = self.rs["start"]
+        self.rs = None
+        if (cw, ch) != (scw, sch):
+            self.resize_to(*fit_rect(x, y, cw, ch))
+            return
+        self.layout_chrome(sx, sy)
+        self.info.config(text="%d x %d" % (scw, sch), fg=DIM)
 
-        def align():
-            # geometry() places the decorated frame, but the client area is the
-            # part that has to sit on the viewport. The decoration thickness is
-            # only knowable once the window manager has mapped the window, so
-            # this runs after that rather than immediately.
+    # ---- fullscreen and back
+    def toggle_fullscreen(self):
+        """The maximise button: fullscreen, or back to the window the lens was."""
+        if not self.closing and not self.rebuilding:
+            self.set_fullscreen(not self.fullscreen)
+
+    def set_fullscreen(self, on):
+        """Fill the monitor the lens is on, or come back to the window it was.
+
+        Either way the picture is replaced, since the presenter's size is fixed
+        when it starts, and the chrome laid out again around it. The windowed
+        geometry is saved on the way in and read back on the way out, and the
+        fullscreen lens keeps its own pass count, as it does across a launch.
+        The ini follows, so the next launch opens the same way. Already
+        fullscreen, going fullscreen again covers the monitor as it is now.
+        """
+        if self.closing or self.rebuilding:
+            return
+        if self.minimized:
+            self.restore()
+        self.popup.close()
+        if self.rs is not None:
+            return
+        passes = self.passes
+        if on:
+            if not self.fullscreen:
+                self.save_state()           # the windowed geometry, for the way back
+                if os.path.exists(FULL_STATE):
+                    try:
+                        passes = int(open(FULL_STATE).read().split()[0])
+                    except Exception:
+                        pass
+            x, y = self.inner()
+            mx, my, mw, mh = work_area(x + self.cw // 2, y + self.ch // 2)
+            x, y, cw, ch = mx, my + BAR, mw, mh - BAR
+            note = "going fullscreen ..."
+        else:
+            if not self.fullscreen:
+                return
+            cw, ch, x, y = 1400, 1000, None, None
             try:
-                dx = t.winfo_rootx() - t.winfo_x()
-                dy = t.winfo_rooty() - t.winfo_y()
-            except tk.TclError:
-                return
-            if (dx, dy) != (0, 0):
-                t.geometry("%dx%d+%d+%d" % (self.cw, self.ch, x - dx, y - dy))
-            st["start"] = (t.winfo_width(), t.winfo_height())
-
-        t.after(150, align)
-        t.bind("<Configure>", on_conf)
-        t.bind("<Escape>", lambda e: t.destroy())
-        draw()
+                v = [int(n) for n in open(STATE).read().split()]
+                cw, ch, x, y = v[:4]
+                if len(v) > 4:
+                    passes = v[4]
+            except Exception:
+                cw, ch, x, y = 1400, 1000, None, None
+            if x is None:
+                mx, my, mw, mh = work_area(0, 0)
+                x, y, cw, ch = fit_rect(mx + EDGE, my + BAR, cw, ch, (mx, my, mw, mh))
+                x = mx + (mw - cw) // 2
+                y = my + BAR + (mh - BAR - EDGE - ch) // 2
+            x, y, cw, ch = fit_rect(x, y, cw, ch)
+            note = "back to a window ..."
+        cw, ch = max(2, cw - cw % 2), max(2, ch - ch % 2)
+        self.fullscreen = on
+        self.fs_origin = (x, y)
+        self.cw, self.ch = cw, ch
+        self.passes = self.pending = max(1, min(_pass_limit(), passes))
+        _save_ini("fullscreen", "1" if on else None)
+        self.max_btn.config(text=self.glyphs["restore" if on else "max"])
+        self.layout_chrome(x, y)
+        print("%s %dx%d at (%d,%d)" % ("fullscreen" if on else "windowed", cw, ch, x, y), flush=True)
+        self.restart_presenter(note)
 
     # ---- screenshots
     # ReShade's own key can only give the processed image. The presenter holds
@@ -2132,8 +2317,8 @@ class Lens:
         Nothing here requires editing the ini; the dialog writes it. A value
         put back to its default is removed from the ini, so it follows the
         default on the next machine rather than pinning this one's value.
-        Settings that change the picture's size or where the lens looks for
-        its files restart the lens, the same way a resize does.
+        The folders take effect at the next launch, so changing them restarts
+        the lens.
         """
         t = tk.Toplevel(self.root)
         t.title("Neural Lens settings")
@@ -2154,11 +2339,12 @@ class Lens:
             row[0] += 1
 
         def switch(text, var):
-            tk.Checkbutton(t, text=text, variable=var, bg=BG, fg=FG, selectcolor="#0b1220",
-                           activebackground=BG, activeforeground=FG,
-                           font=("Segoe UI", 10)).grid(row=row[0], column=0, columnspan=3,
-                                                       sticky="w", padx=8, pady=(4, 0))
+            b = tk.Checkbutton(t, text=text, variable=var, bg=BG, fg=FG, selectcolor="#0b1220",
+                               activebackground=BG, activeforeground=FG, disabledforeground=DIM,
+                               font=("Segoe UI", 10))
+            b.grid(row=row[0], column=0, columnspan=3, sticky="w", padx=8, pady=(4, 0))
             row[0] += 1
+            return b
 
         def radio(text, var, value):
             tk.Radiobutton(t, text=text, variable=var, value=value, bg=BG, fg=FG,
@@ -2193,25 +2379,48 @@ class Lens:
         shots = tk.StringVar(value=SHOT_DIR)
         folder(shots, "Where should screenshots go?")
 
-        # ---- fullscreen
-        section("Fullscreen")
-        full = tk.BooleanVar(value=self.fullscreen)
-        switch("Fill the monitor the lens is on", full)
-        explain("Changing it restarts the lens. Windowed, it comes back at its last position "
-                "and size. Fullscreen, the lens fills its monitor apart from the taskbar, with "
-                "the title bar across the top, and it cannot be dragged. A whole monitor is many "
-                "times the pixels of a window, so expect a lower frame rate; the lens switches "
-                "the Cost Scaler on for fullscreen to win some of it back.")
+        # ---- the Cost Scaler: fullscreen, always, or off, as two switches, the
+        # second of which keeps the first on
+        section("The Cost Scaler")
+        cs_full = tk.BooleanVar(value=COST_SCALER in ("fullscreen", "always"))
+        cs_always = tk.BooleanVar(value=COST_SCALER == "always")
+        cs_full_btn = switch("Use the Cost Scaler for a fullscreen lens", cs_full)
+        cs_always_btn = switch("Use the Cost Scaler for a windowed lens too", cs_always)
+        explain("DLSSNR-Cost-Scaler runs the neural model at a fraction of the picture's "
+                "resolution and puts the result back at full size: fewer pixels for the model, "
+                "a higher frame rate, and a slightly smaller change to the picture. Fullscreen at "
+                "6144x2560 it took one pass from 42 frames a second to 58 and two passes from 26 "
+                "to 54. The lens uses it only where the model's work would pass about 8 "
+                "megapixels over all the passes, which a window reaches at 2560x1440 with three "
+                "passes or 3840x2160 with two; below that it would only add its own cost. "
+                "Applies straight away.")
+        if COST_SCALER == "manual":
+            explain("cost_scaler = manual in neural-lens.ini leaves the Cost Scaler's own ini "
+                    "alone, so these two do nothing until that line goes.")
+            cs_full_btn.config(state="disabled")
+            cs_always_btn.config(state="disabled")
+
+        def follow_always(*_):
+            if cs_always.get():
+                cs_full.set(True)
+                cs_full_btn.config(state="disabled")
+            elif COST_SCALER != "manual":
+                cs_full_btn.config(state="normal")
+
+        cs_always.trace_add("write", follow_always)
+        follow_always()
 
         # ---- title bar
         section("Title bar")
         readout = tk.StringVar(value=self.readout)
-        radio("The frame rate the lens is showing", readout, "fps")
-        radio("Frames captured and new pictures shown, each per second", readout, "detail")
         radio("Only the size", readout, "size")
+        radio("The frame rate the content under the lens gives it", readout, "fps")
+        radio("Frames captured and new pictures shown, each per second", readout, "detail")
         explain("What sits beside the size on the title bar. The frame rate counts the new "
-                "pictures the lens shows, averaged over the last few seconds. Applies straight "
-                "away.")
+                "pictures a second the content under the lens hands it, averaged over the last "
+                "few seconds: a 30 frame a second video gives 30, and the lens never limits it. "
+                "Over content that is not changing the bar says idle whichever is chosen, since "
+                "the neural pass then rests. Applies straight away.")
         latency = tk.BooleanVar(value=self.latency_on)
         switch("Show the delay from capture to display", latency)
         explain("How far the picture in the lens runs behind what is under it: from the moment "
@@ -2245,22 +2454,24 @@ class Lens:
             if dd and dd != DATA_DIR:
                 _save_ini("data_dir", dd)
                 restart = True
-            want = bool(full.get())
-            if want != self.fullscreen:
-                _save_ini("fullscreen", "1" if want else None)
-                restart = True
             r = readout.get()
             if r != self.readout:
                 self.readout = r
-                _save_ini("readout", None if r == "fps" else r)
+                _save_ini("readout", None if r == "size" else r)
             if bool(latency.get()) != self.latency_on:
                 self.latency_on = bool(latency.get())
                 self.latency_ms = None
-                _save_ini("latency", "1" if self.latency_on else None)
+                _save_ini("latency", None if self.latency_on else "0")
+            mode = "always" if cs_always.get() else "fullscreen" if cs_full.get() else "off"
+            if COST_SCALER != "manual" and mode != COST_SCALER:
+                _set_cost_scaler(mode)
+                # the proxy reads its ini within a second of a change, so this is live
+                self.apply_proxy()
             t.destroy()
             if restart:
-                # the windowed geometry is what a fullscreen launch derives its
-                # monitor from, and what the way back restores, so keep it current
+                # the folders take effect at the next launch, so the lens restarts.
+                # The windowed geometry is what a fullscreen launch derives its
+                # monitor from, and what the way back restores, so keep it current.
                 if not self.fullscreen:
                     self.save_state()
                 self.quit(restart=True)
@@ -2570,8 +2781,8 @@ def main():
     root.mainloop()
 
     if lens.restart:
-        # Resizing has to go through a restart, so hand the process over to a
-        # fresh copy of itself once the presenter is really gone.
+        # The folder settings take effect at the next launch, so hand the process
+        # over to a fresh copy of itself once the presenter is really gone.
         #
         # Not os.execv. On Windows that goes through the CRT, which does not quote
         # arguments containing spaces, so a script path such as
@@ -2586,12 +2797,7 @@ def main():
         time.sleep(1.0)
         cmd = _relaunch_cmd()
         note = os.path.join(LOGDIR, "restart.log")
-        try:
-            # the new size lives in the state file; lens.cw and lens.ch are the old one
-            v = [int(n) for n in open(STATE).read().split()]
-            print("restarting at %d x %d" % (v[0], v[1]), flush=True)
-        except Exception:
-            print("restarting", flush=True)
+        print("restarting", flush=True)
         try:
             os.makedirs(LOGDIR, exist_ok=True)
             # The console this was started from may go away with this process, so
@@ -2601,14 +2807,14 @@ def main():
                                      stdout=out, stderr=subprocess.STDOUT)
         except Exception as exc:
             print("could not restart: %s" % exc, flush=True)
-            print("start it again yourself, the new size is already saved", flush=True)
+            print("start it again yourself, the settings are already saved", flush=True)
             return
         # A restart that fails should say so rather than vanishing without a word.
         time.sleep(3.0)
         if child.poll() is not None:
             print("the restart exited straight away (code %s)" % child.poll(), flush=True)
             print("what it printed is in %s" % note, flush=True)
-            print("start it again yourself, the new size is already saved", flush=True)
+            print("start it again yourself, the settings are already saved", flush=True)
 
 
 if __name__ == "__main__":

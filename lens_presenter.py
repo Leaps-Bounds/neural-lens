@@ -3,12 +3,16 @@
 No player, no clock, no buffer. A frame arrives from Windows Graphics Capture,
 is copied into a staging buffer, from there into the next swapchain image, and
 presented; a frame that arrives before the loop gets to the previous one
-replaces it. Between arrivals the last frame is presented again at the
-display's rate, copied in afresh each time, so Neural Rendering always works
-on the original and never on its own output. ReShade's Vulkan layer, the Feed
-and the Neural Rendering add-on attach to this swapchain: the process is
-lens-presenter.exe in the stack folder, which the layer's allow list names,
-and ReShade reads its configuration from the executable's own folder.
+replaces it. Every present copies the original in afresh, so Neural Rendering
+never works on its own output. A frame the same as the last, which is what
+this window's own presents come back as, since it is excluded from capture,
+is not presented at all, so over content that is not changing nothing runs; a
+present every quarter second keeps ReShade's keys and the capture alive, and
+the overlay, a key, a screenshot or a probe get the display's rate. ReShade's
+Vulkan layer, the Feed and the Neural Rendering add-on attach to this
+swapchain: the process is lens-presenter.exe in the stack folder, which the
+layer's allow list names, and ReShade reads its configuration from the
+executable's own folder.
 
 Measured on an RTX 5090 with a 120 Hz display, from a change on screen to the
 change in this window, both read through the compositor: 8 ms, one refresh.
@@ -33,14 +37,26 @@ Lines on stdin:
     probe N         read back the next N presented pictures and print
                     "probe n=N median=M max=X", the mean absolute difference
                     between consecutive ones out of 255: how steady the output is
+    pause           end the capture and present nothing, so nothing runs on the GPU,
+                    until resume; the lens hides the window meanwhile
+    resume          capture afresh and present again, the last picture first
+    live 1 | 0      present at the display's rate whether or not anything changed,
+                    while the ReShade overlay is open, or stop that
+    wake [SECONDS]  the same for a moment, one second unless given, so a key the
+                    add-on reads on a present is seen
     stop-capture    end the capture, as Windows does when the displays change; for tests
     quit            leave
 
 Lines on stdout, once a second:
-    stats new=N arrived=N repeated=N dropped=N meter=MS
-where meter is the median, over that second, of the present call minus the
-capture's own timestamp for frames presented for the first time. The timestamp
-is the composition the frame belongs to, so this can be slightly negative.
+    stats new=N arrived=N repeated=N dropped=N skipped=N meter=MS
+where new is the pictures presented for the first time, arrived the frames the
+capture delivered, repeated the presents of a picture already shown, dropped
+the frames replaced by a newer one before they were presented, skipped the
+frames the same as the last, and meter the median, over that second, of the
+present call minus the capture's own timestamp for frames presented for the
+first time. The timestamp is the composition the frame belongs to, so this can
+be slightly negative. Paused, the line still comes, with nothing in it. And
+"paused" and "resumed" as each happens.
 
 And once, when frames stop coming:
     capture lost REASON
@@ -63,6 +79,9 @@ import numpy as np
 import glfw
 import vulkan as vk
 from windows_capture import WindowsCapture
+
+__version__ = "0.3.0"        # named in the ready line, so a log says which presenter ran
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -288,20 +307,22 @@ def main():
 
     # ---- capture: one slot, the newest frame wins
     slot = {"frame": np.empty((H, W, 4), np.uint8), "spare": np.empty((H, W, 4), np.uint8),
-            "ts": 0.0, "new": False, "dropped": 0, "arrived": 0,
+            "ts": 0.0, "new": False, "dropped": 0, "arrived": 0, "skipped": 0, "got": False,
             "last": time.perf_counter(), "unfit": 0, "size": (0, 0), "closed": False}
     crop = {"x": args.crop[0], "y": args.crop[1]}
     cv = threading.Condition()
     kind, _, ref = args.source.partition(":")
-    cap = None
-    if kind == "window":
-        cap = WindowsCapture(cursor_capture=False, draw_border=False, minimum_update_interval=0,
-                             window_hwnd=int(ref))
-    elif kind == "monitor":
-        cap = WindowsCapture(cursor_capture=False, draw_border=False, minimum_update_interval=0,
-                             monitor_index=int(ref))
-    elif kind != "pattern":
+    if kind not in ("window", "monitor", "pattern"):
         sys.exit("unknown source %s" % args.source)
+    gen = {"n": 0}          # which capture is current: a stopped one's closing is not a loss
+
+
+    def same(a, b):
+        """Whether two captured frames are identical: a sparse sample first, which
+        catches motion in microseconds, then every byte, eight at a time."""
+        if not np.array_equal(a[::16, ::16], b[::16, ::16]):
+            return False
+        return np.array_equal(a.reshape(-1).view(np.uint64), b.reshape(-1).view(np.uint64))
 
 
     def on_frame_arrived(frame, control):
@@ -313,30 +334,57 @@ def main():
                 slot["unfit"] += 1
                 slot["size"] = (frame.width, frame.height)
                 return
+            # the spare is this thread's alone between swaps, and the frame is only
+            # read by the loop, so the copy and the comparison need no lock. A
+            # frame the same as the last is what every present of this window
+            # comes back as, since the window is excluded from capture; it counts
+            # as arrived, so the capture is known to be alive, and goes no further
+            spare = slot["spare"]
+            np.copyto(spare, frame.frame_buffer[cy:cy + H, cx:cx + W, :])
+            unchanged = slot["got"] and same(spare, slot["frame"])
             with cv:
-                np.copyto(slot["spare"], frame.frame_buffer[cy:cy + H, cx:cx + W, :])
-                slot["frame"], slot["spare"] = slot["spare"], slot["frame"]
+                slot["arrived"] += 1
+                slot["last"] = time.perf_counter()
+                if unchanged:
+                    slot["skipped"] += 1
+                    return
+                slot["frame"], slot["spare"] = spare, slot["frame"]
                 slot["ts"] = frame.timespan / 1e7
                 if slot["new"]:
                     slot["dropped"] += 1
                 slot["new"] = True
-                slot["arrived"] += 1
-                slot["last"] = time.perf_counter()
-                cv.notify()
+                slot["got"] = True
+            glfw.post_empty_event()             # ends the loop's wait, from any thread
         except Exception:
             pass
 
 
-    def on_closed():
-        slot["closed"] = True
+    def start_capture():
+        """Capture the source, afresh after a pause. windows-capture takes its
+        handlers by their names, so the close handler is made here, bound to
+        this capture's generation."""
+        if kind == "pattern":
+            return None, None
+        gen["n"] += 1
+        mine = gen["n"]
+        if kind == "window":
+            c = WindowsCapture(cursor_capture=False, draw_border=False, minimum_update_interval=0,
+                               window_hwnd=int(ref))
+        else:
+            c = WindowsCapture(cursor_capture=False, draw_border=False, minimum_update_interval=0,
+                               monitor_index=int(ref))
+
+        def on_closed():
+            if gen["n"] == mine:
+                slot["closed"] = True
+
+        c.event(on_frame_arrived)
+        c.event(on_closed)
+        return c, c.start_free_threaded()
 
 
-    ctl = None
-    if cap is not None:
-        cap.event(on_frame_arrived)
-        cap.event(on_closed)
-        ctl = cap.start_free_threaded()
-    else:
+    cap, ctl = start_capture()
+    if cap is None:
         # the self test's source: a still with detail, and no capture at all
         rng = np.random.default_rng(1)
         still = rng.integers(0, 255, (H, W, 4), np.uint8)
@@ -349,7 +397,8 @@ def main():
             slot["arrived"] += 1
 
     # ---- commands on stdin
-    wanted = {"quit": False, "shot": None, "probe": 0, "stop": False}
+    wanted = {"quit": False, "shot": None, "probe": 0, "stop": False, "pause": False, "resume": False,
+              "live": False, "wake": 0.0}
     lost = {"said": False}
     probe = {"prev": None, "diffs": []}
 
@@ -361,6 +410,7 @@ def main():
                 continue
             if parts[0] == "quit":
                 wanted["quit"] = True
+                glfw.post_empty_event()
                 return
             if parts[0] == "crop" and len(parts) == 3:
                 try:
@@ -371,12 +421,25 @@ def main():
                 wanted["shot"] = line.strip()[5:]
             elif parts[0] == "stop-capture":
                 wanted["stop"] = True
+            elif parts[0] == "pause":
+                wanted["pause"] = True
+            elif parts[0] == "resume":
+                wanted["resume"] = True
+            elif parts[0] == "live" and len(parts) == 2:
+                wanted["live"] = parts[1] not in ("0", "off", "no")
+            elif parts[0] == "wake":
+                try:
+                    secs = float(parts[1]) if len(parts) > 1 else 1.0
+                except ValueError:
+                    secs = 1.0
+                wanted["wake"] = time.perf_counter() + secs
             elif parts[0] == "probe" and len(parts) == 2:
                 try:
                     wanted["probe"] = max(0, int(parts[1]))
                     probe["prev"], probe["diffs"] = None, []
                 except ValueError:
                     pass
+            glfw.post_empty_event()     # an idle loop waits a heartbeat; a command need not
         wanted["quit"] = True
 
 
@@ -408,20 +471,71 @@ def main():
                           (((v >> 20) & 0x3FF) >> 2).astype(np.uint8)])
 
 
-    say("presenter ready %dx%d at (%d,%d) on %s, format %d, present mode %s, %d images, readback %s, source %s"
+    say("presenter ready %dx%d at (%d,%d) on %s, format %d, present mode %s, %d images, readback %s, source %s, "
+        "version %s"
         % (W, H, X, Y, props.deviceName, fmt.format, "mailbox" if mode == vk.VK_PRESENT_MODE_MAILBOX_KHR else "fifo",
-           len(images), "yes" if readback_ok else "no", args.source))
+           len(images), "yes" if readback_ok else "no", args.source, __version__))
 
     # ---- the loop
     mon = glfw.get_primary_monitor()
     vm = glfw.get_video_mode(mon)
     refresh = 1.0 / float(vm.refresh_rate if vm and vm.refresh_rate else 60)
+    HEARTBEAT = 0.25         # seconds between presents while nothing changes
+    # The add-on builds its neural feature on the first frames it is shown, and
+    # the Feed settles over the first few hundred, so a fresh presenter presents
+    # at the display's rate for its first seconds whatever arrives: measured over
+    # a still, one idling from birth had no Neural Rendering six seconds in
+    WARMUP = 12.0
     lat, new, again, t_report, have = [], 0, 0, time.perf_counter(), False
+    paused, t_present = False, 0.0
+    wanted["wake"] = time.perf_counter() + WARMUP
     while not glfw.window_should_close(win) and not wanted["quit"]:
         glfw.poll_events()
+        # ---- paused: no capture and no present, so ReShade and the add-on run
+        # nothing at all, until resume captures afresh
+        if wanted["pause"]:
+            wanted["pause"] = False
+            if not paused:
+                paused = True
+                if ctl is not None:
+                    try:
+                        ctl.stop()
+                    except Exception:
+                        pass
+                cap = ctl = None
+                say("paused")
+        if wanted["resume"]:
+            wanted["resume"] = False
+            if paused:
+                paused = False
+                slot["closed"], slot["last"], slot["unfit"] = False, time.perf_counter(), 0
+                lost["said"] = False
+                try:
+                    cap, ctl = start_capture()
+                except Exception as exc:
+                    say("capture lost could not start again: %s" % exc)
+                    lost["said"] = True
+                wanted["wake"] = time.perf_counter() + 3.0      # the add-on's history is stale
+                say("resumed")
+        if paused:
+            glfw.wait_events_timeout(0.05)      # still answering the window's messages
+            now = time.perf_counter()
+            if now - t_report >= 1.0:
+                say("stats new=0 arrived=0 repeated=0 dropped=0 skipped=0 meter=nan")
+                lat, new, again, t_report = [], 0, 0, now
+            continue
+        if not slot["new"]:
+            # the wait is on the window's own message queue, so a message, such
+            # as the lens moving this window under a drag, is answered at once:
+            # asleep on the capture's condition instead, the loop answered none,
+            # and the lens's SetWindowPos waited for it, 267 ms a move measured.
+            # A frame or a command posts an empty event to end the wait, so an
+            # idle loop can wait a whole heartbeat rather than turn over every
+            # refresh for nothing
+            busy = (wanted["live"] or time.perf_counter() < wanted["wake"] or wanted["shot"]
+                    or wanted["probe"] > 0)
+            glfw.wait_events_timeout(refresh if busy else HEARTBEAT)
         with cv:
-            if not slot["new"]:
-                cv.wait(refresh)
             fresh = slot["new"]
             if fresh:
                 frame, ts = slot["frame"], slot["ts"]
@@ -431,57 +545,66 @@ def main():
                 have = True
         if not have:
             continue
-        if not fresh:
-            vk.vkWaitForFences(device, 1, [fence], vk.VK_TRUE, 10 ** 9)
-        shot = wanted["shot"]
-        if shot:
-            before = bgra_to_rgb(staging.copy())
-        vk.vkResetFences(device, 1, [fence])
-        idx = acquire(device, swapchain, 10 ** 9, sem_acquire, None)
-        probing = wanted["probe"] > 0 and readback_ok
-        record(cmds[idx], idx, (bool(shot) or probing) and readback_ok)
-        vk.vkQueueSubmit(queue, 1, [vk.VkSubmitInfo(
-            sType=vk.VK_STRUCTURE_TYPE_SUBMIT_INFO, waitSemaphoreCount=1, pWaitSemaphores=[sem_acquire],
-            pWaitDstStageMask=[vk.VK_PIPELINE_STAGE_TRANSFER_BIT], commandBufferCount=1,
-            pCommandBuffers=[cmds[idx]], signalSemaphoreCount=1, pSignalSemaphores=[sem_done])], fence)
-        present(queue, vk.VkPresentInfoKHR(sType=vk.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, waitSemaphoreCount=1,
-                                           pWaitSemaphores=[sem_done], swapchainCount=1,
-                                           pSwapchains=[swapchain], pImageIndices=[idx]))
-        had_picture = presented[idx]
-        presented[idx] = True
-        if fresh:
-            lat.append((time.perf_counter() - ts) * 1000.0)
-            new += 1
-        else:
-            again += 1
-        if probing and had_picture:
-            vk.vkWaitForFences(device, 1, [fence], vk.VK_TRUE, 10 ** 9)
-            cur = readback[::4, ::4, :3].astype(np.int16)
-            if probe["prev"] is not None:
-                probe["diffs"].append(float(np.abs(cur - probe["prev"]).mean()))
-            probe["prev"] = cur
-            wanted["probe"] -= 1
-            if wanted["probe"] == 0:
-                d = sorted(probe["diffs"])
-                say("probe n=%d median=%.3f max=%.3f" % (len(d), d[len(d) // 2] if d else float("nan"),
-                                                         d[-1] if d else float("nan")))
-        if shot:
-            wanted["shot"] = None
-            try:
-                saved = []
-                write_png(shot + "-before.png", before)
-                saved.append("before")
-                if readback_ok and had_picture:
-                    vk.vkWaitForFences(device, 1, [fence], vk.VK_TRUE, 10 ** 9)
-                    after = readback_rgb()
-                    write_png(shot + "-after.png", after)
-                    saved.append("after")
-                    write_png(shot + "-side-by-side.png",
-                              np.hstack([before, np.full((H, 8, 3), 90, np.uint8), after]))
-                    saved.append("side by side")
-                say("shot done " + ", ".join(saved))
-            except Exception as exc:
-                say("shot failed %s" % exc)
+        now = time.perf_counter()
+        # ---- nothing new under the lens: present again only while the overlay or
+        # a key wants frames, for a screenshot or a probe, or as the heartbeat that
+        # keeps ReShade's keys and the capture alive. Otherwise nothing runs at all,
+        # which is the point: the neural pass rests over a still
+        idle = not fresh and not (wanted["live"] or now < wanted["wake"] or wanted["shot"]
+                                  or wanted["probe"] > 0 or now - t_present >= HEARTBEAT)
+        if not idle:
+            if not fresh:
+                vk.vkWaitForFences(device, 1, [fence], vk.VK_TRUE, 10 ** 9)
+            shot = wanted["shot"]
+            if shot:
+                before = bgra_to_rgb(staging.copy())
+            vk.vkResetFences(device, 1, [fence])
+            idx = acquire(device, swapchain, 10 ** 9, sem_acquire, None)
+            probing = wanted["probe"] > 0 and readback_ok
+            record(cmds[idx], idx, (bool(shot) or probing) and readback_ok)
+            vk.vkQueueSubmit(queue, 1, [vk.VkSubmitInfo(
+                sType=vk.VK_STRUCTURE_TYPE_SUBMIT_INFO, waitSemaphoreCount=1, pWaitSemaphores=[sem_acquire],
+                pWaitDstStageMask=[vk.VK_PIPELINE_STAGE_TRANSFER_BIT], commandBufferCount=1,
+                pCommandBuffers=[cmds[idx]], signalSemaphoreCount=1, pSignalSemaphores=[sem_done])], fence)
+            present(queue, vk.VkPresentInfoKHR(sType=vk.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, waitSemaphoreCount=1,
+                                               pWaitSemaphores=[sem_done], swapchainCount=1,
+                                               pSwapchains=[swapchain], pImageIndices=[idx]))
+            had_picture = presented[idx]
+            presented[idx] = True
+            if fresh:
+                lat.append((time.perf_counter() - ts) * 1000.0)
+                new += 1
+            else:
+                again += 1
+            if probing and had_picture:
+                vk.vkWaitForFences(device, 1, [fence], vk.VK_TRUE, 10 ** 9)
+                cur = readback[::4, ::4, :3].astype(np.int16)
+                if probe["prev"] is not None:
+                    probe["diffs"].append(float(np.abs(cur - probe["prev"]).mean()))
+                probe["prev"] = cur
+                wanted["probe"] -= 1
+                if wanted["probe"] == 0:
+                    d = sorted(probe["diffs"])
+                    say("probe n=%d median=%.3f max=%.3f" % (len(d), d[len(d) // 2] if d else float("nan"),
+                                                             d[-1] if d else float("nan")))
+            if shot:
+                wanted["shot"] = None
+                try:
+                    saved = []
+                    write_png(shot + "-before.png", before)
+                    saved.append("before")
+                    if readback_ok and had_picture:
+                        vk.vkWaitForFences(device, 1, [fence], vk.VK_TRUE, 10 ** 9)
+                        after = readback_rgb()
+                        write_png(shot + "-after.png", after)
+                        saved.append("after")
+                        write_png(shot + "-side-by-side.png",
+                                  np.hstack([before, np.full((H, 8, 3), 90, np.uint8), after]))
+                        saved.append("side by side")
+                    say("shot done " + ", ".join(saved))
+                except Exception as exc:
+                    say("shot failed %s" % exc)
+            t_present = time.perf_counter()
         if wanted["stop"]:
             wanted["stop"] = False
             if ctl is not None:
@@ -493,10 +616,12 @@ def main():
         if now - t_report >= 1.0:
             h = sorted(lat)
             med = h[len(h) // 2] if h else float("nan")
-            say("stats new=%d arrived=%d repeated=%d dropped=%d meter=%.1f" % (new, slot["arrived"], again, slot["dropped"], med))
+            say("stats new=%d arrived=%d repeated=%d dropped=%d skipped=%d meter=%.1f"
+                % (new, slot["arrived"], again, slot["dropped"], slot["skipped"], med))
             lat, new, again, t_report = [], 0, 0, now
             slot["arrived"] = 0
             slot["dropped"] = 0
+            slot["skipped"] = 0
             if cap is not None and not lost["said"]:
                 quiet = now - slot["last"]
                 reason = None

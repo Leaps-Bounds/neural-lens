@@ -26,19 +26,22 @@
 # the passes comes to about cost_scaler_mpx megapixels: 8 is 6144x2560 at 0.70
 # for one pass and 0.50 for two, 3840x2160 at native for one pass and 0.65 for
 # two, and 2560x1440 at native up to two passes. A slower card can want less.
+# The Settings dialog has fullscreen, always and off as two switches.
 # cost_scaler = fullscreen
 # cost_scaler_mpx = 8
 
-# What the title bar shows beside the size: fps, the new pictures the lens shows
-# each second; detail, the frames captured and the new pictures shown, each per
-# second; or size. The Settings dialog has this too.
-# readout = fps
+# What the title bar shows beside the size and the delay: size, the default,
+# nothing more; fps, the new pictures a second the content under the lens hands
+# it, which the lens never limits; or detail, the frames captured and the new
+# pictures shown, each per second. The Settings dialog has this too.
+# readout = size
 
-# Show the delay from capture to display beside the frame rate. The Settings
-# dialog has this too.
-# latency = 0
+# Show the delay from capture to display beside the size, on unless this says 0.
+# The Settings dialog has this too.
+# latency = 1
 
 # Fill the monitor the lens is on, apart from the taskbar, with the title bar
-# across the top. The Settings dialog has a checkbox for this and writes it here.
-# The pass count for fullscreen is kept apart from the windowed one.
+# across the top. The title bar's maximise button writes it here, so the lens
+# opens the way it was left. The pass count for fullscreen is kept apart from
+# the windowed one.
 # fullscreen = 0

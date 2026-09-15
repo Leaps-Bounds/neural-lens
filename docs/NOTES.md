@@ -15,18 +15,58 @@ true`, and a `.pth` file naming the packages of the Python that ran the setup, s
 environment works too.
 
 Each captured frame is copied into a host visible staging buffer, from there into the next
-swapchain image, and presented. Between arrivals the last frame is presented again at the
-display's rate, copied in afresh each time, so a repeat never re-runs Neural Rendering on its
-own output. A frame that arrives before the loop has taken the previous one replaces it. Every
-present is a composition, and the monitor capture delivers a frame per composition, so the loop
-runs at the display's rate even over a still.
+swapchain image, and presented, and every present copies the staging buffer in afresh, so a
+repeat never re-runs Neural Rendering on its own output. A frame that arrives before the loop has
+taken the previous one replaces it. Every present is a composition, and the monitor capture
+delivers a frame per composition, so up to 0.2.1 the loop drove itself at the display's rate
+even over a still; see Idle when nothing changes.
+
+### Idle when nothing changes
+
+The capture thread compares each frame with the last before handing it over: a sample of every
+sixteenth pixel each way first, which catches motion in microseconds, then every byte, eight at
+a time through a uint64 view, and a frame the same as the last is counted as arrived, so the
+capture is known to be alive, and dropped. The loop then presents only for a fresh frame, or as
+a heartbeat every quarter second, which keeps ReShade's hotkeys polled and, since each present
+is a composition, keeps frames arriving for the watchdog. Over a still that is four presents a
+second in place of a hundred and twenty. `live 1` on stdin presents at the display's rate while
+the ReShade overlay is open, since the overlay is drawn and read on presents, and `wake` does
+the same for a second: the add-on reads F6 on a present, so the lens sends `wake` the moment it
+sees the key, and reads the add-on's answer back from ReShade.ini two and a half seconds later
+in case it was missed all the same. A screenshot or a probe present at once.
+
+A fresh presenter presents at the display's rate for its first twelve seconds whatever arrives,
+and for three after a resume. The add-on builds its neural feature on the first frames it is
+shown, and at four a second it did not: a presenter that idled from birth over a still showed no
+Neural Rendering six seconds in, and its ReShade.log never logged a feature at all.
+
+Measured with `_harnesses/qol_probe.py` on the RTX 5090 at 1400x1000, one pass, five second
+samples of nvidia-smi and GetProcessTimes, the machine reading 1 percent and 45 W with nothing
+running: over a still, idling, GPU 0 percent, 53 W, the presenter 0.17 s of CPU, five frames a
+second arriving and none presented, and a screenshot after the warm-up still showing Neural
+Rendering applied, a change of 2.10 out of 255; the same still with `live 1`, which is how every
+version before presented, 57 percent, 222 W, 2.02 s; a square bouncing 33 times a second,
+21 percent, 114 W, 0.80 s, 33.8 new pictures a second; at 60 times a second, 36 percent, 166 W,
+1.25 s, 58.6 new pictures a second.
+
+The comparison costs about half a millisecond at 1400x1000 and a few at 6144x2560, and only
+when a frame arrives; over a still, frames arrive at the heartbeat's rate.
+
+The idle loop waits on the window's own message queue, `glfw.wait_events_timeout`, and the
+capture thread and the command thread post an empty event to end the wait. A first version
+waited on the capture's condition variable instead, and a loop asleep there answers no window
+messages: the lens moves the picture's window with `SetWindowPos`, which waits for the window's
+thread to answer, so each mouse movement of a drag took 267 ms on average and up to 469,
+measured with `_harnesses/drag_lag_probe.py`, against 11 while presenting live. Waiting on the
+message queue, the same move takes 0.3 ms idle and 3 ms live.
 
 The window is created hidden, given `WS_EX_TOOLWINDOW` and `WS_EX_NOACTIVATE`, and then shown
 without activation, so no taskbar button ever appears, not even while it loads. It is excluded
 from capture with `WDA_EXCLUDEFROMCAPTURE`. The process is per monitor DPI aware, version 2, set
 before glfw initialises, as the lens is.
 
-It reads `crop X Y`, `shot BASE`, `probe N` and `quit` on stdin, and prints a stats line a
+It reads `crop X Y`, `shot BASE`, `probe N`, `pause`, `resume`, `live 1|0`, `wake` and `quit`
+on stdin, and prints a stats line a
 second: new pictures presented, frames arrived, repeats, frames replaced by a newer one before
 they were taken, and the meter, the median of the present call minus the capture's own
 timestamp. `--source pattern` presents a still with detail and captures nothing; the stack
@@ -63,10 +103,10 @@ across runs, compare the `active settings` lines. A 10 bit swapchain stayed opti
 its crop to that monitor, so a lens over the monitor's edge would show a shifted picture and a
 lens larger than the monitor would get no frames at all. So the lens keeps itself on one monitor:
 `fit_rect` moves it, and shrinks it keeping its proportions, into the work area of the monitor
-under its centre when it starts, when a resize is confirmed and when a drag ends. A lens that has
-to shrink restarts, since a new size needs a new swapchain. A new install opens at 1400x1000,
-fitted to and centred on the main monitor. When a drag ends with the lens's centre on another
-monitor, the lens restarts the presenter there.
+under its centre when it starts, when a resize ends and when a drag ends. A lens that has to
+shrink gets a new picture at the smaller size, since a new size needs a new swapchain. A new
+install opens at 1400x1000, fitted to and centred on the main monitor. When a drag ends with the
+lens's centre on another monitor, the lens restarts the presenter there.
 
 **Display changes end the capture.** With a second monitor switched on while the lens ran, the
 presenter went on presenting its last frame: a red and green square flashed under the lens's
@@ -270,15 +310,27 @@ multi-pass, and costs a little where it is not, which is why the lens turns it o
 only. One pass wants about 0.7 on that panel and two passes 0.5, so the rule is a working area of
 8 megapixels over all the passes, re-applied whenever the pass count changes.
 
-## Resize restarts the process
+The windowed switch, measured with `_harnesses/costscaler_windowed_probe.py` on the RTX 5090: a
+2400x1800 lens at three passes, 13 megapixels of work a frame, over a square bouncing 60 times a
+second, the rule switched live between always and off the way the Settings dialog does it. With
+the scaler on at 0.75, the proxy's log showed the model working at 1800x1350, the GPU read 90
+percent and 438 to 446 W and the lens showed 58 to 70 new pictures a second; off, 99 percent,
+566 W and 53. The proxy took each change within a second, with no presenter restart.
+
+## Resize restarts the picture
 
 A resize would recreate the swapchain, and the Neural Rendering add-on responds to a recreated
 swapchain by releasing its DLSS feature and crashing with 0xC0000005. Moving the lens is safe,
 because that only repositions windows and moves the crop.
 
-The menu's resize writes the new geometry into the state file and starts a fresh copy of the
-process once `quit()` has ended the presenter and waited for it, and a further second has
-passed.
+So a new size replaces the presenter, the way a new pass count does: `layout_chrome` lays the
+title bar and border out again around the new size first, and `restart_presenter` ends the old
+presenter and starts one at the lens's size and place. Fullscreen and back go the same way, with
+the windowed geometry saved to the state file on the way in and read back on the way out, and so
+does a lens that has to shrink to fit its monitor. Up to 0.2.1 every one of these relaunched the
+whole process, a habit from mpv, and the taskbar button went with it.
+
+Only the folder settings still relaunch the lens, since they are read at import.
 
 ### The handover must not use `os.execv`
 
@@ -296,10 +348,10 @@ redirected to `logs/restart.log`, because the console it was launched from can c
 the outgoing process.
 
 The failure only occurs when the script path contains a space, so any test of this path must run
-from such a path. Verified two ways: 1200x800 at (1800, 700) resized to 960x640 at (1860, 740)
-returning at exactly that size and position with capture running, the pass count carried across
-and nothing left running; and the same flow driven from a batch file inside a directory whose
-name contains a space.
+from such a path. Verified two ways while a resize still relaunched: 1200x800 at (1800, 700)
+resized to 960x640 at (1860, 740) returning at exactly that size and position with capture
+running, the pass count carried across and nothing left running; and the same flow driven from a
+batch file inside a directory whose name contains a space.
 
 ## Dead ends
 
@@ -448,11 +500,50 @@ instead, measuring 12.7/255 on plain text.
 The title bar is an override redirect window that never activates, so the mouse reaches the
 application under the lens, and that combination has no taskbar button. The hidden tk root
 stands in: titled, fully transparent, and parked minimised. Restoring it from the taskbar fires
-`<Map>`, the handler re-asserts topmost on the presenter and then on the bar, and minimises the
-root again before it can be seen. `raise_chrome` alone would not do, since it re-asserts only the
-bar. Tk toplevels on Windows are not owned by the root, which was measured rather than assumed:
-the bar stayed visible with the root minimised, and restoring fired exactly one `<Map>`. Close
-window on the button arrives as the root's delete request and quits the lens.
+`<Map>`; the handler brings a minimised lens back, or else re-asserts topmost on the presenter
+and then on the bar, and minimises the root again before it can be seen. `raise_chrome` alone
+would not do, since it re-asserts only the bar. Tk toplevels on Windows are not owned by the
+root, which was measured rather than assumed: the bar stayed visible with the root minimised, and
+restoring fired exactly one `<Map>`. Close window on the button arrives as the root's delete
+request and quits the lens.
+
+### Minimise
+
+The minimise button withdraws the chrome and hides the presenter's window, so only the taskbar
+button is left, and sends the presenter `pause`. Paused, the presenter ends its capture and
+presents nothing. ReShade, the Feed and the add-on all run on a present, so nothing runs at all,
+which is more than F6 gives: with Neural Rendering off the presenter still presents at the
+display's rate and the Feed's motion shader still runs on every frame. The capture is ended
+rather than left delivering into a buffer nobody reads, since a monitor capture delivers a frame
+for every composition, and copying a whole monitor out of each at the display's rate is real CPU.
+`resume` captures afresh and presents the last picture first, so the window is never empty when
+it is shown again. Measured with `_harnesses/qol_probe.py` on the RTX 5090 at 1400x1000, one
+pass, five second samples of nvidia-smi and GetProcessTimes: minimised over a square bouncing 33
+times a second, GPU 1 percent, 51 W, and the presenter's CPU time 0.00 s; in view over the same
+square, 21 percent, 114 W, 0.80 s; frames arrived again 0.5 s after the taskbar click, with the
+presenter and the chrome back at exactly their rects.
+
+The add-on reads F6 once per presented frame, so a press while minimised changes nothing in it,
+and the lens ignores the key then too, to stay in step; Neural Rendering comes back as it was
+left. Monitors that changed while the lens was minimised are noticed on restore, which starts the
+presenter again as `watch_layout` would have.
+
+windows-capture takes its handlers by their names, `on_frame_arrived` and `on_closed`, so the
+close handler is made per capture and carries its generation: a capture that was stopped for a
+pause closing later is not a loss.
+
+### The frame, for resizing by the edges
+
+Up to 0.2.1 the chrome's border was a two pixel line, and a two pixel target cannot be dragged,
+so resizing went through an outline dialog. The border is now eight pixels: the outer two still
+the line, the rest three grips, down each side and along the bottom, with the resize cursors.
+`EDGE` is what `inner()` and `fit_rect` count from. A drag previews on the chrome alone, the
+presenter untouched, and letting go fits the size to the monitor and replaces the picture. The
+top edge is the bar, which moves the lens, so there is no top grip. Nothing asks first: a picture
+restart is what a new pass count does too, with nothing but the note on the title bar.
+
+The caption buttons are Windows' own glyphs from Segoe Fluent Icons, or Segoe MDL2 Assets before
+Windows 11, falling back to plain characters when neither font is there.
 
 ### No console
 

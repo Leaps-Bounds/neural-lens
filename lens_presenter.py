@@ -18,7 +18,7 @@ Measured on an RTX 5090 with a 120 Hz display, from a change on screen to the
 change in this window, both read through the compositor: 8 ms, one refresh.
 
     lens-presenter.exe [lens_presenter.py] --source window:<hwnd> | monitor:<index> | pattern
-        --at X Y --size W H [--crop X Y] [--title T] [--exclude] [--fifo]
+        --at X Y --size W H [--crop X Y] [--title T] [--exclude] [--fifo] [--ready]
 
 Installed, lens-presenter.exe is this script, frozen. From source it is a copy
 of the Python interpreter, and the script is its first argument.
@@ -44,6 +44,10 @@ Lines on stdin:
                     while the ReShade overlay is open, or stop that
     wake [SECONDS]  the same for a moment, one second unless given, so a key the
                     add-on reads on a present is seen
+    ready 1 | 0     keep presenting thirty times a second while nothing changes,
+                    so the first frame after a pause is not late, or go back to
+                    thirty for ten seconds after a new picture and four after;
+                    --ready starts that way
     stop-capture    end the capture, as Windows does when the displays change; for tests
     quit            leave
 
@@ -92,6 +96,7 @@ def main():
     ap.add_argument("--title", default="LensPresenter")
     ap.add_argument("--exclude", action="store_true")
     ap.add_argument("--fifo", action="store_true")
+    ap.add_argument("--ready", action="store_true")
     args = ap.parse_args()
     X, Y = args.at
     W, H = args.size
@@ -398,7 +403,7 @@ def main():
 
     # ---- commands on stdin
     wanted = {"quit": False, "shot": None, "probe": 0, "stop": False, "pause": False, "resume": False,
-              "live": False, "wake": 0.0}
+              "live": False, "wake": 0.0, "ready": bool(args.ready)}
     lost = {"said": False}
     probe = {"prev": None, "diffs": []}
 
@@ -427,6 +432,8 @@ def main():
                 wanted["resume"] = True
             elif parts[0] == "live" and len(parts) == 2:
                 wanted["live"] = parts[1] not in ("0", "off", "no")
+            elif parts[0] == "ready" and len(parts) == 2:
+                wanted["ready"] = parts[1] not in ("0", "off", "no")
             elif parts[0] == "wake":
                 try:
                     secs = float(parts[1]) if len(parts) > 1 else 1.0
@@ -480,7 +487,21 @@ def main():
     mon = glfw.get_primary_monitor()
     vm = glfw.get_video_mode(mon)
     refresh = 1.0 / float(vm.refresh_rate if vm and vm.refresh_rate else 60)
-    HEARTBEAT = 0.25         # seconds between presents while nothing changes
+    # Seconds between presents while nothing changes. The first frame after a
+    # rest pays for the card climbing out of its lowest clocks and for a lone
+    # present taking the compositor's slow path: measured on an RTX 4070 SUPER
+    # at 120 Hz, 1400x1000, one pass, flip to flip after 12 seconds still, 62 ms
+    # median and up to 151 at four presents a second, 21 ms and up to 39 at
+    # thirty, 17 at sixty, against 17 presenting continuously; the still costs
+    # 40 W at four a second, 58 at thirty, 68 at sixty, the idle machine 14. So
+    # for ten seconds after any new picture the heartbeat is thirty a second,
+    # which covers a pause in the middle of working, and then four, which is
+    # the rest; "ready" keeps thirty throughout. LENS_PRESENTER_HEARTBEAT
+    # overrides the slow rate for measurement.
+    HEARTBEAT = float(os.environ.get("LENS_PRESENTER_HEARTBEAT") or 0.25)
+    FAST = 1.0 / 30.0
+    COOLDOWN = 10.0
+    t_new = 0.0             # when a new picture was last presented
     # The add-on builds its neural feature on the first frames it is shown, and
     # the Feed settles over the first few hundred, so a fresh presenter presents
     # at the display's rate for its first seconds whatever arrives: measured over
@@ -534,7 +555,8 @@ def main():
             # refresh for nothing
             busy = (wanted["live"] or time.perf_counter() < wanted["wake"] or wanted["shot"]
                     or wanted["probe"] > 0)
-            glfw.wait_events_timeout(refresh if busy else HEARTBEAT)
+            hb = FAST if wanted["ready"] or time.perf_counter() - t_new < COOLDOWN else HEARTBEAT
+            glfw.wait_events_timeout(refresh if busy else hb)
         with cv:
             fresh = slot["new"]
             if fresh:
@@ -550,8 +572,9 @@ def main():
         # a key wants frames, for a screenshot or a probe, or as the heartbeat that
         # keeps ReShade's keys and the capture alive. Otherwise nothing runs at all,
         # which is the point: the neural pass rests over a still
+        hb = FAST if wanted["ready"] or now - t_new < COOLDOWN else HEARTBEAT
         idle = not fresh and not (wanted["live"] or now < wanted["wake"] or wanted["shot"]
-                                  or wanted["probe"] > 0 or now - t_present >= HEARTBEAT)
+                                  or wanted["probe"] > 0 or now - t_present >= hb)
         if not idle:
             if not fresh:
                 vk.vkWaitForFences(device, 1, [fence], vk.VK_TRUE, 10 ** 9)
@@ -574,6 +597,7 @@ def main():
             if fresh:
                 lat.append((time.perf_counter() - ts) * 1000.0)
                 new += 1
+                t_new = time.perf_counter()
             else:
                 again += 1
             if probing and had_picture:

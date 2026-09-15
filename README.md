@@ -311,6 +311,17 @@ pictures the content under the lens hands it, averaged over the last few seconds
 second video gives 30, a 60 one 60, and the lens never limits it; or the frames captured and the
 new pictures shown, each per second.
 
+The first frame after a pause costs more than the rest. Over content that is not changing the
+neural pass rests and the card falls to its lowest clocks, and the first frame after that pays
+for climbing back: measured on an RTX 4070 SUPER at 120 Hz, a 1400x1000 lens at one pass, flip
+to flip through the compositor, 17 ms while moving and 62 ms after 12 seconds still, up to 151.
+So for ten seconds after any new picture the lens keeps presenting thirty times a second, which
+holds the clocks up, and a pause in the middle of working costs nothing; a longer pause costs
+that one late frame, and then the card rests at four presents a second. Settings under While
+nothing changes can keep thirty a second throughout: the first frame after any pause then takes
+about 21 ms, and a still costs 58 W on that card in place of 40, with the machine idle at 14.
+`ready = 1` in the ini does the same.
+
 ### The Cost Scaler
 
 DLSSNR-Cost-Scaler, by xenmods, MIT, is a proxy `nvngx_dlssnr.dll` that runs the neural model at

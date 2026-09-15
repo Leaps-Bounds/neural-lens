@@ -589,6 +589,11 @@ if READOUT not in ("fps", "detail", "size"):
 # The delay meter on the title bar, on unless the ini says latency = 0. See
 # Lens._read_presenter for what it measures and what it adds.
 LATENCY = str(_INI.get("latency", "1")).strip().lower() in ("1", "yes", "on", "true")
+# Keep the picture ready while nothing changes: the presenter presents thirty
+# times a second over a still instead of falling to four after ten seconds, so
+# the first frame after any pause is on time. Off unless the ini says ready = 1.
+# What it costs, and what the pause costs without it, is in lens_presenter.py.
+READY = str(_INI.get("ready", "0")).strip().lower() in ("1", "yes", "on", "true")
 
 u = ctypes.windll.user32
 k32 = ctypes.windll.kernel32
@@ -948,6 +953,7 @@ class Lens:
         self.mon_x = self.mon_y = 0          # the captured monitor's origin
         self.readout = READOUT      # what the title bar shows beside the size
         self.latency_on = LATENCY   # the delay meter on the title bar
+        self.ready = READY          # thirty presents a second over a still, always
         self.latency_ms = None      # its latest reading, the whole delay, estimated
         self.latency_raw = None     # the measured part alone, capture to present
         self._shown = None          # (time, out_frames) behind the fps readout
@@ -1095,7 +1101,7 @@ class Lens:
         env = dict(os.environ, DISABLE_DLSS5_VK_BRIDGE="1")
         cmd = [PRESENTER_EXE] + ([PRESENTER_SCRIPT] if PRESENTER_SCRIPT else []) + [
             "--source", source, "--at", str(x), str(y), "--size", str(self.cw), str(self.ch),
-            "--crop", str(cx), str(cy), "--title", title, "--exclude"]
+            "--crop", str(cx), str(cy), "--title", title, "--exclude"] + (["--ready"] if self.ready else [])
         errlog = os.path.join(LOGDIR, "presenter-stderr.log")
         try:
             os.makedirs(LOGDIR, exist_ok=True)
@@ -2410,6 +2416,20 @@ class Lens:
         cs_always.trace_add("write", follow_always)
         follow_always()
 
+        # ---- while nothing changes: the wake cost against the power cost
+        section("While nothing changes")
+        ready = tk.BooleanVar(value=self.ready)
+        switch("Keep the picture ready while nothing changes", ready)
+        explain("Over a still the neural pass rests, and the first frame after a pause pays "
+                "for the card climbing out of its lowest clocks: measured on an RTX 4070 SUPER "
+                "at 120 Hz, a 1400x1000 lens at one pass, 62 ms after 12 seconds still, up to "
+                "151, against 17 while moving. For ten seconds after any new picture the lens "
+                "keeps presenting thirty times a second, so a pause in the middle of working "
+                "costs nothing; a longer pause costs that one late frame. This switch keeps "
+                "thirty a second throughout: the first frame after any pause takes about 21 ms, "
+                "and a still costs 58 W on that card in place of 40, with the machine idle at "
+                "14. Applies straight away.")
+
         # ---- title bar
         section("Title bar")
         readout = tk.StringVar(value=self.readout)
@@ -2462,6 +2482,10 @@ class Lens:
                 self.latency_on = bool(latency.get())
                 self.latency_ms = None
                 _save_ini("latency", None if self.latency_on else "0")
+            if bool(ready.get()) != self.ready:
+                self.ready = bool(ready.get())
+                _save_ini("ready", "1" if self.ready else None)
+                self.tell_presenter("ready %d" % (1 if self.ready else 0))
             mode = "always" if cs_always.get() else "fullscreen" if cs_full.get() else "off"
             if COST_SCALER != "manual" and mode != COST_SCALER:
                 _set_cost_scaler(mode)

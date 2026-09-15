@@ -40,6 +40,12 @@
 # The Settings dialog has this too.
 # latency = 1
 
+# Keep presenting thirty times a second while nothing changes, so the first
+# frame after any pause is on time, at about 18 W more over a still on an
+# RTX 4070 SUPER. Off, the lens does that for ten seconds after any new
+# picture and then rests. The Settings dialog has this too.
+# ready = 0
+
 # Fill the monitor the lens is on, apart from the taskbar, with the title bar
 # across the top. The title bar's maximise button writes it here, so the lens
 # opens the way it was left. The pass count for fullscreen is kept apart from

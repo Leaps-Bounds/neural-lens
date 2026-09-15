@@ -3,6 +3,16 @@
 Versions follow semantic versioning. While the major version is 0 the project is beta, and
 settings, the state file format and behaviour may change between releases.
 
+## Unreleased
+
+- The first frame after a pause is on time when the pause was short. Over a still the neural
+  pass rests and the card drops to its lowest clocks, and the first frame after that measured
+  62 ms on an RTX 4070 SUPER at 120 Hz, up to 151, against 17 while moving. The lens now keeps
+  presenting thirty times a second for ten seconds after any new picture, then four, so a pause
+  in the middle of working costs nothing and a long one costs one late frame. A switch in
+  Settings, While nothing changes, keeps thirty a second throughout: about 21 ms after any pause,
+  at 58 W over a still on that card in place of 40.
+
 ## 0.3.0, 2026-09-14
 
 Minimise and maximise buttons, resizing by the edges, and a picture that restarts in place.

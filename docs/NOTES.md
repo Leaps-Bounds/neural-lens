@@ -129,6 +129,48 @@ Binding notes: `vkMapMemory` in the vulkan package returns a buffer object, so
 `np.frombuffer(mapped, ...)` works on it directly. Monitor capture frames carry alpha 255
 throughout. windows-capture numbers monitors from 1 in `EnumDisplayMonitors` order.
 
+### The first frame after a rest
+
+Idling has a cost the 8 ms figure above does not show, since that was measured before the
+presenter idled: the first frame after a rest. Measured with `_harnesses/idle_wake_test.py` on
+an RTX 4070 SUPER with a 120 Hz display, a 1400x1000 presenter at one pass capturing a window
+that flips black and white and sits still between flips, flip to flip through the compositor
+both ways, nine flips a case:
+
+```
+                                                       first frame after rest
+presenting continuously, as before 0.3.0               17 ms median, 8 to 26
+idle, four presents a second, GPU clock locked at 2010  52 ms flat
+idle, four a second, clocks free, 1.2 s still           67 ms median, 30 to 118
+idle, four a second, clocks free, 12 s still            65 ms median, up to 156
+idle, four a second, Neural Rendering off, 12 s still   62 ms median, up to 82
+```
+
+Two causes, neither the neural pass. With the clock locked, a lone present after silence still
+reaches the screen 35 ms later than a frame in a stream, while the presenter's meter shows it
+presented within 2 ms of the capture: a sporadic present takes the compositor's slow path where
+a stream gets the fast one. With clocks free, the card drops to 210 MHz within a second of
+resting, and a flip that meets it at 225 to 675 MHz costs anything from 30 to 156 ms; locking
+the clock removed every outlier, and a sampler reading `nvidia-smi` at 10 Hz showed the clock at
+each flip tracking the delay.
+
+What a heartbeat buys, 12 seconds still, clocks free, GPU use and power over the quiet time:
+
+```
+presents a second while still   first frame after rest    GPU    power
+4, as 0.3.0 shipped              62 ms median, 31 to 151   16%    40 W
+30                               21 ms median, 17 to 39    35%    58 W
+60                               17 ms median, 12 to 25    41%    68 W
+the machine idle, no lens                                   0%    14 W
+```
+
+So the presenter keeps thirty presents a second for ten seconds after any new picture and four
+after, and `ready` keeps thirty throughout. Verified on the same rig: a 5 second pause, inside
+the cooldown, 21 ms median; a 12 second pause 69 ms, 65 to 76, with the spikes gone since the
+clocks never fall as far; 12 seconds with `ready` 21 ms. The presenter's meter cannot see any of
+this, since it measures from the capture's composition to the present call, which is where the
+delay is not.
+
 ## Capture under the lens's own windows
 
 **Windows Graphics Capture of the monitor composes the desktop beneath an excluded window.** With

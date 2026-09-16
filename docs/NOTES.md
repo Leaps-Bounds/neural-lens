@@ -446,6 +446,17 @@ batch file inside a directory whose name contains a space.
 
 ## Dead ends
 
+### A zoom
+
+Measured with `_harnesses/zoom_probe.py` on the RTX 4070 SUPER, a 1400x1000 presenter at one
+pass over a page of text, edge detail as the variance of a Laplacian and the partial ink
+fraction as the share of pixels between 40 and 160 of 255: at the page's own size Neural
+Rendering took edge detail from 12035 to 2516 and partial ink from 0.034 to 0.066, and over
+the page's centre enlarged two times, bilinear, from 653 to 402 and 0.083 to 0.091. On text
+the model softens, and on enlarged pixels it softens what was already soft; it recovers
+nothing. A zoom would enlarge pixels for the model to soften, which Windows Magnifier does
+without the GPU, so none is built.
+
 ### mpv as the host
 
 0.1.0 hosted the neural pass in mpv. A Magnification API window under the lens rendered the

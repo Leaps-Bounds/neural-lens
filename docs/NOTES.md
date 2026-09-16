@@ -586,6 +586,15 @@ instead, measuring 12.7/255 on plain text.
   it writes `ReShade.log1`, and a third writes `ReShade.log2`. Anything that archives or inspects
   logs must cover all of them.
 
+### The clipboard and the update check
+
+The joined screenshot goes onto the clipboard from the presenter, which holds the pixels, as
+a 32 bit bottom up CF_DIB in moveable global memory the system owns once SetClipboardData
+takes it. The update check reads the releases list rather than the latest release, since
+GitHub's latest excludes prereleases and every release so far is one; it runs on a thread and
+answers on the Tk thread, and a quiet check records the time in `update-check.txt` in the data
+folder so the start check waits a day.
+
 ### The taskbar button is the tk root
 
 The title bar is an override redirect window that never activates, so the mouse reaches the

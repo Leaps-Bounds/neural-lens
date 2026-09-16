@@ -197,7 +197,8 @@ every card.
 - **Save a before and after screenshot** from the menu. It writes three PNGs: the untouched
   content the lens captured, the neural rendered result, and the two joined side by side. Both
   come from the presenter at the same moment, the capture it holds and the picture it presented,
-  read back, so on still content they line up pixel for pixel.
+  read back, so on still content they line up pixel for pixel. Settings can also put the joined
+  image on the clipboard each time, ready to paste.
 - **Passes** are chosen with the plus and minus on the title bar, up to four, and applied with
   **Set**, so going from one pass to three is one restart rather than two. The number turns
   amber while it differs from what is running. The menu's add and remove entries apply at once,
@@ -240,6 +241,11 @@ every card.
   used, since ReShade reads Home and F5 and the add-on reads F6 from the keyboard, and taking
   them would silence the overlay, its screenshot and the Neural Rendering toggle. They are kept
   in the ini as `hotkey_screenshot` and the like.
+- **Check for updates** is in Settings, off unless you switch it on: with it on, the lens asks
+  GitHub for the newest release when it starts, at most once a day, and says so only when there
+  is one newer than this. Nothing is downloaded or installed by itself: the release page opens
+  in the browser, and the installer there runs over this install. Check now does the same once.
+  Off, the lens never contacts anything.
 - **F6 turns Neural Rendering off and on** in every pass at once, from the menu or the key
   itself. The add-on reads the physical key, so F6 pressed anywhere toggles it. While it is off
   the title bar says `NR off` and the pass controls wait, because a pass with Neural Rendering

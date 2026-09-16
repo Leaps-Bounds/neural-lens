@@ -403,7 +403,7 @@ def main():
 
     # ---- commands on stdin
     wanted = {"quit": False, "shot": None, "probe": 0, "stop": False, "pause": False, "resume": False,
-              "live": False, "wake": 0.0, "ready": bool(args.ready)}
+              "live": False, "wake": 0.0, "ready": bool(args.ready), "clip": False}
     lost = {"said": False}
     probe = {"prev": None, "diffs": []}
 
@@ -434,6 +434,8 @@ def main():
                 wanted["live"] = parts[1] not in ("0", "off", "no")
             elif parts[0] == "ready" and len(parts) == 2:
                 wanted["ready"] = parts[1] not in ("0", "off", "no")
+            elif parts[0] == "clip" and len(parts) == 2:
+                wanted["clip"] = parts[1] not in ("0", "off", "no")
             elif parts[0] == "wake":
                 try:
                     secs = float(parts[1]) if len(parts) > 1 else 1.0
@@ -463,6 +465,43 @@ def main():
         with open(path, "wb") as f:
             f.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
                     + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
+
+
+    def clipboard_image(rgb):
+        """The image onto the clipboard as a device independent bitmap, 32 bit
+        and bottom up, which every program pastes. The system owns the memory
+        once SetClipboardData has taken it."""
+        try:
+            h, w = rgb.shape[:2]
+            bgra = np.empty((h, w, 4), np.uint8)
+            bgra[:, :, 0], bgra[:, :, 1], bgra[:, :, 2], bgra[:, :, 3] = rgb[:, :, 2], rgb[:, :, 1], rgb[:, :, 0], 255
+            pixels = np.ascontiguousarray(bgra[::-1]).tobytes()
+            header = struct.pack("<IiiHHIIiiII", 40, w, h, 1, 32, 0, len(pixels), 2835, 2835, 0, 0)
+            data = header + pixels
+            k32, u32 = ctypes.windll.kernel32, ctypes.windll.user32
+            k32.GlobalAlloc.restype = ctypes.c_void_p
+            k32.GlobalLock.restype = ctypes.c_void_p
+            k32.GlobalLock.argtypes = [ctypes.c_void_p]
+            k32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+            u32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+            u32.SetClipboardData.restype = ctypes.c_void_p
+            hmem = k32.GlobalAlloc(0x0002, len(data))             # GMEM_MOVEABLE
+            ptr = k32.GlobalLock(hmem)
+            ctypes.memmove(ptr, data, len(data))
+            k32.GlobalUnlock(hmem)
+            for _ in range(10):
+                if u32.OpenClipboard(None):
+                    break
+                time.sleep(0.05)
+            else:
+                return False
+            try:
+                u32.EmptyClipboard()
+                return bool(u32.SetClipboardData(8, hmem))         # CF_DIB
+            finally:
+                u32.CloseClipboard()
+        except Exception:
+            return False
 
 
     def bgra_to_rgb(a):
@@ -622,9 +661,11 @@ def main():
                         after = readback_rgb()
                         write_png(shot + "-after.png", after)
                         saved.append("after")
-                        write_png(shot + "-side-by-side.png",
-                                  np.hstack([before, np.full((H, 8, 3), 90, np.uint8), after]))
+                        joined = np.hstack([before, np.full((H, 8, 3), 90, np.uint8), after])
+                        write_png(shot + "-side-by-side.png", joined)
                         saved.append("side by side")
+                        if wanted["clip"] and clipboard_image(joined):
+                            saved.append("clipboard")
                     say("shot done " + ", ".join(saved))
                 except Exception as exc:
                     say("shot failed %s" % exc)

@@ -5,6 +5,11 @@ settings, the state file format and behaviour may change between releases.
 
 ## Unreleased
 
+- A switch in Settings copies the joined before and after to the clipboard each time a
+  screenshot is saved.
+- A check for updates in Settings, off by default: when the lens starts, at most once a day,
+  it asks GitHub for the newest release and says so only when there is a newer one, with the
+  release page a click away. Nothing is downloaded or installed by itself.
 - Global hotkeys, set in Settings, none by default: a combination per action that works from
   anywhere, for a screenshot, a pass more or fewer, the A/B split, minimise, fullscreen, the
   next profile, the ready switch and detaching. Home, F5 and F6 alone are refused, since

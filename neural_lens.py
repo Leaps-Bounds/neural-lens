@@ -706,6 +706,36 @@ LATENCY = str(_INI.get("latency", "1")).strip().lower() in ("1", "yes", "on", "t
 # the first frame after any pause is on time. Off unless the ini says ready = 1.
 # What it costs, and what the pause costs without it, is in lens_presenter.py.
 READY = str(_INI.get("ready", "0")).strip().lower() in ("1", "yes", "on", "true")
+# Copy the joined before and after to the clipboard when a screenshot is saved.
+CLIP_SHOTS = str(_INI.get("clipboard_shots", "0")).strip().lower() in ("1", "yes", "on", "true")
+# Check GitHub for a newer release when the lens starts, at most once a day.
+# Off unless the ini says check_updates = 1, since it is a request to a server.
+CHECK_UPDATES = str(_INI.get("check_updates", "0")).strip().lower() in ("1", "yes", "on", "true")
+RELEASES_API = "https://api.github.com/repos/Leaps-Bounds/neural-lens/releases"
+RELEASES_PAGE = "https://github.com/Leaps-Bounds/neural-lens/releases"
+
+
+def _version_tuple(text):
+    out = []
+    for part in str(text).lstrip("vV").split("."):
+        digits = "".join(ch for ch in part if ch.isdigit())
+        out.append(int(digits) if digits else 0)
+    return tuple(out)
+
+
+def _latest_release():
+    """(version, page url) of the newest release on GitHub, prereleases
+    included since every release so far is one, or None when it cannot be read."""
+    import urllib.request
+    req = urllib.request.Request(RELEASES_API, headers={"User-Agent": "neural-lens/" + __version__,
+                                                        "Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        releases = json.loads(r.read().decode("utf-8"))
+    for rel in releases:
+        if not rel.get("draft") and rel.get("tag_name"):
+            return rel["tag_name"].lstrip("vV"), rel.get("html_url") or RELEASES_PAGE
+    return None
+
 
 # ---- global hotkeys
 # Each action can have a key combination that works from anywhere, registered
@@ -1213,6 +1243,8 @@ class Lens:
         self.readout = READOUT      # what the title bar shows beside the size
         self.latency_on = LATENCY   # the delay meter on the title bar
         self.ready = READY          # thirty presents a second over a still, always
+        self.clip_shots = CLIP_SHOTS   # the joined before and after to the clipboard too
+        self.check_updates_on = CHECK_UPDATES
         self.latency_ms = None      # its latest reading, the whole delay, estimated
         self.latency_raw = None     # the measured part alone, capture to present
         self._shown = None          # (time, out_frames) behind the fps readout
@@ -1240,6 +1272,7 @@ class Lens:
         self.hotkeys = Hotkeys()
         self.hotkeys.set(HOTKEYS)
         self.root.after(50, self.poll_hotkeys)
+        self.root.after(15000, self.check_updates_at_start)     # once the picture is up
         self.passes = passes        # neural passes, run inside the add-on
         self.pending = passes       # the pass count chosen on the bar, applied by Set
         self.nr_on = _read_nr_enabled()   # Neural Rendering on, as far as the lens knows
@@ -2099,6 +2132,58 @@ class Lens:
     def menu_widgets(self):
         """The controls whose clicks the menu leaves alone: they toggle it themselves."""
         return [self.menu_btn, self.prof_btn] + ([self.tab] if self.tab is not None else [])
+
+    # ---- updates
+    def check_updates(self, quiet):
+        """Ask GitHub for the newest release on a thread, and say what it found
+        on the Tk thread: quiet says nothing unless there is something newer."""
+        def work():
+            try:
+                found = _latest_release()
+            except Exception as exc:
+                found = exc
+            try:
+                self.root.after(0, lambda: self._updates_reply(found, quiet))
+            except Exception:
+                pass
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _updates_reply(self, found, quiet):
+        if self.closing:
+            return
+        if isinstance(found, Exception) or found is None:
+            if not quiet:
+                messagebox.showinfo("Neural Lens", "Could not read the releases page.\n\n%s"
+                                    % (found if found is not None else "no release listed"))
+            return
+        version, url = found
+        try:
+            with open(os.path.join(DATA_DIR, "update-check.txt"), "w") as f:
+                f.write("%d %s\n" % (int(time.time()), version))
+        except OSError:
+            pass
+        if _version_tuple(version) > _version_tuple(__version__):
+            if messagebox.askyesno("Neural Lens", "Neural Lens %s is available; this is %s.\n\n"
+                                   "Open the release page? The installer there runs over this install."
+                                   % (version, __version__)):
+                import webbrowser
+                webbrowser.open(url)
+        elif not quiet:
+            messagebox.showinfo("Neural Lens", "This is the latest version, %s." % __version__)
+
+    def check_updates_at_start(self):
+        """Once a day at most, when the ini asks for it."""
+        if not self.check_updates_on:
+            return
+        try:
+            with open(os.path.join(DATA_DIR, "update-check.txt")) as f:
+                last = int(f.read().split()[0])
+            if time.time() - last < 86400:
+                return
+        except Exception:
+            pass
+        self.check_updates(quiet=True)
 
     # ---- global hotkeys
     def poll_hotkeys(self):
@@ -3206,6 +3291,7 @@ class Lens:
                                                                self.passes))
             self.shot_event.clear()
             self.shot_reply = None
+            self.tell_presenter("clip %d" % (1 if self.clip_shots else 0))
             self.tell_presenter("shot " + base)
             if self.shot_event.wait(5.0) and self.shot_reply and self.shot_reply.startswith("done"):
                 text, colour = "saved " + self.shot_reply[5:], ACCENT
@@ -3301,6 +3387,23 @@ class Lens:
         section("Where to save screenshots")
         shots = tk.StringVar(value=SHOT_DIR)
         folder(shots, "Where should screenshots go?")
+        clip = tk.BooleanVar(value=self.clip_shots)
+        switch("Also copy the joined before and after to the clipboard", clip)
+        explain("The side by side image goes onto the clipboard as well as into the folder, ready "
+                "to paste into a message or a document. Applies to the next screenshot.")
+
+        # ---- updates
+        section("Updates")
+        upd = tk.BooleanVar(value=self.check_updates_on)
+        switch("Check for a new version when the lens starts", upd)
+        explain("Asks GitHub for the newest release, at most once a day, and says so only when "
+                "there is one newer than this, %s. Nothing is downloaded or installed by itself: "
+                "the release page opens in the browser and the installer there is run like the "
+                "first one, over this install. Off, the lens never contacts anything. Check now "
+                "does the same once." % __version__)
+        tk.Button(t, text="Check now", command=lambda: self.check_updates(quiet=False), relief="flat",
+                  bg="#334155", fg=FG).grid(row=row[0], column=0, sticky="w", padx=12, pady=(2, 2))
+        row[0] += 1
 
         # ---- profiles: rename, delete, or save the current settings as one
         section("Profiles")
@@ -3535,6 +3638,12 @@ class Lens:
                 # the proxy reads its ini within a second of a change, so this is live
                 self.apply_proxy()
             self.set_hotkeys({a: v.get() for a, v in hk_vars.items()})
+            if bool(clip.get()) != self.clip_shots:
+                self.clip_shots = bool(clip.get())
+                _save_ini("clipboard_shots", "1" if self.clip_shots else None)
+            if bool(upd.get()) != self.check_updates_on:
+                self.check_updates_on = bool(upd.get())
+                _save_ini("check_updates", "1" if self.check_updates_on else None)
             self.update_info()              # the profile's name on the bar follows the settings
             t.destroy()
             if restart:

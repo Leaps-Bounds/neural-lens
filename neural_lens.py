@@ -66,6 +66,7 @@ in a data folder beside the program by default, so an install is one folder.
 import collections
 import ctypes
 import ctypes.wintypes as w
+import json
 import os
 import shutil
 import subprocess
@@ -111,11 +112,17 @@ def _relaunch_cmd():
     return [sys.executable, os.path.abspath(sys.argv[0])] + sys.argv[1:]
 
 
+def _ini_path():
+    """neural-lens.ini beside this script, or the file NEURAL_LENS_INI names,
+    which is how a test keeps its settings out of the real one."""
+    return os.environ.get("NEURAL_LENS_INI") or os.path.join(_script_dir(), "neural-lens.ini")
+
+
 def _read_ini():
     """Optional neural-lens.ini beside this script. Plain key = value lines."""
     cfg = {}
     try:
-        with open(os.path.join(_script_dir(), "neural-lens.ini"), encoding="utf-8") as fh:
+        with open(_ini_path(), encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()
                 if not line or line[0] in "#;[":
@@ -345,6 +352,106 @@ def _read_nr_passes():
     return None
 
 
+def _read_addon_section():
+    """The add-on's section of ReShade.ini as it stands, key by key, in order.
+
+    This is every setting the Home menu holds, as the add-on last wrote it
+    back, which it does within about a second of a change there.
+    """
+    values = {}
+    if not STACK_DIR:
+        return values
+    try:
+        with open(os.path.join(STACK_DIR, "ReShade.ini"), encoding="utf-8", errors="replace") as fh:
+            inside = False
+            for line in fh:
+                bare = line.strip()
+                if bare.startswith("["):
+                    inside = bare.lower() == "[renodx.dlss5]"
+                elif inside and "=" in bare:
+                    k, v = bare.split("=", 1)
+                    values[k.strip()] = v.strip()
+    except OSError:
+        pass
+    return values
+
+
+# the add-on's section holds these for the install, not for a look: they are
+# kept as they are when a profile replaces the rest
+ADDON_KEEP = ("ConfigVersion", "EnableHooks")
+
+
+def _replace_addon_section(values):
+    """Make the add-on's section of ReShade.ini hold these values and nothing
+    else, apart from ADDON_KEEP, which stay as they are. For a presenter about
+    to start, since the add-on reads its settings only then."""
+    if not STACK_DIR:
+        return False
+    path = os.path.join(STACK_DIR, "ReShade.ini")
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            lines = fh.read().splitlines(True)
+    except OSError:
+        return False
+    out, inside, found = [], False, False
+    kept = []
+
+    def section():
+        for line in kept:
+            out.append(line)
+        for k, v in values.items():
+            if k not in ADDON_KEEP:
+                out.append("%s=%s\n" % (k, v))
+        out.append("\n")
+
+    for line in lines:
+        bare = line.strip()
+        if bare.startswith("["):
+            if inside:
+                section()
+            inside = bare.lower() == "[renodx.dlss5]"
+            if inside:
+                found = True
+            out.append(line)
+        elif inside:
+            if "=" in bare and bare.split("=", 1)[0].strip() in ADDON_KEEP:
+                kept.append(line)
+        else:
+            out.append(line)
+    if inside:
+        section()
+    if not found:
+        out.append("\n[RenoDX.DLSS5]\n")
+        section()
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.writelines(out)
+    except OSError:
+        return False
+    return True
+
+
+# ---- profiles: named sets of everything that makes the picture, see Lens.capture_profile
+def _load_profiles():
+    try:
+        with open(PROFILES, encoding="utf-8") as fh:
+            d = json.load(fh)
+        if isinstance(d, dict) and isinstance(d.get("profiles"), dict):
+            return d
+    except (OSError, ValueError):
+        pass
+    return {"profiles": {}, "current": None}
+
+
+def _save_profiles(d):
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(PROFILES, "w", encoding="utf-8") as fh:
+            json.dump(d, fh, indent=1)
+    except OSError:
+        pass
+
+
 # ---- the Cost Scaler proxy
 # DLSSNR-Cost-Scaler is a proxy nvngx_dlssnr.dll that runs the neural model at
 # a fraction of the frame's resolution and composites the result back onto the
@@ -474,6 +581,7 @@ DATA_DIR = (os.environ.get("NEURAL_LENS_DATA") or _INI.get("data_dir")
             or os.path.join(_script_dir(), "data"))
 STATE = os.path.join(DATA_DIR, "lens-state.txt")
 LOGDIR = os.path.join(DATA_DIR, "logs")
+PROFILES = os.path.join(DATA_DIR, "profiles.json")     # named settings, see Lens.capture_profile
 
 # Started without a console, as the installed program and the launcher are,
 # everything the lens prints goes to lens.log in the log folder instead, and
@@ -639,7 +747,7 @@ def _save_ini(key, value):
     A value of None removes the key, so a setting put back to its default
     follows the default again rather than pinning today's value.
     """
-    path = os.path.join(_script_dir(), "neural-lens.ini")
+    path = _ini_path()
     lines, done = [], False
     try:
         with open(path, encoding="utf-8") as fh:
@@ -969,6 +1077,11 @@ class Lens:
         self._fps_hist = collections.deque(maxlen=3)
         self.restart = False        # set by the folder settings, read by main()
         self.minimized = False      # hidden, with the presenter paused, until the taskbar button
+        self.profiles = _load_profiles()
+        self.profile = self.profiles.get("current")      # the name on the bar, or None
+        if self.profile not in self.profiles["profiles"]:
+            self.profile = None
+        self.anchor_widget = None   # what the menu opens under, when not the bar
         self.attach = None          # the window the lens is attached to, see attach_to
         self.tab = None             # the tab on the top edge while attached
         self.tab_x = 12             # where along the top edge the tab sits
@@ -1016,6 +1129,12 @@ class Lens:
         self.info = tk.Label(bar, text="%d x %d" % (cw, ch), bg=BG, fg=DIM,
                              font=("Consolas", 9))
         self.info.pack(side="left", padx=10)
+        # the profile selector: the name of the profile in use, or Profile
+        self.prof_btn = tk.Label(bar, text="▾ Profile", bg=BG, fg=DIM, font=("Segoe UI", 9), padx=4)
+        self.prof_btn.pack(side="left")
+        self.prof_btn.bind("<Button-1>", lambda e: self.profile_menu())
+        self.prof_btn.bind("<Enter>", lambda e: self.prof_btn.config(bg="#334155"))
+        self.prof_btn.bind("<Leave>", lambda e: self.prof_btn.config(bg=BG))
 
         # the caption buttons, right to left as on every window: close,
         # maximise or restore, minimise
@@ -1816,7 +1935,14 @@ class Lens:
             self.menu(e)
 
     def menu_anchor(self):
-        """Where the menu opens from: (x, top, bottom) of the bar or the tab."""
+        """Where the menu opens from: (x, top, bottom) of the bar, the tab, or
+        the control that asked for it."""
+        wdg = self.anchor_widget
+        if wdg is not None:
+            try:
+                return wdg.winfo_rootx() - 6, wdg.winfo_rooty(), wdg.winfo_rooty() + wdg.winfo_height()
+            except Exception:
+                pass
         if self.attach is not None and self.tab is not None:
             try:
                 tx, ty = self.tab.winfo_rootx(), self.tab.winfo_rooty()
@@ -1827,7 +1953,170 @@ class Lens:
 
     def menu_widgets(self):
         """The controls whose clicks the menu leaves alone: they toggle it themselves."""
-        return [self.menu_btn] + ([self.tab] if self.tab is not None else [])
+        return [self.menu_btn, self.prof_btn] + ([self.tab] if self.tab is not None else [])
+
+    # ---- profiles
+    # A profile is everything that makes the picture, under a name: the windowed
+    # place and size, fullscreen, the pass count, the Cost Scaler rule, ready,
+    # what the title bar shows, and the add-on's whole section of ReShade.ini,
+    # which is every setting the Home menu holds. Applying one writes all of
+    # that and restarts the picture, since the add-on reads its settings only
+    # when its process starts. The selector on the bar switches; Settings
+    # renames and deletes.
+    def capture_profile(self):
+        if self.attach is not None:
+            cw, ch, x, y = self.attach["saved"]
+        elif self.fullscreen:
+            cw, ch, x, y = 1400, 1000, 100, 100
+            try:
+                v = [int(n) for n in open(STATE).read().split()]
+                cw, ch, x, y = v[:4]
+            except Exception:
+                pass
+        else:
+            x, y = self.inner()
+            cw, ch = self.cw, self.ch
+        addon = {k: v for k, v in _read_addon_section().items() if k not in ADDON_KEEP}
+        return {"width": cw, "height": ch, "x": x, "y": y, "fullscreen": bool(self.fullscreen),
+                "passes": self.passes, "cost_scaler": COST_SCALER, "ready": bool(self.ready),
+                "readout": self.readout, "latency": bool(self.latency_on), "addon": addon}
+
+    def profile_menu(self):
+        names = sorted(self.profiles["profiles"], key=str.lower)
+        items = []
+        for n in names:
+            items.append(("%s%s" % (n, "   ✓" if n == self.profile else ""),
+                          lambda n=n: self.apply_profile(n), n != self.profile or True))
+        if names:
+            items.append(None)
+        items.append(("Save the current settings as a new profile...", self.profile_save_as, True))
+        if self.profile in self.profiles["profiles"]:
+            items.append(("Update '%s' with the current settings" % self.profile,
+                          lambda: self.profile_store(self.profile), True))
+        items.append(("Manage profiles in Settings...", self.settings_dialog, True))
+        self.anchor_widget = self.prof_btn
+        try:
+            self.popup.toggle(items)
+        finally:
+            self.anchor_widget = None
+
+    def profile_store(self, name):
+        """Save what the lens is now under this name, and make it the one in use."""
+        name = (name or "").strip()
+        if not name:
+            return
+        self.profiles["profiles"][name] = self.capture_profile()
+        self.profiles["current"] = self.profile = name
+        _save_profiles(self.profiles)
+        print("profile %r saved" % name, flush=True)
+        self.update_profile_label()
+
+    def profile_save_as(self):
+        """Ask for a name, then store the current settings under it."""
+        d = tk.Toplevel(self.root)
+        d.title("New profile")
+        d.attributes("-topmost", True)
+        d.configure(bg=BG)
+        tk.Label(d, text="A name for these settings, such as Video, Text or Photo:", bg=BG, fg=FG,
+                 font=("Segoe UI", 10)).grid(row=0, column=0, columnspan=2, sticky="w", padx=12, pady=(12, 4))
+        var = tk.StringVar(master=d, value="")
+        n = 1
+        while "Profile %d" % n in self.profiles["profiles"]:
+            n += 1
+        var.set("Profile %d" % n)
+        ent = tk.Entry(d, textvariable=var, width=32, bg="#0b1220", fg=FG, insertbackground=FG, relief="flat")
+        ent.grid(row=1, column=0, columnspan=2, sticky="we", padx=12)
+        ent.selection_range(0, "end")
+
+        def save(*_):
+            name = var.get().strip()
+            d.destroy()
+            if name:
+                self.profile_store(name)
+
+        tk.Button(d, text="Save", command=save, relief="flat", bg=ACCENT, fg="#0b1220").grid(
+            row=2, column=0, sticky="e", padx=(12, 4), pady=12)
+        tk.Button(d, text="Cancel", command=d.destroy, relief="flat", bg="#334155", fg=FG).grid(
+            row=2, column=1, sticky="w", padx=(4, 12), pady=12)
+        ent.bind("<Return>", save)
+        d.update_idletasks()
+        x, y = self.inner()
+        d.geometry("+%d+%d" % (x + 40, y + 40))
+        ent.focus_force()
+
+    def profile_delete(self, name):
+        if name in self.profiles["profiles"]:
+            del self.profiles["profiles"][name]
+            if self.profile == name:
+                self.profile = self.profiles["current"] = None
+            _save_profiles(self.profiles)
+            self.update_profile_label()
+
+    def profile_rename(self, old, new):
+        new = (new or "").strip()
+        if old not in self.profiles["profiles"] or not new or new == old:
+            return
+        self.profiles["profiles"][new] = self.profiles["profiles"].pop(old)
+        if self.profile == old:
+            self.profile = self.profiles["current"] = new
+        _save_profiles(self.profiles)
+        self.update_profile_label()
+
+    def apply_profile(self, name):
+        """Make the lens what this profile says: the settings, the add-on's
+        section, and the picture restarted at the profile's place, size and
+        pass count. Attached, the target keeps the place and size."""
+        p = self.profiles["profiles"].get(name)
+        if p is None or self.closing or self.rebuilding or self.rs is not None:
+            return
+        if self.minimized:
+            self.restore()
+        self.popup.close()
+        self.profiles["current"] = self.profile = name
+        _save_profiles(self.profiles)
+        print("profile %r applied" % name, flush=True)
+        # the settings the bar and Settings hold, each written to the ini as
+        # Settings would write it
+        self.readout = p.get("readout", self.readout)
+        _save_ini("readout", None if self.readout == "size" else self.readout)
+        self.latency_on = bool(p.get("latency", self.latency_on))
+        self.latency_ms = None
+        _save_ini("latency", None if self.latency_on else "0")
+        self.ready = bool(p.get("ready", self.ready))
+        _save_ini("ready", "1" if self.ready else None)
+        mode = p.get("cost_scaler", COST_SCALER)
+        if COST_SCALER != "manual" and mode in ("off", "fullscreen", "always") and mode != COST_SCALER:
+            _set_cost_scaler(mode)
+        # the Home menu, whole, for the presenter about to start
+        if isinstance(p.get("addon"), dict):
+            _replace_addon_section(p["addon"])
+        self.passes = self.pending = max(1, min(_pass_limit(), int(p.get("passes", self.passes))))
+        cw, ch = int(p.get("width", self.cw)), int(p.get("height", self.ch))
+        x, y = int(p.get("x", 0)), int(p.get("y", 0))
+        full = bool(p.get("fullscreen"))
+        if self.attach is not None:
+            self.resize_to(*self.attach["rect"])
+        elif full:
+            # a fullscreen lens keeps its own pass count, read from this file
+            try:
+                with open(FULL_STATE, "w") as f:
+                    f.write("%d\n" % self.passes)
+            except OSError:
+                pass
+            self.set_fullscreen(True)
+        elif self.fullscreen:
+            # the way back reads the windowed geometry and count from this file
+            try:
+                with open(STATE, "w") as f:
+                    f.write("%d %d %d %d %d\n" % (cw, ch, x, y, self.passes))
+            except OSError:
+                pass
+            self.set_fullscreen(False)
+        else:
+            x, y, cw, ch = fit_rect(x, y, cw, ch)
+            self.resize_to(x, y, cw, ch)
+        self.save_state()
+        self.update_info()
 
     def toggle_split(self):
         if self.closing:
@@ -2186,6 +2475,20 @@ class Lens:
         self.set_btn.config(fg=ACCENT if chosen else DIM)
         self.plus.config(fg=DIM if p >= _pass_limit() else FG)
         self.minus.config(fg=DIM if p <= 1 else FG)
+        self.update_profile_label()
+
+    def update_profile_label(self):
+        """The profile's name on the bar, amber with a star once the lens no
+        longer matches it in what the bar and Settings hold."""
+        name = self.profile
+        if not name or name not in self.profiles["profiles"]:
+            self.prof_btn.config(text="▾ Profile", fg=DIM)
+            return
+        p = self.profiles["profiles"][name]
+        same = (p.get("passes") == self.passes and p.get("cost_scaler") == COST_SCALER
+                and bool(p.get("ready")) == self.ready and p.get("readout") == self.readout
+                and bool(p.get("latency")) == self.latency_on and bool(p.get("fullscreen")) == self.fullscreen)
+        self.prof_btn.config(text="▾ %s%s" % (name, "" if same else "*"), fg=ACCENT if same else WARN)
 
     def bump_passes(self, step):
         """Choose a pass count on the bar without restarting anything yet."""
@@ -2802,6 +3105,66 @@ class Lens:
         shots = tk.StringVar(value=SHOT_DIR)
         folder(shots, "Where should screenshots go?")
 
+        # ---- profiles: rename, delete, or save the current settings as one
+        section("Profiles")
+        explain("A profile is everything that makes the picture, under a name: the window's "
+                "place and size, fullscreen, the pass count, the Cost Scaler, the ready switch, what "
+                "the title bar shows, and every setting in the Home menu. The selector on the title "
+                "bar saves and switches them; the picture restarts when one is applied.")
+        names = sorted(self.profiles["profiles"], key=str.lower)
+        plist = tk.Listbox(t, height=max(2, min(6, len(names))), bg="#0b1220", fg=FG, relief="flat",
+                           selectbackground="#334155", selectforeground=FG, exportselection=False,
+                           font=("Segoe UI", 10), highlightthickness=0)
+        for n in names:
+            plist.insert("end", n)
+        plist.grid(row=row[0], column=0, columnspan=2, sticky="we", padx=12, pady=(2, 2))
+        pname = tk.StringVar(master=t, value="")
+        tk.Entry(t, textvariable=pname, width=24, bg="#0b1220", fg=FG, insertbackground=FG,
+                 relief="flat").grid(row=row[0], column=2, sticky="new", padx=(6, 12), pady=(2, 2))
+        row[0] += 1
+
+        def chosen():
+            sel = plist.curselection()
+            return plist.get(sel[0]) if sel else None
+
+        def on_pick(*_):
+            n = chosen()
+            if n:
+                pname.set(n)
+
+        plist.bind("<<ListboxSelect>>", on_pick)
+
+        def refresh():
+            plist.delete(0, "end")
+            for n in sorted(self.profiles["profiles"], key=str.lower):
+                plist.insert("end", n)
+
+        def rename():
+            n = chosen()
+            if n:
+                self.profile_rename(n, pname.get())
+                refresh()
+
+        def delete():
+            n = chosen()
+            if n:
+                self.profile_delete(n)
+                refresh()
+                pname.set("")
+
+        def save_current():
+            n = pname.get().strip()
+            if n:
+                self.profile_store(n)
+                refresh()
+
+        btns = tk.Frame(t, bg=BG)
+        btns.grid(row=row[0], column=0, columnspan=3, sticky="w", padx=12, pady=(0, 4))
+        for text, cmd in (("Rename to the name typed", rename), ("Delete", delete),
+                          ("Save the current settings under the name typed", save_current)):
+            tk.Button(btns, text=text, command=cmd, relief="flat", bg="#334155", fg=FG).pack(side="left", padx=(0, 6))
+        row[0] += 1
+
         # ---- the Cost Scaler: fullscreen, always, or off, as two switches, the
         # second of which keeps the first on
         section("The Cost Scaler")
@@ -2908,6 +3271,7 @@ class Lens:
                 _set_cost_scaler(mode)
                 # the proxy reads its ini within a second of a change, so this is live
                 self.apply_proxy()
+            self.update_info()              # the profile's name on the bar follows the settings
             t.destroy()
             if restart:
                 # the folders take effect at the next launch, so the lens restarts.

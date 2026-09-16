@@ -171,6 +171,18 @@ clocks never fall as far; 12 seconds with `ready` 21 ms. The presenter's meter c
 this, since it measures from the capture's composition to the present call, which is where the
 delay is not.
 
+## Profiles
+
+A profile captures the add-on's section of ReShade.ini whole, apart from ConfigVersion and
+EnableHooks, which belong to the install, and applying one replaces the section with the
+profile's keys and nothing else, so a setting the profile never held goes back to the add-on's
+default rather than lingering from the last look. The add-on reads the section only when its
+process starts and writes it back within about a second of a change in its overlay, so a
+profile saved after a change in the overlay carries it, and applying one restarts the picture.
+The name on the bar compares the pass count, the Cost Scaler rule, ready, the readout, the
+delay meter and fullscreen against the profile, not the add-on's section, since reading the
+file on every tick is not worth it. Verified with `_harnesses/profiles_test.py`.
+
 ## Attached to a window
 
 The lens can attach to another window, or to a region inside it, and follow it. The target's

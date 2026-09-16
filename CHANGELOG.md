@@ -5,6 +5,11 @@ settings, the state file format and behaviour may change between releases.
 
 ## Unreleased
 
+- Profiles: named sets of the window's place and size, fullscreen, the pass count, the Cost
+  Scaler rule, the ready switch, the title bar's readout and delay meter, and the add-on's
+  whole section of ReShade.ini, which is the Home menu. A selector on the title bar saves and
+  switches them, and Settings renames and deletes. Applying one rewrites the add-on's section
+  and restarts the picture.
 - Attach the lens to a window, or to a region inside one, and it follows: moves with the
   window, restarts its picture when the window's size settles, minimises and closes with it,
   and sits one step above it in the stacking order rather than above everything. While attached

@@ -224,6 +224,14 @@ every card.
 - **Settings** in the menu holds the screenshot folder, the Cost Scaler, what the title bar
   shows, the delay meter, and the stack and data folders, each with an explanation. It writes
   `neural-lens.ini`; nothing needs editing by hand.
+- **Profiles** keep everything that makes the picture under a name: the window's place and
+  size, fullscreen, the pass count, the Cost Scaler rule, the ready switch, what the title bar
+  shows, and every setting in the Home menu. The selector on the title bar, marked Profile
+  until one is in use, saves the current settings as a new profile and switches between them;
+  applying one restarts the picture, since the add-on reads its settings only when it starts.
+  The name turns amber with a star once the lens no longer matches the profile in what the
+  bar and Settings hold. Settings renames and deletes them. They live in `profiles.json` in
+  the data folder.
 - **F6 turns Neural Rendering off and on** in every pass at once, from the menu or the key
   itself. The add-on reads the physical key, so F6 pressed anywhere toggles it. While it is off
   the title bar says `NR off` and the pass controls wait, because a pass with Neural Rendering

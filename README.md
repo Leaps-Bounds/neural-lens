@@ -232,6 +232,14 @@ every card.
   The name turns amber with a star once the lens no longer matches the profile in what the
   bar and Settings hold. Settings renames and deletes them. They live in `profiles.json` in
   the data folder.
+- **Global hotkeys**, none set until you set them, in Settings: a key combination per action
+  that works from anywhere, whichever window has the keyboard, for a screenshot, a pass more or
+  fewer, the A/B split, minimise and back, fullscreen and back, the next profile, the ready
+  switch, and detaching. Click a field and press the combination. A combination set here is
+  taken from every other program while the lens runs. Home, F5 and F6 on their own cannot be
+  used, since ReShade reads Home and F5 and the add-on reads F6 from the keyboard, and taking
+  them would silence the overlay, its screenshot and the Neural Rendering toggle. They are kept
+  in the ini as `hotkey_screenshot` and the like.
 - **F6 turns Neural Rendering off and on** in every pass at once, from the menu or the key
   itself. The add-on reads the physical key, so F6 pressed anywhere toggles it. While it is off
   the title bar says `NR off` and the pass controls wait, because a pass with Neural Rendering

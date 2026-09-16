@@ -5,6 +5,10 @@ settings, the state file format and behaviour may change between releases.
 
 ## Unreleased
 
+- Global hotkeys, set in Settings, none by default: a combination per action that works from
+  anywhere, for a screenshot, a pass more or fewer, the A/B split, minimise, fullscreen, the
+  next profile, the ready switch and detaching. Home, F5 and F6 alone are refused, since
+  ReShade and the add-on read them from the keyboard.
 - Profiles: named sets of the window's place and size, fullscreen, the pass count, the Cost
   Scaler rule, the ready switch, the title bar's readout and delay meter, and the add-on's
   whole section of ReShade.ini, which is the Home menu. A selector on the title bar saves and

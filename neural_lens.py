@@ -707,6 +707,148 @@ LATENCY = str(_INI.get("latency", "1")).strip().lower() in ("1", "yes", "on", "t
 # What it costs, and what the pause costs without it, is in lens_presenter.py.
 READY = str(_INI.get("ready", "0")).strip().lower() in ("1", "yes", "on", "true")
 
+# ---- global hotkeys
+# Each action can have a key combination that works from anywhere, registered
+# with RegisterHotKey on a thread of its own, since Tk's loop never hands
+# WM_HOTKEY out. A registered combination is taken from every other program
+# while the lens runs, which is why none is set until the user sets it, and why
+# Home, F5 and F6 on their own are refused: ReShade reads Home and F5 from the
+# presenter's own messages and the add-on reads F6 from the keyboard, so
+# taking them would silence the overlay, its screenshot and the NR toggle.
+HOTKEY_ACTIONS = (
+    ("screenshot", "Save before and after"),
+    ("add_pass", "Add a pass"),
+    ("drop_pass", "Remove a pass"),
+    ("split", "Live A/B split, on or off"),
+    ("minimize", "Minimise, or bring back"),
+    ("fullscreen", "Fullscreen, and back"),
+    ("profile", "Next profile"),
+    ("ready", "Keep the picture ready, on or off"),
+    ("detach", "Detach from the window"),
+)
+MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, MOD_NOREPEAT = 0x0001, 0x0002, 0x0004, 0x0008, 0x4000
+WM_HOTKEY, QS_ALLINPUT = 0x0312, 0x04FF
+VK_BY_NAME = {"space": 0x20, "tab": 0x09, "enter": 0x0D, "return": 0x0D, "escape": 0x1B, "backspace": 0x08,
+              "insert": 0x2D, "delete": 0x2E, "home": 0x24, "end": 0x23, "pageup": 0x21, "pagedown": 0x22,
+              "up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27, "pause": 0x13, "scrolllock": 0x91,
+              "printscreen": 0x2C, "plus": 0xBB, "minus": 0xBD, "comma": 0xBC, "period": 0xBE,
+              "slash": 0xBF, "backslash": 0xDC, "semicolon": 0xBA, "quote": 0xDE, "backquote": 0xC0,
+              "bracketleft": 0xDB, "bracketright": 0xDD, "multiply": 0x6A, "add": 0x6B, "subtract": 0x6D,
+              "divide": 0x6F, "decimal": 0x6E}
+for _i in range(1, 25):
+    VK_BY_NAME["f%d" % _i] = 0x6F + _i
+for _i in range(10):
+    VK_BY_NAME["numpad%d" % _i] = 0x60 + _i
+NAME_BY_VK = {v: k for k, v in VK_BY_NAME.items()}
+RESERVED_KEYS = {0x24: "Home opens ReShade's overlay", 0x74: "F5 is ReShade's screenshot", 0x75: "F6 toggles Neural Rendering"}
+
+
+def _parse_hotkey(text):
+    """'Ctrl+Alt+S' to (modifiers, virtual key), or None when it is not a key."""
+    if not text:
+        return None
+    parts = [p.strip().lower() for p in str(text).replace("-", "+").split("+") if p.strip()]
+    if not parts:
+        return None
+    mods, key = 0, parts[-1]
+    for p in parts[:-1]:
+        if p in ("ctrl", "control"):
+            mods |= MOD_CONTROL
+        elif p == "alt":
+            mods |= MOD_ALT
+        elif p == "shift":
+            mods |= MOD_SHIFT
+        elif p in ("win", "windows", "super"):
+            mods |= MOD_WIN
+        else:
+            return None
+    if len(key) == 1 and (key.isalpha() or key.isdigit()):
+        vk = ord(key.upper())
+    elif key in VK_BY_NAME:
+        vk = VK_BY_NAME[key]
+    else:
+        return None
+    return mods, vk
+
+
+def _hotkey_text(mods, vk):
+    parts = [n for f, n in ((MOD_CONTROL, "Ctrl"), (MOD_ALT, "Alt"), (MOD_SHIFT, "Shift"), (MOD_WIN, "Win")) if mods & f]
+    if 0x30 <= vk <= 0x39 or 0x41 <= vk <= 0x5A:
+        name = chr(vk)
+    else:
+        name = NAME_BY_VK.get(vk, "0x%02X" % vk)
+        name = name.upper() if name.startswith("f") and name[1:].isdigit() else name.capitalize()
+    return "+".join(parts + [name])
+
+
+def _hotkey_problem(text):
+    """Why this combination cannot be used, or None."""
+    parsed = _parse_hotkey(text)
+    if parsed is None:
+        return "not a key"
+    mods, vk = parsed
+    if not mods and vk in RESERVED_KEYS:
+        return RESERVED_KEYS[vk]
+    if not mods and not (0x70 <= vk <= 0x87):
+        return "needs Ctrl, Alt, Shift or Win, or a function key"
+    return None
+
+
+HOTKEYS = {a: str(_INI.get("hotkey_" + a, "")).strip() for a, _ in HOTKEY_ACTIONS}
+
+
+class Hotkeys:
+    """The listener: a thread with a message queue of its own, where the
+    combinations are registered and WM_HOTKEY arrives. Actions go into a queue
+    the lens drains on its timer; a combination another program already holds
+    is reported in failed."""
+
+    def __init__(self):
+        import queue
+        self.fired = queue.Queue()
+        self.wanted = queue.Queue()
+        self.failed = {}
+        self.stopping = False
+        self.tid = 0
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def set(self, mapping):
+        self.wanted.put(dict(mapping))
+        if self.tid:
+            u.PostThreadMessageW(self.tid, 0, 0, 0)     # WM_NULL, to end the wait
+
+    def stop(self):
+        self.stopping = True
+        if self.tid:
+            u.PostThreadMessageW(self.tid, 0, 0, 0)
+
+    def _run(self):
+        self.tid = k32.GetCurrentThreadId()
+        registered = {}
+        msg = w.MSG()
+        while not self.stopping:
+            while not self.wanted.empty():
+                mapping = self.wanted.get()
+                for i in registered:
+                    u.UnregisterHotKey(None, i)
+                registered, failed = {}, {}
+                for n, (action, text) in enumerate(mapping.items()):
+                    parsed = _parse_hotkey(text) if text and not _hotkey_problem(text) else None
+                    if parsed is None:
+                        continue
+                    mods, vk = parsed
+                    if u.RegisterHotKey(None, n + 1, mods | MOD_NOREPEAT, vk):
+                        registered[n + 1] = action
+                    else:
+                        failed[action] = text
+                self.failed = failed
+            while u.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):
+                if msg.message == WM_HOTKEY and msg.wParam in registered:
+                    self.fired.put(registered[msg.wParam])
+            u.MsgWaitForMultipleObjectsEx(0, None, 100, QS_ALLINPUT, 0)
+        for i in registered:
+            u.UnregisterHotKey(None, i)
+
 u = ctypes.windll.user32
 k32 = ctypes.windll.kernel32
 # Per monitor DPI aware, version 2, so every coordinate the lens uses is a
@@ -1095,6 +1237,9 @@ class Lens:
         self.probe_reply = None
         self.stages = []            # [{title, proc, hwnd}]: the presenter, one entry
         self.popup = PopupMenu(self)
+        self.hotkeys = Hotkeys()
+        self.hotkeys.set(HOTKEYS)
+        self.root.after(50, self.poll_hotkeys)
         self.passes = passes        # neural passes, run inside the add-on
         self.pending = passes       # the pass count chosen on the bar, applied by Set
         self.nr_on = _read_nr_enabled()   # Neural Rendering on, as far as the lens knows
@@ -1954,6 +2099,58 @@ class Lens:
     def menu_widgets(self):
         """The controls whose clicks the menu leaves alone: they toggle it themselves."""
         return [self.menu_btn, self.prof_btn] + ([self.tab] if self.tab is not None else [])
+
+    # ---- global hotkeys
+    def poll_hotkeys(self):
+        if self.closing:
+            return
+        try:
+            while not self.hotkeys.fired.empty():
+                self.hotkey_action(self.hotkeys.fired.get_nowait())
+        except Exception:
+            pass
+        self.root.after(50, self.poll_hotkeys)
+
+    def hotkey_action(self, action):
+        if self.closing or self.rebuilding:
+            return
+        if action == "screenshot":
+            self.take_screenshot()
+        elif action == "add_pass":
+            self.add_pass()
+        elif action == "drop_pass":
+            self.drop_pass()
+        elif action == "split":
+            self.toggle_split()
+        elif action == "minimize":
+            if self.minimized:
+                self.restore()
+            else:
+                self.minimize()
+        elif action == "fullscreen":
+            if self.attach is None:
+                self.toggle_fullscreen()
+        elif action == "profile":
+            names = sorted(self.profiles["profiles"], key=str.lower)
+            if names:
+                i = names.index(self.profile) + 1 if self.profile in names else 0
+                self.apply_profile(names[i % len(names)])
+        elif action == "ready":
+            self.ready = not self.ready
+            _save_ini("ready", "1" if self.ready else None)
+            self.tell_presenter("ready %d" % (1 if self.ready else 0))
+            self.update_info()
+        elif action == "detach":
+            self.detach()
+
+    def set_hotkeys(self, mapping):
+        """From Settings: record each combination in the ini and register them."""
+        for action, text in mapping.items():
+            text = (text or "").strip()
+            if text != HOTKEYS.get(action, ""):
+                HOTKEYS[action] = text
+                _save_ini("hotkey_" + action, text or None)
+        self.hotkeys.set(HOTKEYS)
 
     # ---- profiles
     # A profile is everything that makes the picture, under a name: the windowed
@@ -3210,6 +3407,72 @@ class Lens:
                 "and a still costs 58 W on that card in place of 40, with the machine idle at "
                 "14. Applies straight away.")
 
+        # ---- global hotkeys: a field per action that takes the next key pressed
+        section("Global hotkeys")
+        explain("A key combination that works from anywhere, whichever window has the keyboard. "
+                "Click a field and press the combination; Clear takes it away. A combination set "
+                "here is taken from every other program while the lens runs, so none is set until "
+                "you set it. Home, F5 and F6 on their own cannot be used: ReShade reads Home and F5 "
+                "and the add-on reads F6 from the keyboard, and taking them would silence the overlay, "
+                "its screenshot and the Neural Rendering toggle.")
+        hk_vars, hk_note = {}, {}
+        failed = dict(self.hotkeys.failed)
+
+        def capture(action, var, ent):
+            def on_key(e):
+                sym = e.keysym
+                if sym in ("Control_L", "Control_R", "Alt_L", "Alt_R", "Shift_L", "Shift_R",
+                           "Win_L", "Win_R", "Meta_L", "Meta_R"):
+                    return "break"
+                mods = 0
+                if e.state & 0x4:
+                    mods |= MOD_CONTROL
+                if e.state & 0x20000:
+                    mods |= MOD_ALT
+                if e.state & 0x1:
+                    mods |= MOD_SHIFT
+                low = sym.lower()
+                names = {"prior": "pageup", "next": "pagedown", "return": "enter", "print": "printscreen",
+                         "scroll_lock": "scrolllock", "apostrophe": "quote", "grave": "backquote",
+                         "kp_multiply": "multiply", "kp_add": "add", "kp_subtract": "subtract",
+                         "kp_divide": "divide", "kp_decimal": "decimal"}
+                low = names.get(low, low)
+                if low.startswith("kp_") and low[3:].isdigit():
+                    low = "numpad" + low[3:]
+                if len(low) == 1 and (low.isalpha() or low.isdigit()):
+                    vk = ord(low.upper())
+                elif low in VK_BY_NAME:
+                    vk = VK_BY_NAME[low]
+                else:
+                    return "break"
+                text = _hotkey_text(mods, vk)
+                problem = _hotkey_problem(text)
+                if problem:
+                    hk_note[action].config(text=problem, fg=WARN)
+                else:
+                    var.set(text)
+                    hk_note[action].config(text="", fg=DIM)
+                return "break"
+            ent.bind("<KeyPress>", on_key)
+
+        for action, label in HOTKEY_ACTIONS:
+            var = tk.StringVar(master=t, value=HOTKEYS.get(action, ""))
+            hk_vars[action] = var
+            tk.Label(t, text=label, bg=BG, fg=FG, font=("Segoe UI", 10)).grid(
+                row=row[0], column=0, sticky="w", padx=12, pady=(3, 0))
+            ent = tk.Entry(t, textvariable=var, width=18, bg="#0b1220", fg=FG, insertbackground=BG,
+                           relief="flat", justify="center")
+            ent.grid(row=row[0], column=1, sticky="w", padx=(6, 6), pady=(3, 0))
+            capture(action, var, ent)
+            fr = tk.Frame(t, bg=BG)
+            fr.grid(row=row[0], column=2, sticky="w", padx=(0, 12), pady=(3, 0))
+            tk.Button(fr, text="Clear", command=lambda v=var, a=action: (v.set(""), hk_note[a].config(text="")),
+                      relief="flat", bg="#334155", fg=FG).pack(side="left")
+            hk_note[action] = tk.Label(fr, text=("in use by another program" if action in failed else ""),
+                                       bg=BG, fg=WARN, font=("Segoe UI", 9))
+            hk_note[action].pack(side="left", padx=(8, 0))
+            row[0] += 1
+
         # ---- title bar
         section("Title bar")
         readout = tk.StringVar(value=self.readout)
@@ -3271,6 +3534,7 @@ class Lens:
                 _set_cost_scaler(mode)
                 # the proxy reads its ini within a second of a change, so this is live
                 self.apply_proxy()
+            self.set_hotkeys({a: v.get() for a, v in hk_vars.items()})
             self.update_info()              # the profile's name on the bar follows the settings
             t.destroy()
             if restart:
@@ -3293,6 +3557,10 @@ class Lens:
         self.restart = restart
         self.closing = True
         self.popup.close()
+        try:
+            self.hotkeys.stop()
+        except Exception:
+            pass
         for s in reversed(self.stages):
             self._kill_stage(s)
         try:

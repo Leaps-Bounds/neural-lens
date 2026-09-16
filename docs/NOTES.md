@@ -171,6 +171,19 @@ clocks never fall as far; 12 seconds with `ready` 21 ms. The presenter's meter c
 this, since it measures from the capture's composition to the present call, which is where the
 delay is not.
 
+## Global hotkeys
+
+RegisterHotKey delivers WM_HOTKEY to the registering thread's queue, and Tk's loop never
+hands that message out, so the combinations are registered on a thread of the lens's own
+with a message queue, which waits on MsgWaitForMultipleObjectsEx and drains with
+PeekMessage; the actions go through a queue the lens reads on a 50 ms timer, so they run on
+the Tk thread. A registered combination is taken from every other program, which is why none
+is set by default, and a combination another program already holds fails to register and is
+named as such in Settings. Home, F5 and F6 alone are refused: ReShade reads Home and F5 from
+the presenter's own messages and the add-on reads F6 with GetAsyncKeyState, and a hotkey on
+them would take the key before either saw it. Injected input fires them, which is how
+`_harnesses/hotkeys_test.py` checks them with the desktop holding the keyboard.
+
 ## Profiles
 
 A profile captures the add-on's section of ReShade.ini whole, apart from ConfigVersion and

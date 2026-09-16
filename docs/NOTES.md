@@ -171,6 +171,30 @@ clocks never fall as far; 12 seconds with `ready` 21 ms. The presenter's meter c
 this, since it measures from the capture's composition to the present call, which is where the
 delay is not.
 
+## Attached to a window
+
+The lens can attach to another window, or to a region inside it, and follow it. The target's
+client area comes from GetClientRect and ClientToScreen, a region is kept as fractions of it,
+and the result is clipped to the monitor it is mostly on, since the presenter captures one
+monitor. A follower on a 50 ms timer reads that rectangle: a move relays the chrome and the
+picture without a restart; a new size restarts the picture once it has held for half a second,
+since a resize arrives as many sizes; a minimised target minimises the lens and a restored
+one restores it; a target that is gone closes the lens.
+
+The chrome while attached is the two pixel line around the region, made click-through with
+WS_EX_TRANSPARENT, since it lies exactly on the target's own edges, and a tab of 28 by 14 on
+the top edge, the only part that takes the mouse: a drag slides it along the edge, a click
+opens the menu. The lens is not topmost while attached. It sits one step above the target:
+each window is inserted after the window above the target, or at HWND_TOP when that window is
+itself topmost, since inserting after a topmost window would make the lens topmost too, and
+the follower restacks whenever the window above the target is not the picture. So a window
+brought over the target covers the lens, and the target brought forward, by a real click, brings
+the lens with it. Verified with `_harnesses/attach_test.py` and `attach_pick_test.py`: 21 and 9
+checks, the follower through the lens's own methods and the pick through real mouse and
+keyboard input. SetForegroundWindow from another process is refused by Windows, which one
+version of the test mistook for a stacking failure, and an odd client height loses one row,
+since the picture keeps even sizes.
+
 ## Capture under the lens's own windows
 
 **Windows Graphics Capture of the monitor composes the desktop beneath an excluded window.** With

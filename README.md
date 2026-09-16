@@ -206,6 +206,17 @@ every card.
   Rendering on the left of it and the untouched source on the right, both live. It costs
   nothing: the lens is see-through, so the right side is simply the screen underneath. Works
   at any pass count and in fullscreen. Pick the menu entry again to end it.
+- **Attach it to a window**, or to a region inside one, from the menu: pick the entry, then
+  click the window, and for a region drag a rectangle over it. The lens then follows that
+  window: it moves with it, restarts its picture when the window's size has held still for half
+  a second, minimises and comes back with it, and closes when it closes. A region is kept as a
+  share of the window's client area, so it scales with the window. While attached the title bar
+  and frame are gone: the lens is a two pixel line around the region, all of it click-through,
+  so the window's own edges and controls stay usable, and a small tab on the top edge that
+  opens the menu, where Detach is. Drag the tab along the edge if it sits over something you
+  need. The lens is not on top of everything while attached: it sits one step above its window
+  in the stacking order, so a window put over the target covers the lens too, and bringing the
+  target forward brings the lens with it. Detach puts the lens back where it was.
 - **Resize it** by dragging its edges: the frame around the picture can be dragged by its sides
   and bottom corners, the way any window is resized, and the title bar shows the size as you go.
   Let go and the picture restarts at the new size, which takes a second or two; see
@@ -376,6 +387,9 @@ off windowed, where the neural pass is rarely what limits the frame rate.
 - **Applications in exclusive fullscreen cannot be under the lens**, because nothing else is
   drawn over them. Borderless windowed works. An application with real DLSS support can usually
   take Neural Rendering directly through the add-on anyway, without this.
+- **An attached lens shows whatever is on screen in its region.** It captures the monitor, not
+  the window, so while another window covers part of the target that part of the lens shows the
+  covering window, until the target is brought forward again.
 - **HDR content has not been measured.** The presenter captures 8 bit frames and presents them
   in an 8 bit window in the standard colour space, so what the lens shows over HDR content is
   whatever Windows hands an 8 bit capture of it. A 10 bit swapchain exists behind

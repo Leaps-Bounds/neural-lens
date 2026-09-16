@@ -513,6 +513,10 @@ BAR = 34
 LINE, EDGE = 2, 8
 CORNER = 16                  # how far from a grip's end still counts as the corner
 MIN_W, MIN_H = 240, 120      # the smallest lens a drag can make
+# Attached to a window, the chrome is a two pixel line around the region and
+# this tab on its top edge, the only part of the lens that takes the mouse
+TAB_W, TAB_H = 28, 14
+ATTACH_SETTLE = 0.5          # seconds a target's new size must hold before the picture restarts
 DIVIDER = 14                 # grab width of the A/B divider; the line drawn is 4
 KEY_HOLD = 350               # ms a posted key stays down, longer than any frame
 KEY, BG, FG, ACCENT = "#010203", "#1b2430", "#cbd5e1", "#4ade80"
@@ -620,6 +624,10 @@ WS_EX_LAYERED, WS_EX_TRANSPARENT, WS_EX_NOACTIVATE = 0x00080000, 0x00000020, 0x0
 WS_EX_TOPMOST = 0x00000008
 WDA_EXCLUDEFROMCAPTURE = 0x00000011
 HWND_TOPMOST = ctypes.c_void_p(-1)          # pointer sized, NOT int -1
+HWND_NOTOPMOST = ctypes.c_void_p(-2)
+HWND_TOP = 0
+GW_HWNDPREV, GA_ROOT = 3, 2
+u.WindowFromPoint.argtypes = [w.POINT]      # a POINT by value, not a pointer to one
 SWP_NOSIZE, SWP_NOMOVE, SWP_NOZORDER, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0004, 0x0010
 SWP_FRAMECHANGED = 0x0020
 SW_HIDE, SW_SHOWNA = 0, 8
@@ -873,12 +881,12 @@ class PopupMenu:
                 lbl.bind("<Button-1>", lambda e, c=command: self.choose(c))
         t.update_idletasks()
         wd, ht = t.winfo_reqwidth(), t.winfo_reqheight()
-        bx, by = lens.t.winfo_x(), lens.t.winfo_y()
-        mx, my, mw, mh = monitor_rect(bx + 10, by + 10)
+        bx, top, bottom = lens.menu_anchor()
+        mx, my, mw, mh = monitor_rect(bx + 10, top + 10)
         x = max(mx, min(bx + 6, mx + mw - wd))
-        y = by + BAR
+        y = bottom
         if y + ht > my + mh:
-            y = by - ht                   # no room below the bar
+            y = top - ht                  # no room below the bar or the tab
         t.geometry("%dx%d+%d+%d" % (wd, ht, x, max(my, y)))
         t.update()
         h = u.GetParent(t.winfo_id()) or t.winfo_id()
@@ -917,7 +925,8 @@ class PopupMenu:
         if down and not self.pressed:
             pt = w.POINT()
             u.GetCursorPos(ctypes.byref(pt))
-            if not self.inside(self.win, pt.x, pt.y) and not self.inside(self.lens.menu_btn, pt.x, pt.y):
+            if not self.inside(self.win, pt.x, pt.y) and not any(
+                    self.inside(wdg, pt.x, pt.y) for wdg in self.lens.menu_widgets()):
                 self.close()
                 return
         self.pressed = down
@@ -960,6 +969,11 @@ class Lens:
         self._fps_hist = collections.deque(maxlen=3)
         self.restart = False        # set by the folder settings, read by main()
         self.minimized = False      # hidden, with the presenter paused, until the taskbar button
+        self.attach = None          # the window the lens is attached to, see attach_to
+        self.tab = None             # the tab on the top edge while attached
+        self.tab_x = 12             # where along the top edge the tab sits
+        self.tab_drag = None
+        self.picking = None         # a pick of a window or region in progress
         self.rs = None              # a resize by the frame in progress, see _grip_down
         self.shot_busy = False
         self.shot_event = threading.Event()
@@ -1148,7 +1162,11 @@ class Lens:
         st = u.GetWindowLongPtrW(hwnd, GWL_STYLE)
         u.SetWindowLongPtrW(hwnd, GWL_STYLE, st & ~WS_THICKFRAME & ~WS_MAXIMIZEBOX)
         self.set_interactive(hwnd, False)
-        u.SetWindowPos(hwnd, HWND_TOPMOST, x, y, self.cw, self.ch, SWP_NOACTIVATE)
+        if self.attach is not None:
+            # not above everything: one step above the target, see stack_above_target
+            u.SetWindowPos(hwnd, HWND_NOTOPMOST, x, y, self.cw, self.ch, SWP_NOACTIVATE)
+        else:
+            u.SetWindowPos(hwnd, HWND_TOPMOST, x, y, self.cw, self.ch, SWP_NOACTIVATE)
         return proc, hwnd
 
     def _read_presenter(self, proc):
@@ -1232,7 +1250,7 @@ class Lens:
                 u.SetWindowDisplayAffinity(hx, WDA_EXCLUDEFROMCAPTURE)
             except Exception:
                 pass
-        if not self.minimized:
+        if not self.minimized and self.attach is None:
             try:
                 self.keep_chrome_on_top()
                 self.keep_stage_on_top()
@@ -1320,8 +1338,17 @@ class Lens:
         A window that is itself set to stay on top can leave the lens
         underneath it and demoted from topmost, with no way back short of
         restarting it. raise_chrome only re-asserts the title bar, so on its
-        own it would put a bar back on top of nothing.
+        own it would put a bar back on top of nothing. Attached, the lens
+        belongs one step above its target, so the target comes forward and
+        the lens with it.
         """
+        if self.attach is not None:
+            try:
+                u.SetForegroundWindow(self.attach["hwnd"])
+            except Exception:
+                pass
+            self.stack_above_target()
+            return
         for s in list(self.stages):
             try:
                 u.SetWindowPos(s["hwnd"], HWND_TOPMOST, 0, 0, 0, 0,
@@ -1389,6 +1416,11 @@ class Lens:
                 self.divider.withdraw()
             except Exception:
                 pass
+        if self.tab is not None:
+            try:
+                self.tab.withdraw()
+            except Exception:
+                pass
         self.t.withdraw()
         print("minimised to the taskbar", flush=True)
 
@@ -1412,6 +1444,11 @@ class Lens:
         if self.divider is not None:
             try:
                 self.divider.deiconify()
+            except Exception:
+                pass
+        if self.tab is not None:
+            try:
+                self.tab.deiconify()
             except Exception:
                 pass
         self._fps_hist.clear()
@@ -1439,6 +1476,359 @@ class Lens:
     # The lens is see-through, so the raw source is already on screen under the
     # presenter. Clipping the presenter's window to the left of a divider
     # reveals it on the right, live and pixel aligned, at no cost.
+    # ---- attached to a window
+    # The lens can be attached to another window, or to a region inside it.
+    # It then follows that window: moves with it, restarts its picture when the
+    # window's size has settled, minimises and restores with it, and closes when
+    # it closes. The chrome shrinks to a two pixel line around the region, all
+    # of it click-through so the target's own edges and controls stay usable,
+    # and a tab on the top edge that opens the menu and slides along the edge
+    # when it is in the way. And the lens is not on top of everything: it sits
+    # one step above its target in the stacking order, so a window put over the
+    # target covers the lens too, and bringing the target forward brings the
+    # lens with it.
+    def pick_target(self, region):
+        """Start a pick: the next click names the window, then for a region a
+        drag over it draws the rectangle. Escape cancels either."""
+        if self.picking is not None or self.attach is not None or self.fullscreen or self.closing:
+            return
+        self.popup.close()
+        hint = tk.Toplevel(self.root)
+        hint.overrideredirect(True)
+        hint.attributes("-topmost", True)
+        hint.configure(bg=ACCENT)
+        lbl = tk.Label(hint, text=("Click the window to attach the lens to.  Escape cancels."
+                                   if not region else
+                                   "Click the window, then drag the region inside it.  Escape cancels."),
+                       bg=BG, fg=FG, font=("Segoe UI", 11), padx=16, pady=8)
+        lbl.pack(padx=1, pady=1)
+        hint.update_idletasks()
+        x, y = self.inner()
+        mx, my, mw, mh = monitor_rect(x + self.cw // 2, y + self.ch // 2)
+        hint.geometry("+%d+%d" % (mx + (mw - hint.winfo_reqwidth()) // 2, my + 24))
+        hint.update()
+        hh = u.GetParent(hint.winfo_id()) or hint.winfo_id()
+        u.SetWindowLongPtrW(hh, GWL_EXSTYLE, u.GetWindowLongPtrW(hh, GWL_EXSTYLE) | WS_EX_NOACTIVATE)
+        u.SetWindowDisplayAffinity(hh, WDA_EXCLUDEFROMCAPTURE)
+        self.picking = {"region": region, "hint": hint, "label": lbl, "down": bool(u.GetAsyncKeyState(0x01) & 0x8000),
+                        "target": None, "overlay": None, "canvas": None, "start": None, "box": None}
+        self.root.after(30, self._pick_tick)
+
+    def _pick_end(self):
+        p, self.picking = self.picking, None
+        if p is None:
+            return
+        for k in ("overlay", "hint"):
+            try:
+                if p[k] is not None:
+                    p[k].destroy()
+            except Exception:
+                pass
+
+    def _pick_tick(self):
+        p = self.picking
+        if p is None or self.closing:
+            return
+        if u.GetAsyncKeyState(0x1B) & 0x8000:
+            self._pick_end()
+            return
+        down = bool(u.GetAsyncKeyState(0x01) & 0x8000)
+        if p["target"] is None and down and not p["down"]:
+            pt = w.POINT()
+            u.GetCursorPos(ctypes.byref(pt))
+            h = u.WindowFromPoint(pt)
+            h = u.GetAncestor(h, GA_ROOT) or h
+            cls = ctypes.create_unicode_buffer(64)
+            u.GetClassNameW(h, cls, 64)
+            own = set(_own_windows()) | {s["hwnd"] for s in self.stages} | {self.chrome}
+            if not h or h in own or cls.value in ("Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd"):
+                p["label"].config(text="That is the desktop, the taskbar or the lens itself. Click a window.  Escape cancels.")
+            else:
+                p["target"] = h
+        p["down"] = down
+        if p["target"] is not None and not down:
+            # the click has been released, so the target keeps it; now the
+            # region, or the attachment itself
+            if p["region"]:
+                if p["overlay"] is None:
+                    self._region_start()
+            else:
+                h = p["target"]
+                self._pick_end()
+                self.attach_to(h, None)
+                return
+        self.root.after(30, self._pick_tick)
+
+    def _region_start(self):
+        """A translucent sheet over the target's client area to drag the region on."""
+        p = self.picking
+        rect = self.target_client(p["target"])
+        if rect is None:
+            self._pick_end()
+            return
+        cx, cy, cw, ch = rect
+        ov = tk.Toplevel(self.root)
+        ov.overrideredirect(True)
+        ov.attributes("-topmost", True)
+        ov.attributes("-alpha", 0.35)
+        ov.configure(bg="#0b1220")
+        ov.geometry("%dx%d+%d+%d" % (cw, ch, cx, cy))
+        cv = tk.Canvas(ov, bg="#0b1220", highlightthickness=0, cursor="crosshair")
+        cv.pack(fill="both", expand=True)
+        p["overlay"], p["canvas"] = ov, cv
+        p["label"].config(text="Drag the region the lens should cover.  Escape cancels.")
+
+        def down(e):
+            p["start"] = (e.x, e.y)
+            p["box"] = cv.create_rectangle(e.x, e.y, e.x, e.y, outline=ACCENT, width=2)
+
+        def move(e):
+            if p["start"] is not None:
+                cv.coords(p["box"], p["start"][0], p["start"][1], e.x, e.y)
+
+        def up(e):
+            if p["start"] is None:
+                return
+            x0, y0 = p["start"]
+            x1, y1 = e.x, e.y
+            left, top = min(x0, x1), min(y0, y1)
+            wd, ht = abs(x1 - x0), abs(y1 - y0)
+            h = p["target"]
+            if wd < MIN_W or ht < MIN_H:
+                p["start"], p["box"] = None, None
+                cv.delete("all")
+                p["label"].config(text="Too small: the region needs at least %d by %d. Drag again.  Escape cancels."
+                                  % (MIN_W, MIN_H))
+                return
+            frac = (left / float(cw), top / float(ch), wd / float(cw), ht / float(ch))
+            self._pick_end()
+            self.attach_to(h, frac)
+
+        cv.bind("<ButtonPress-1>", down)
+        cv.bind("<B1-Motion>", move)
+        cv.bind("<ButtonRelease-1>", up)
+        ov.update()
+
+    @staticmethod
+    def target_client(h):
+        """The target's client area in screen pixels, or None if it has none."""
+        r = w.RECT()
+        if not u.IsWindow(h) or not u.GetClientRect(h, ctypes.byref(r)) or r.right <= 0 or r.bottom <= 0:
+            return None
+        pt = w.POINT(0, 0)
+        u.ClientToScreen(h, ctypes.byref(pt))
+        return pt.x, pt.y, r.right, r.bottom
+
+    def target_rect(self):
+        """Where the picture goes now: the target's client area, or the region's
+        share of it, clipped to the monitor it is mostly on, since the
+        presenter captures one monitor. None while it is too small to show."""
+        a = self.attach
+        c = self.target_client(a["hwnd"])
+        if c is None:
+            return None
+        cx, cy, cw, ch = c
+        if a["frac"] is not None:
+            fx, fy, fw, fh = a["frac"]
+            x, y, wd, ht = cx + int(round(fx * cw)), cy + int(round(fy * ch)), int(round(fw * cw)), int(round(fh * ch))
+        else:
+            x, y, wd, ht = cx, cy, cw, ch
+        mx, my, mw, mh = monitor_rect(x + wd // 2, y + ht // 2)
+        x0, y0 = max(x, mx), max(y, my)
+        x1, y1 = min(x + wd, mx + mw), min(y + ht, my + mh)
+        wd, ht = x1 - x0, y1 - y0
+        wd, ht = wd - wd % 2, ht - ht % 2
+        if wd < MIN_W or ht < MIN_H:
+            return None
+        return x0, y0, wd, ht
+
+    def attach_to(self, h, frac):
+        if self.attach is not None or self.closing or self.fullscreen:
+            return
+        x, y = self.inner()
+        self.attach = {"hwnd": h, "frac": frac, "rect": (x, y, self.cw, self.ch),
+                       "saved": (self.cw, self.ch, x, y), "size_seen": None, "since": 0.0,
+                       "by_target": False}
+        rect = self.target_rect()
+        if rect is None:
+            self.attach = None
+            print("attach: the window is too small to attach to", flush=True)
+            return
+        title = ctypes.create_unicode_buffer(128)
+        u.GetWindowTextW(h, title, 128)
+        print("attached to %r%s at %dx%d" % (title.value, " (a region)" if frac else "", rect[2], rect[3]), flush=True)
+        self.popup.close()
+        # the chrome becomes the line and the tab, click-through and no longer
+        # above everything
+        self.t.attributes("-topmost", False)
+        self._chrome_passthrough(True)
+        self.make_tab()
+        u.SetWindowPos(self.chrome, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+        self.attach["rect"] = rect
+        self.resize_to(*rect)               # lays the chrome out attached, restarts the picture
+        self.stack_above_target()
+        self.root.after(50, self.follow_target)
+
+    def detach(self):
+        a, self.attach = self.attach, None
+        if a is None:
+            return
+        cw, ch, x, y = a["saved"]
+        print("detached", flush=True)
+        if self.tab is not None:
+            try:
+                self.tab.destroy()
+            except Exception:
+                pass
+            self.tab = None
+        self._chrome_passthrough(False)
+        self.t.attributes("-topmost", True)
+        if self.closing:
+            return
+        if self.minimized:
+            self.restore()
+        self.resize_to(x, y, cw, ch)
+        self.bring_back()
+        self.save_state()
+
+    def _chrome_passthrough(self, on):
+        ex = u.GetWindowLongPtrW(self.chrome, GWL_EXSTYLE)
+        ex = (ex | WS_EX_TRANSPARENT) if on else (ex & ~WS_EX_TRANSPARENT)
+        u.SetWindowLongPtrW(self.chrome, GWL_EXSTYLE, ex | WS_EX_NOACTIVATE)
+        u.SetWindowPos(self.chrome, 0, 0, 0, 0, 0,
+                       SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED)
+
+    def follow_target(self):
+        """Every 50 ms while attached: gone, minimised, moved, resized, or covered."""
+        a = self.attach
+        if a is None or self.closing:
+            return
+        h = a["hwnd"]
+        if not u.IsWindow(h):
+            print("the attached window closed; closing the lens", flush=True)
+            self.attach = None
+            self.quit()
+            return
+        if u.IsIconic(h):
+            if not self.minimized and not self.rebuilding:
+                a["by_target"] = True
+                self.minimize()
+        elif self.minimized and a["by_target"] and not self.rebuilding:
+            a["by_target"] = False
+            self.restore()
+        if not self.minimized and not self.rebuilding:
+            rect = self.target_rect()
+            if rect is not None:
+                x, y, wd, ht = rect
+                now = time.perf_counter()
+                if (wd, ht) != (self.cw, self.ch):
+                    # a new size restarts the picture, once it has held still
+                    if a["size_seen"] != (wd, ht):
+                        a["size_seen"], a["since"] = (wd, ht), now
+                    elif now - a["since"] >= ATTACH_SETTLE:
+                        a["size_seen"] = None
+                        a["rect"] = rect
+                        self.resize_to(x, y, wd, ht)
+                elif (x, y) != a["rect"][:2]:
+                    a["rect"] = rect
+                    self.layout_chrome(x, y, settle=False)
+                    self.place()
+                    self.aim()
+                    self.follow_monitor()
+            if self.stages and not self.rebuilding:
+                stage = self.visible()
+                if (u.GetWindow(h, GW_HWNDPREV) != stage
+                        or u.GetWindow(stage, GW_HWNDPREV) != self.chrome):
+                    self.stack_above_target()
+        self.root.after(50, self.follow_target)
+
+    def stack_above_target(self):
+        """Put the picture directly above the target, the line above the
+        picture and the tab above the line, none of them topmost."""
+        a = self.attach
+        if a is None or not self.stages:
+            return
+
+        def above(hwnd, ref):
+            p = u.GetWindow(ref, GW_HWNDPREV)
+            # inserting after a topmost window would make this one topmost;
+            # a target with nothing but topmost windows above it is the top
+            # of the ordinary band, which is HWND_TOP
+            if p and u.GetWindowLongPtrW(p, GWL_EXSTYLE) & WS_EX_TOPMOST:
+                p = 0
+            u.SetWindowPos(hwnd, p if p else HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+
+        try:
+            stage = self.visible()
+            above(stage, a["hwnd"])
+            above(self.chrome, stage)
+            if self.tab is not None:
+                th = u.GetParent(self.tab.winfo_id()) or self.tab.winfo_id()
+                above(th, self.chrome)
+        except Exception:
+            pass
+
+    def make_tab(self):
+        tab = tk.Toplevel(self.root)
+        self.tab = tab
+        tab.overrideredirect(True)
+        tab.configure(bg=ACCENT)
+        lbl = tk.Label(tab, text="☰", bg=ACCENT, fg="#0b1220", font=("Segoe UI", 8))
+        lbl.place(x=0, y=0, width=TAB_W, height=TAB_H)
+        for wdg in (tab, lbl):
+            wdg.bind("<ButtonPress-1>", self._tab_down)
+            wdg.bind("<B1-Motion>", self._tab_move)
+            wdg.bind("<ButtonRelease-1>", self._tab_up)
+        x, y = self.inner()
+        tab.geometry("%dx%d+%d+%d" % (TAB_W, TAB_H, x + self.tab_x, y))
+        tab.update()
+        th = u.GetParent(tab.winfo_id()) or tab.winfo_id()
+        u.SetWindowLongPtrW(th, GWL_EXSTYLE, u.GetWindowLongPtrW(th, GWL_EXSTYLE) | WS_EX_NOACTIVATE)
+        u.SetWindowDisplayAffinity(th, WDA_EXCLUDEFROMCAPTURE)
+
+    def place_tab(self, x, y, cw):
+        if self.tab is None:
+            return
+        self.tab_x = max(0, min(self.tab_x, cw - TAB_W))
+        try:
+            th = u.GetParent(self.tab.winfo_id()) or self.tab.winfo_id()
+            u.SetWindowPos(th, 0, x + self.tab_x, y, TAB_W, TAB_H, SWP_NOZORDER | SWP_NOACTIVATE)
+        except Exception:
+            pass
+
+    def _tab_down(self, e):
+        self.tab_drag = (e.x_root, self.tab_x)
+
+    def _tab_move(self, e):
+        if self.tab_drag is None or self.attach is None:
+            return
+        x0, tx0 = self.tab_drag
+        self.tab_x = tx0 + (e.x_root - x0)
+        x, y = self.inner()
+        self.place_tab(x, y, self.cw)
+
+    def _tab_up(self, e):
+        if self.tab_drag is None:
+            return
+        x0, _ = self.tab_drag
+        self.tab_drag = None
+        if abs(e.x_root - x0) < 3:
+            self.menu(e)
+
+    def menu_anchor(self):
+        """Where the menu opens from: (x, top, bottom) of the bar or the tab."""
+        if self.attach is not None and self.tab is not None:
+            try:
+                tx, ty = self.tab.winfo_rootx(), self.tab.winfo_rooty()
+                return tx - 6, ty, ty + TAB_H
+            except Exception:
+                pass
+        return self.t.winfo_x(), self.t.winfo_y(), self.t.winfo_y() + BAR
+
+    def menu_widgets(self):
+        """The controls whose clicks the menu leaves alone: they toggle it themselves."""
+        return [self.menu_btn] + ([self.tab] if self.tab is not None else [])
+
     def toggle_split(self):
         if self.closing:
             return
@@ -1682,7 +2072,7 @@ class Lens:
         new picture at the smaller size, the same way a resize does, and this
         returns True. Fullscreen already covers exactly its monitor.
         """
-        if self.fullscreen or self.closing:
+        if self.fullscreen or self.closing or self.attach is not None:
             return False
         x, y = self.inner()
         nx, ny, ncw, nch = fit_rect(x, y, self.cw, self.ch)
@@ -1723,6 +2113,8 @@ class Lens:
             # fullscreen cannot be dragged, and its chrome is the bar alone, with
             # no border to count from
             return self.fs_origin
+        if self.attach is not None:
+            return self.attach["rect"][:2]
         return self.t.winfo_x() + EDGE, self.t.winfo_y() + BAR
 
     def layout_chrome(self, x, y, cw=None, ch=None, settle=True):
@@ -1744,6 +2136,16 @@ class Lens:
             self.hole.place_forget()
             for g in self.grips.values():
                 g.place_forget()
+        elif self.attach is not None:
+            # attached, the chrome is the line around the region and the tab on
+            # its top edge; no bar and no grips, since the target decides the
+            # size and the line lies on its edges
+            t.geometry("%dx%d+%d+%d" % (cw + 2 * LINE, ch + 2 * LINE, x - LINE, y - LINE))
+            self.bar.place_forget()
+            self.hole.place(x=LINE, y=LINE, width=cw, height=ch)
+            for g in self.grips.values():
+                g.place_forget()
+            self.place_tab(x, y, cw)
         else:
             t.geometry("%dx%d+%d+%d" % (cw + 2 * EDGE, ch + BAR + EDGE, x - EDGE, y - BAR))
             self.bar.place(x=EDGE, y=0, width=cw, height=BAR)
@@ -1829,6 +2231,12 @@ class Lens:
 
     def save_state(self):
         x, y = self.inner()
+        if self.attach is not None:
+            # the attached place and size belong to the target; the windowed
+            # geometry is what comes back on detach and on the next launch
+            cw, ch, x, y = self.attach["saved"]
+        else:
+            cw, ch = self.cw, self.ch
         try:
             if self.fullscreen:
                 # the windowed geometry stays untouched for the way back
@@ -1836,7 +2244,7 @@ class Lens:
                     f.write("%d\n" % self.passes)
                 return
             with open(STATE, "w") as f:
-                f.write("%d %d %d %d %d\n" % (self.cw, self.ch, x, y, self.passes))
+                f.write("%d %d %d %d %d\n" % (cw, ch, x, y, self.passes))
         except OSError:
             pass
 
@@ -1891,6 +2299,15 @@ class Lens:
             None,
             (("End the A/B split" if self.split is not None
               else "Live A/B split      (neural left, raw right)"), self.toggle_split, True),
+            None,
+        ] + ([
+            ("Detach from the window", self.detach, True),
+        ] if self.attach is not None else [
+            ("Attach to a window...       (then click the window)", lambda: self.pick_target(False),
+             not self.fullscreen),
+            ("Attach to a region in a window...   (click it, then drag the region)",
+             lambda: self.pick_target(True), not self.fullscreen),
+        ]) + [
             None,
             ("Settings...", self.settings_dialog, True),
             None,

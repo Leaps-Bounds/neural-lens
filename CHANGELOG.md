@@ -5,6 +5,11 @@ settings, the state file format and behaviour may change between releases.
 
 ## Unreleased
 
+- Attach the lens to a window, or to a region inside one, and it follows: moves with the
+  window, restarts its picture when the window's size settles, minimises and closes with it,
+  and sits one step above it in the stacking order rather than above everything. While attached
+  the chrome is a click-through line around the region and a tab on its top edge that slides
+  along the edge and opens the menu.
 - The first frame after a pause is on time when the pause was short. Over a still the neural
   pass rests and the card drops to its lowest clocks, and the first frame after that measured
   62 ms on an RTX 4070 SUPER at 120 Hz, up to 151, against 17 while moving. The lens now keeps

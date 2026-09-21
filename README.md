@@ -139,8 +139,8 @@ fetches each piece from the project that publishes it, see [Install](#install), 
 | `nvngx_dlssnr.dll` | DLSSNR-Cost-Scaler, which can run the model at a fraction of the resolution | its own project |
 
 What it shows is what Neural Rendering does to this image. A game hands DLSS depth and motion
-vectors from its engine; here the Feed synthesises them from the picture alone. So the lens is
-a preview of how the model treats the material, edges and fine detail in front of it, not of
+vectors from its engine, and here the Feed synthesises them from the picture alone. So the lens
+is a preview of how the model treats the material, edges and fine detail in front of it, not of
 what an asset will look like in an engine with DLSS on.
 
 ### The Neural Rendering model
@@ -207,45 +207,46 @@ every card.
   Rendering on the left of it and the untouched source on the right, both live. It costs
   nothing: the lens is see-through, so the right side is simply the screen underneath. Works
   at any pass count and in fullscreen. Pick the menu entry again to end it.
-- **Attach it to a window**, or to a region inside one, from the menu: pick the entry, then
-  click the window, and for a region drag a rectangle over it. The lens then follows that
-  window: it moves with it, restarts its picture when the window's size has held still for half
-  a second, minimises and comes back with it, and closes when it closes. A region is kept as a
-  share of the window's client area, so it scales with the window. While attached the title bar
-  and frame are gone: the lens is a two pixel line around the region, all of it click-through,
-  so the window's own edges and controls stay usable, and a small tab on the top edge that
-  opens the menu, where Detach is. Drag the tab along the edge if it sits over something you
-  need. The lens is not on top of everything while attached: it sits one step above its window
-  in the stacking order, so a window put over the target covers the lens too, and bringing the
-  target forward brings the lens with it. Detach puts the lens back where it was.
+- **Attach it to a window**, or to a region inside one. Pick the entry from the menu, then
+  click the window, or drag a rectangle over the part of it you want. The lens then follows
+  that window. It moves with it, restarts its picture when the window's size has held still
+  for half a second, minimises and comes back with it, and closes when it closes. A region is
+  kept as a share of the window's client area, so it scales with the window. While attached
+  the title bar and frame are gone. The lens becomes a two pixel line around the region, all
+  of it click-through so the window's own edges and controls stay usable, with a small tab on
+  the top edge that opens the menu, where Detach is. Drag the tab along the edge if it sits
+  over something you need. An attached lens is not on top of everything. It sits one step
+  above its window in the stacking order, so a window put over the target covers the lens too,
+  and bringing the target forward brings the lens with it. Detach puts the lens back where it
+  was.
 - **Resize it** by dragging its edges: the frame around the picture can be dragged by its sides
   and bottom corners, the way any window is resized, and the title bar shows the size as you go.
   Let go and the picture restarts at the new size, which takes a second or two; see
   [Limits](#limits) for why.
-- **Settings** in the menu holds the screenshot folder, the Cost Scaler, what the title bar
-  shows, the delay meter, and the stack and data folders, each with an explanation. It writes
-  `neural-lens.ini`; nothing needs editing by hand.
-- **Profiles** keep everything that makes the picture under a name: the window's place and
-  size, fullscreen, the pass count, the Cost Scaler rule, the ready switch, what the title bar
-  shows, and every setting in the Home menu. The selector on the title bar, marked Profile
-  until one is in use, saves the current settings as a new profile and switches between them;
-  applying one restarts the picture, since the add-on reads its settings only when it starts.
-  The name turns amber with a star once the lens no longer matches the profile in what the
-  bar and Settings hold. Settings renames and deletes them. They live in `profiles.json` in
-  the data folder.
-- **Global hotkeys**, none set until you set them, in Settings: a key combination per action
-  that works from anywhere, whichever window has the keyboard, for a screenshot, a pass more or
-  fewer, the A/B split, minimise and back, fullscreen and back, the next profile, the ready
-  switch, and detaching. Click a field and press the combination. A combination set here is
-  taken from every other program while the lens runs. Home, F5 and F6 on their own cannot be
-  used, since ReShade reads Home and F5 and the add-on reads F6 from the keyboard, and taking
-  them would silence the overlay, its screenshot and the Neural Rendering toggle. They are kept
-  in the ini as `hotkey_screenshot` and the like.
-- **Check for updates** is in Settings, off unless you switch it on: with it on, the lens asks
-  GitHub for the newest release when it starts, at most once a day, and says so only when there
-  is one newer than this. Nothing is downloaded or installed by itself: the release page opens
-  in the browser, and the installer there runs over this install. Check now does the same once.
-  Off, the lens never contacts anything.
+- **Settings** in the menu is six pages, Picture, Title bar, Profiles, Hotkeys, Screenshots and
+  Program, each setting with its explanation above it. It opens over the middle of the lens
+  and writes `neural-lens.ini`, so nothing needs editing by hand.
+- **Profiles** keep everything that makes the picture under a name. That is the window's
+  place and size, fullscreen, the pass count, the Cost Scaler rule, the ready switch, what the
+  title bar shows, and every setting in the Home menu. The selector on the title bar, marked
+  Profile until one is in use, saves the current settings as a new profile and switches
+  between them. Applying one restarts the picture, since the add-on reads its settings only
+  when it starts. The name turns amber with a star once the lens no longer matches the profile
+  in what the bar and Settings hold. Settings renames and deletes them. They live in
+  `profiles.json` in the data folder.
+- **Global hotkeys** are off until you set them on the Hotkeys page of Settings. Each action
+  can have a key combination that works from anywhere, whichever window has the keyboard, for
+  a screenshot, a pass more or fewer, the A/B split, minimise and back, fullscreen and back,
+  the next profile, the ready switch, and detaching. Click a field and press the combination.
+  A combination set here is taken from every other program while the lens runs. Home, F5 and
+  F6 on their own cannot be used, since ReShade reads Home and F5 and the add-on reads F6 from
+  the keyboard, and taking them would silence the overlay, its screenshot and the Neural
+  Rendering toggle. They are kept in the ini as `hotkey_screenshot` and the like.
+- **Check for updates** is on the Program page of Settings and off unless you switch it on.
+  With it on, the lens asks GitHub for the newest release when it starts, at most once a day,
+  and says so only when there is one newer than this. Nothing is downloaded or installed by
+  itself. The release page opens in the browser, and the installer there runs over this
+  install. Check now does the same once. Off, the lens never contacts anything.
 - **F6 turns Neural Rendering off and on** in every pass at once, from the menu or the key
   itself. The add-on reads the physical key, so F6 pressed anywhere toggles it. While it is off
   the title bar says `NR off` and the pass controls wait, because a pass with Neural Rendering
@@ -255,9 +256,9 @@ every card.
   set to stay on top has left it underneath. The button's Close window closes the lens. A
   maximised or full screen window, which Windows puts above everything when it becomes the
   foreground, is handled on its own: the lens notices and comes back within a fifth of a second.
-- **Fullscreen** is the maximise button. The lens fills the monitor it is on apart from the
-  taskbar, with the title bar across the top and the picture below it, and cannot be dragged or
-  resized. Going fullscreen or back restarts the picture, like a resize, and the windowed
+- **Fullscreen** is the maximise button. The lens fills the whole of the monitor it is on, the
+  taskbar's place included, with the title bar across the top and the picture below it, and
+  cannot be dragged or resized. A fullscreen video behind it is covered to the bottom edge. Going fullscreen or back restarts the picture, like a resize, and the windowed
   position and size are kept for the way back. A whole monitor is a lot of pixels, so the frame
   rate is lower, and fullscreen is where the lens switches the Cost Scaler on; see
   [The Cost Scaler](#the-cost-scaler). `fullscreen = 1` in the ini opens the lens that way.
@@ -330,16 +331,24 @@ itself.
 
 Measured on an RTX 5090 with a 120 Hz display, a window flipping between black and white took
 8 ms to show the change in the presenter's output, one refresh, both read through the
-compositor. With the lens itself at one pass, the title bar's delay meter reads:
+compositor. With the lens itself at one pass, the title bar's latency meter reads:
 
-| lens | frame rate | delay |
+| lens | frame rate | latency |
 |---|---|---|
 | 1400x1000 | 118 fps | 10 ms |
 | fullscreen 6144x2560, the Cost Scaler on as the lens sets it | 58 fps | 33 ms |
 | fullscreen 6144x2560, the Cost Scaler off | 42 fps | 47 ms |
 
-The title bar shows the size and, beside it, the delay from capture to display, and it reads
-idle over content that is not changing, since the neural pass then rests. The delay is the
+The title bar shows the size and, beside it, the latency from capture to display, and either
+can be turned off on the Title bar page of Settings, where the frame rate, the Home menu's NR
+style and its overall intensity can be turned on. The style and
+the intensity follow the Home menu within a second. A style picked from the bar restarts the
+picture, since the add-on reads its settings only when it starts, and the intensity is shown
+only, the Home menu being the place to move it while watching the picture. It reads idle over content that is not
+changing. The picture stays the neural rendering of the last frame, refreshed a few times a
+second, so idle means nothing new arrived. On a 120 Hz screen the floor is about 8 to 11 ms,
+one refresh for the frame to arrive and be rendered and part of another before it is shown.
+The latency is the
 presenter's own measure from the moment Windows composed a captured frame to the moment it
 presented it, plus a refresh and a half for the composition and scanout that follow, which it
 cannot see. Against a window flipping black and white it read 8 ms where the flip measured 8 at
@@ -349,16 +358,18 @@ pictures the content under the lens hands it, averaged over the last few seconds
 second video gives 30, a 60 one 60, and the lens never limits it; or the frames captured and the
 new pictures shown, each per second.
 
-The first frame after a pause costs more than the rest. Over content that is not changing the
-neural pass rests and the card falls to its lowest clocks, and the first frame after that pays
-for climbing back: measured on an RTX 4070 SUPER at 120 Hz, a 1400x1000 lens at one pass, flip
-to flip through the compositor, 17 ms while moving and 62 ms after 12 seconds still, up to 151.
-So for ten seconds after any new picture the lens keeps presenting thirty times a second, which
-holds the clocks up, and a pause in the middle of working costs nothing; a longer pause costs
-that one late frame, and then the card rests at four presents a second. Settings under While
-nothing changes can keep thirty a second throughout: the first frame after any pause then takes
-about 21 ms, and a still costs 58 W on that card in place of 40, with the machine idle at 14.
-`ready = 1` in the ini does the same.
+The first frame after a pause can cost more than the rest. Over content that is not changing
+the neural pass rests and the card falls to its lowest clocks, and the first frame after that
+pays for climbing back. Measured on an RTX 4070 SUPER at 120 Hz with a 1400x1000 lens at one
+pass, flip to flip through the compositor, it took 17 ms while moving and 62 ms after 12
+seconds still, up to 151 ms. So for ten seconds after any new picture the lens keeps presenting
+thirty times a second, which holds the clocks up, and a pause in the middle of working costs
+nothing. A longer pause costs that one late frame, and then the card rests at four presents a
+second. The switch on the Picture page of Settings can keep thirty a second throughout. The
+first frame after any pause then takes about 21 ms, and a still costs 58 W on that card in
+place of 40 W, with the machine idle at 14 W. `ready = 1` in the ini does the same. On an RTX 5090
+the first frame after a 12 or 30 second pause took 10 ms with the switch off, so there is
+nothing for it to buy there.
 
 ### The Cost Scaler
 
@@ -416,6 +427,9 @@ off windowed, where the neural pass is rarely what limits the frame rate.
   in an 8 bit window in the standard colour space, so what the lens shows over HDR content is
   whatever Windows hands an 8 bit capture of it. A 10 bit swapchain exists behind
   `LENS_PRESENTER_10BIT` for that measurement, which has not been made.
+- **A locked workstation gives the lens nothing.** Windows lets nothing capture the lock
+  screen, so a lens left running while the computer is locked reports the capture lost and
+  starts again every few seconds until the desktop is back. That is Windows, not a fault.
 
 ## Troubleshooting
 

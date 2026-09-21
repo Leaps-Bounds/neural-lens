@@ -76,6 +76,7 @@ import time
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import filedialog, messagebox
+from tkinter import ttk
 
 
 def _script_dir():
@@ -575,7 +576,7 @@ def _write_proxy(enabled, scale):
 # process's id, so two lenses at once, one per monitor say, never pick up each
 # other's presenter.
 TITLE = "LensNR %d" % os.getpid()
-__version__ = "0.3.0"        # beta; see CHANGELOG.md
+__version__ = "0.4.0"        # beta; see CHANGELOG.md
 
 DATA_DIR = (os.environ.get("NEURAL_LENS_DATA") or _INI.get("data_dir")
             or os.path.join(_script_dir(), "data"))
@@ -629,6 +630,7 @@ DIVIDER = 14                 # grab width of the A/B divider; the line drawn is 
 KEY_HOLD = 350               # ms a posted key stays down, longer than any frame
 KEY, BG, FG, ACCENT = "#010203", "#1b2430", "#cbd5e1", "#4ade80"
 DIM, WARN = "#64748b", "#fbbf24"
+CAP = "#243040"          # the window buttons' own shade on the title bar
 
 # The title bar's minimise, maximise, restore and close buttons use Windows'
 # own caption glyphs, from whichever Segoe icon font the machine has, so they
@@ -696,11 +698,15 @@ FULL_STATE = os.path.join(DATA_DIR, "lens-state-fullscreen.txt")
 # own rate it misleads. detail is the frames captured and the new pictures
 # shown, each per second.
 READOUT = str(_INI.get("readout", "size")).strip().lower()
-if READOUT not in ("fps", "detail", "size"):
+if READOUT not in ("fps", "detail", "both", "size"):
     READOUT = "size"
 # The delay meter on the title bar, on unless the ini says latency = 0. See
 # Lens._read_presenter for what it measures and what it adds.
 LATENCY = str(_INI.get("latency", "1")).strip().lower() in ("1", "yes", "on", "true")
+TITLE_SIZE = str(_INI.get("title_size", "1")).strip().lower() in ("1", "yes", "on", "true")
+TITLE_STYLE = str(_INI.get("title_style", "0")).strip().lower() in ("1", "yes", "on", "true")
+TITLE_INTENSITY = str(_INI.get("title_intensity", "0")).strip().lower() in ("1", "yes", "on", "true")
+STYLE_NAMES = {"0": "Default", "1": "Natural", "2": "Cinematic"}     # the add-on's NRStyle
 # Keep the picture ready while nothing changes: the presenter presents thirty
 # times a second over a still instead of falling to four after ten seconds, so
 # the first frame after any pause is on time. Off unless the ini says ready = 1.
@@ -711,6 +717,7 @@ CLIP_SHOTS = str(_INI.get("clipboard_shots", "0")).strip().lower() in ("1", "yes
 # Check GitHub for a newer release when the lens starts, at most once a day.
 # Off unless the ini says check_updates = 1, since it is a request to a server.
 CHECK_UPDATES = str(_INI.get("check_updates", "0")).strip().lower() in ("1", "yes", "on", "true")
+AUTO_UPDATE = str(_INI.get("auto_update", "0")).strip().lower() in ("1", "yes", "on", "true")
 RELEASES_API = "https://api.github.com/repos/Leaps-Bounds/neural-lens/releases"
 RELEASES_PAGE = "https://github.com/Leaps-Bounds/neural-lens/releases"
 
@@ -733,7 +740,16 @@ def _latest_release():
         releases = json.loads(r.read().decode("utf-8"))
     for rel in releases:
         if not rel.get("draft") and rel.get("tag_name"):
-            return rel["tag_name"].lstrip("vV"), rel.get("html_url") or RELEASES_PAGE
+            # the installer among the release's files, by its name and by its
+            # home on GitHub, so nothing else is ever downloaded
+            asset_url = asset_size = None
+            for a in rel.get("assets") or []:
+                name, link = str(a.get("name", "")), str(a.get("browser_download_url", ""))
+                if (name.startswith("NeuralLens-Setup-") and name.endswith(".exe")
+                        and link.startswith(RELEASES_PAGE + "/download/")):
+                    asset_url, asset_size = link, int(a.get("size") or 0)
+                    break
+            return rel["tag_name"].lstrip("vV"), rel.get("html_url") or RELEASES_PAGE, asset_url, asset_size
     return None
 
 
@@ -1241,7 +1257,12 @@ class Lens:
         self.pres_in = self.pres_out = 0.0   # the last second's captures and new pictures
         self.mon_x = self.mon_y = 0          # the captured monitor's origin
         self.readout = READOUT      # what the title bar shows beside the size
-        self.latency_on = LATENCY   # the delay meter on the title bar
+        self.show_size = TITLE_SIZE  # the size itself on the title bar
+        self.latency_on = LATENCY   # the latency meter on the title bar
+        self.auto_update_on = AUTO_UPDATE   # offer to install a newer release, after asking
+        self.show_style = TITLE_STYLE       # the Home menu's NR style on the title bar
+        self.show_intensity = TITLE_INTENSITY   # its overall intensity, shown only
+        self.addon_seen = {}                # the add-on's section as the bar last read it
         self.ready = READY          # thirty presents a second over a still, always
         self.clip_shots = CLIP_SHOTS   # the joined before and after to the clipboard too
         self.check_updates_on = CHECK_UPDATES
@@ -1314,29 +1335,48 @@ class Lens:
         self.prof_btn.bind("<Enter>", lambda e: self.prof_btn.config(bg="#334155"))
         self.prof_btn.bind("<Leave>", lambda e: self.prof_btn.config(bg=BG))
 
+        # the Home menu's NR style and overall intensity, on the bar when Settings
+        # asks for them. Both follow the add-on's section, which it writes within a
+        # second of a change in its overlay. The style is picked here and restarts
+        # the picture, since the add-on reads its section only when it starts; the
+        # intensity is shown only, the Home menu being the live way to move it
+        self.style_btn = tk.Label(bar, text="▾ Default", bg=BG, fg=DIM, font=("Segoe UI", 9), padx=4)
+        self.style_btn.bind("<Button-1>", lambda e: self.style_menu())
+        self.style_btn.bind("<Enter>", lambda e: self.style_btn.config(bg="#334155"))
+        self.style_btn.bind("<Leave>", lambda e: self.style_btn.config(bg=BG))
+        self.intensity_lbl = tk.Label(bar, text="intensity 1.00", bg=BG, fg=DIM, font=("Consolas", 9), padx=4)
+        self.show_bar_mirrors()
+
         # the caption buttons, right to left as on every window: close,
-        # maximise or restore, minimise
+        # maximise or restore, minimise. They sit on a shade of their own, so
+        # they read as the window's buttons rather than as more pass controls
         try:
             capfont, self.glyphs = _caption_glyphs(set(tkfont.families(root)))
         except Exception:
             capfont, self.glyphs = ("Segoe UI", 12), CAPTION_PLAIN
-        self.x_btn = tk.Label(bar, text=self.glyphs["close"], bg=BG, fg=FG, font=capfont, padx=11)
+        self.x_btn = tk.Label(bar, text=self.glyphs["close"], bg=CAP, fg=FG, font=capfont, padx=11)
         self.x_btn.pack(side="right", fill="y")
         self.x_btn.bind("<Button-1>", lambda e: self.quit())
         self.x_btn.bind("<Enter>", lambda e: self.x_btn.config(bg="#e11d48"))
-        self.x_btn.bind("<Leave>", lambda e: self.x_btn.config(bg=BG))
-        self.max_btn = tk.Label(bar, text=self.glyphs["restore" if fullscreen else "max"], bg=BG,
+        self.x_btn.bind("<Leave>", lambda e: self.x_btn.config(bg=CAP))
+        self.max_btn = tk.Label(bar, text=self.glyphs["restore" if fullscreen else "max"], bg=CAP,
                                 fg=FG, font=capfont, padx=11)
         self.max_btn.pack(side="right", fill="y")
         self.max_btn.bind("<Button-1>", lambda e: self.toggle_fullscreen())
-        self.min_btn = tk.Label(bar, text=self.glyphs["min"], bg=BG, fg=FG, font=capfont, padx=11)
+        self.min_btn = tk.Label(bar, text=self.glyphs["min"], bg=CAP, fg=FG, font=capfont, padx=11)
         self.min_btn.pack(side="right", fill="y")
         self.min_btn.bind("<Button-1>", lambda e: self.minimize())
+        for b in (self.max_btn, self.min_btn):
+            b.bind("<Enter>", lambda e, b=b: b.config(bg="#334155"))
+            b.bind("<Leave>", lambda e, b=b: b.config(bg=CAP))
+        # a line between the caption buttons and the pass controls: without it
+        # the minimise glyph reads as the minus of the pass count
+        tk.Frame(bar, bg="#334155", width=1).pack(side="right", fill="y", padx=(4, 6), pady=9)
 
         # plus and minus only choose a number; Set restarts the presenter at it,
         # so going from one pass to three is one restart rather than two
         self.set_btn = tk.Label(bar, text=" Set ", bg=BG, fg=DIM, font=("Segoe UI", 10, "bold"))
-        self.set_btn.pack(side="right", padx=(2, 10))
+        self.set_btn.pack(side="right", padx=(2, 4))
         self.set_btn.bind("<Button-1>", lambda e: self.apply_passes())
         self.plus = tk.Label(bar, text=" + ", bg=BG, fg=FG, font=("Segoe UI", 13, "bold"))
         self.plus.pack(side="right")
@@ -1346,7 +1386,7 @@ class Lens:
         self.minus = tk.Label(bar, text=" \u2212 ", bg=BG, fg=FG, font=("Segoe UI", 13, "bold"))
         self.minus.pack(side="right")
         self.minus.bind("<Button-1>", lambda e: self.bump_passes(-1))
-        for b in (self.plus, self.minus, self.set_btn, self.max_btn, self.min_btn):
+        for b in (self.plus, self.minus, self.set_btn):
             b.bind("<Enter>", lambda e, b=b: b.config(bg="#334155"))
             b.bind("<Leave>", lambda e, b=b: b.config(bg=BG))
 
@@ -1362,10 +1402,12 @@ class Lens:
             g.bind("<ButtonRelease-1>", self._grip_up)
             self.grips[side] = g
 
+        # everything that answers a click of its own keeps that click; the rest of
+        # the bar, the intensity readout included, drags the lens
         nodrag = (self.x_btn, self.max_btn, self.min_btn, self.menu_btn, self.plus, self.minus,
-                  self.set_btn)
+                  self.set_btn, self.prof_btn, self.style_btn)
         for wdg in (bar,) + tuple(bar.winfo_children()):
-            if wdg not in nodrag:
+            if wdg not in nodrag:               # the separator drags the lens like the bar
                 wdg.bind("<ButtonPress-1>", self.down)
                 wdg.bind("<B1-Motion>", self.move)
                 wdg.bind("<ButtonRelease-1>", self.up)
@@ -2157,20 +2199,99 @@ class Lens:
                 messagebox.showinfo("Neural Lens", "Could not read the releases page.\n\n%s"
                                     % (found if found is not None else "no release listed"))
             return
-        version, url = found
+        version, url = found[0], found[1]
+        asset = tuple(found[2:4]) if len(found) >= 4 else (None, None)
         try:
             with open(os.path.join(DATA_DIR, "update-check.txt"), "w") as f:
                 f.write("%d %s\n" % (int(time.time()), version))
         except OSError:
             pass
         if _version_tuple(version) > _version_tuple(__version__):
-            if messagebox.askyesno("Neural Lens", "Neural Lens %s is available; this is %s.\n\n"
-                                   "Open the release page? The installer there runs over this install."
-                                   % (version, __version__)):
-                import webbrowser
-                webbrowser.open(url)
+            self._offer_update(version, url, asset)
         elif not quiet:
             messagebox.showinfo("Neural Lens", "This is the latest version, %s." % __version__)
+
+    def _offer_update(self, version, url, asset):
+        """Say a newer version exists and ask what to do. Nothing happens on its
+        own, whichever switches are on."""
+        asset_url, asset_size = asset
+        text = "Neural Lens %s is available. This is %s.\n\n" % (version, __version__)
+        if self.auto_update_on and asset_url:
+            text += ("It can be downloaded and installed over this one now. The lens closes while "
+                     "the installer runs, and comes back on the new version.")
+            choices = ["Install it now", "Open the release page", "Not now"]
+        else:
+            text += "The release page has the installer, which runs over this install."
+            choices = ["Open the release page", "Not now"]
+        pick = self._ask("Neural Lens update", text, choices)
+        if pick == "Open the release page":
+            import webbrowser
+            webbrowser.open(url)
+        elif pick == "Install it now":
+            self._install_update(version, asset_url, asset_size)
+
+    def _install_update(self, version, asset_url, asset_size):
+        """Download the release's installer to the temp folder, check its size
+        against what the release lists, run it silently over this install, and
+        quit so it can replace the files. The lens is started again after."""
+        import tempfile
+        import urllib.request
+        dest = os.path.join(tempfile.gettempdir(), "NeuralLens-Setup-%s.exe" % version)
+        box = tk.Toplevel(self.root)
+        box.title("Neural Lens update")
+        box.attributes("-topmost", True)
+        box.configure(bg=BG)
+        box.resizable(False, False)
+        note = tk.Label(box, text="Downloading Neural Lens %s ..." % version, bg=BG, fg=FG,
+                        font=("Segoe UI", 10), width=48, anchor="w")
+        note.grid(row=0, column=0, padx=14, pady=14)
+        self._place_over_lens(box)
+        state = {"done": 0, "total": int(asset_size or 0), "error": None, "finished": False}
+
+        def work():
+            try:
+                req = urllib.request.Request(asset_url, headers={"User-Agent": "neural-lens/" + __version__})
+                with urllib.request.urlopen(req, timeout=30) as r, open(dest, "wb") as f:
+                    if not state["total"]:
+                        state["total"] = int(r.headers.get("Content-Length") or 0)
+                    while True:
+                        chunk = r.read(256 * 1024)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        state["done"] += len(chunk)
+                got = os.path.getsize(dest)
+                if state["total"] and got != state["total"]:
+                    raise IOError("the download is %d bytes where the release lists %d" % (got, state["total"]))
+            except Exception as exc:
+                state["error"] = exc
+            state["finished"] = True
+
+        threading.Thread(target=work, daemon=True).start()
+
+        def tick():
+            if self.closing:
+                return
+            if not state["finished"]:
+                if state["total"]:
+                    note.config(text="Downloading Neural Lens %s ... %d%%"
+                                % (version, min(100, 100 * state["done"] // state["total"])))
+                self.root.after(200, tick)
+                return
+            box.destroy()
+            if state["error"] is not None:
+                messagebox.showinfo("Neural Lens", "The download did not finish, so nothing was changed.\n\n%s"
+                                    % state["error"])
+                return
+            # the installer replaces the files once the lens is gone, and starts
+            # the new lens when it is done; its own start entry skips a silent run
+            exe = sys.executable if getattr(sys, "frozen", False) else None
+            again = (' && start "" "%s"' % exe) if exe else ""
+            subprocess.Popen('cmd /c ""%s" /SILENT /NORESTART /CLOSEAPPLICATIONS%s"' % (dest, again),
+                             creationflags=CREATE_NO_WINDOW)
+            self.quit()
+
+        tick()
 
     def check_updates_at_start(self):
         """Once a day at most, when the ini asks for it."""
@@ -2261,7 +2382,59 @@ class Lens:
         addon = {k: v for k, v in _read_addon_section().items() if k not in ADDON_KEEP}
         return {"width": cw, "height": ch, "x": x, "y": y, "fullscreen": bool(self.fullscreen),
                 "passes": self.passes, "cost_scaler": COST_SCALER, "ready": bool(self.ready),
-                "readout": self.readout, "latency": bool(self.latency_on), "addon": addon}
+                "readout": self.readout, "latency": bool(self.latency_on),
+                "title_size": bool(self.show_size), "title_style": bool(self.show_style),
+                "title_intensity": bool(self.show_intensity), "addon": addon}
+
+    def show_bar_mirrors(self):
+        """Put the Home menu's style and intensity on the bar, or take them off,
+        as Settings says, and read them once."""
+        for widget, on in ((self.style_btn, self.show_style), (self.intensity_lbl, self.show_intensity)):
+            if on:
+                widget.pack(side="left")
+            else:
+                widget.pack_forget()
+        self.mirror_addon()
+
+    def mirror_addon(self):
+        """The bar's copy of the Home menu's style and intensity, from the add-on's
+        section. Called once a second while either is shown."""
+        if not (self.show_style or self.show_intensity):
+            return
+        try:
+            a = _read_addon_section()
+        except Exception:
+            return
+        self.addon_seen = a
+        self.style_btn.config(text="▾ " + STYLE_NAMES.get(str(a.get("NRStyle", "0")).strip(), "Default"))
+        try:
+            self.intensity_lbl.config(text="intensity %.2f" % float(a.get("NRIntensity", "1")))
+        except ValueError:
+            self.intensity_lbl.config(text="intensity ?")
+
+    def style_menu(self):
+        cur = str(self.addon_seen.get("NRStyle", "0")).strip()
+        items = [("%s%s" % (name, "   ✓" if code == cur else ""), lambda c=code: self.set_style(c), True)
+                 for code, name in STYLE_NAMES.items()]
+        self.anchor_widget = self.style_btn
+        try:
+            self.popup.toggle(items)
+        finally:
+            self.anchor_widget = None
+
+    def set_style(self, code):
+        """Write the style into the add-on's section and restart the picture, which
+        is when the add-on reads it."""
+        if self.closing or self.rebuilding or self.rs is not None:
+            return
+        vals = _read_addon_section()
+        if str(vals.get("NRStyle", "0")).strip() == str(code):
+            return
+        vals["NRStyle"] = str(code)
+        _replace_addon_section(vals)
+        self.mirror_addon()
+        self.update_profile_label()
+        self.restart_presenter("NR style %s, restarting ..." % STYLE_NAMES.get(str(code), code))
 
     def profile_menu(self):
         names = sorted(self.profiles["profiles"], key=str.lower)
@@ -2364,6 +2537,13 @@ class Lens:
         self.latency_on = bool(p.get("latency", self.latency_on))
         self.latency_ms = None
         _save_ini("latency", None if self.latency_on else "0")
+        self.show_size = bool(p.get("title_size", self.show_size))
+        _save_ini("title_size", None if self.show_size else "0")
+        self.show_style = bool(p.get("title_style", self.show_style))
+        _save_ini("title_style", "1" if self.show_style else None)
+        self.show_intensity = bool(p.get("title_intensity", self.show_intensity))
+        _save_ini("title_intensity", "1" if self.show_intensity else None)
+        self.show_bar_mirrors()
         self.ready = bool(p.get("ready", self.ready))
         _save_ini("ready", "1" if self.ready else None)
         mode = p.get("cost_scaler", COST_SCALER)
@@ -2769,7 +2949,10 @@ class Lens:
         p = self.profiles["profiles"][name]
         same = (p.get("passes") == self.passes and p.get("cost_scaler") == COST_SCALER
                 and bool(p.get("ready")) == self.ready and p.get("readout") == self.readout
-                and bool(p.get("latency")) == self.latency_on and bool(p.get("fullscreen")) == self.fullscreen)
+                and bool(p.get("latency")) == self.latency_on and bool(p.get("fullscreen")) == self.fullscreen
+                and bool(p.get("title_size", True)) == bool(self.show_size)
+                and bool(p.get("title_style", False)) == bool(self.show_style)
+                and bool(p.get("title_intensity", False)) == bool(self.show_intensity))
         self.prof_btn.config(text="▾ %s%s" % (name, "" if same else "*"), fg=ACCENT if same else WARN)
 
     def bump_passes(self, step):
@@ -2802,16 +2985,17 @@ class Lens:
             # shows nothing new, the neural pass rests, and the delay of the last
             # new picture is history
             idle = shown is not None and shown < 0.5
-            parts = ["%d x %d" % (self.cw, self.ch)]
-            if self.readout == "detail":
+            parts = ["%d x %d" % (self.cw, self.ch)] if self.show_size else []
+            if self.readout in ("detail", "both"):
                 parts.append("%.0f in  %.0f out" % (self.pres_in, self.pres_out))
-            elif idle:
+            if idle and self.readout != "detail":
                 parts.append("idle")
-            elif self.readout == "fps" and shown is not None:
+            elif not idle and self.readout in ("fps", "both") and shown is not None:
                 parts.append("%.0f fps" % shown)
             if self.latency_on and self.latency_ms is not None and not idle:
-                parts.append("delay ~%.0f ms" % self.latency_ms)
+                parts.append("latency ~%.0f ms" % self.latency_ms)
             self.info.config(text="   ".join(parts), fg=DIM)
+        self.mirror_addon()
         self.root.after(1000, self.stats)
 
     def save_state(self):
@@ -3238,7 +3422,7 @@ class Lens:
                     except Exception:
                         pass
             x, y = self.inner()
-            mx, my, mw, mh = work_area(x + self.cw // 2, y + self.ch // 2)
+            mx, my, mw, mh = monitor_rect(x + self.cw // 2, y + self.ch // 2)
             x, y, cw, ch = mx, my + BAR, mw, mh - BAR
             note = "going fullscreen ..."
         else:
@@ -3321,116 +3505,262 @@ class Lens:
 
     # ---- settings
     def settings_dialog(self):
-        """Every setting the lens has, as a control with a plain explanation.
+        """Every setting the lens has, as a control with a plain explanation,
+        on six pages rather than one column: the picture, the title bar,
+        profiles, hotkeys, screenshots, and the program itself.
 
-        Nothing here requires editing the ini; the dialog writes it. A value
-        put back to its default is removed from the ini, so it follows the
-        default on the next machine rather than pinning this one's value.
-        The folders take effect at the next launch, so changing them restarts
-        the lens.
+        Each section explains itself before its controls. Nothing here
+        requires editing the ini; the dialog writes it. A value put back to its
+        default is removed from the ini, so it follows the default on the next
+        machine rather than pinning this one's value. The folders take effect
+        at the next launch, so changing them restarts the lens.
         """
         t = tk.Toplevel(self.root)
         t.title("Neural Lens settings")
         t.attributes("-topmost", True)
         t.configure(bg=BG)
         t.resizable(False, False)
-        row = [0]
 
-        def section(text):
-            tk.Label(t, text=text, bg=BG, fg=FG, font=("Segoe UI", 10, "bold")).grid(
-                row=row[0], column=0, columnspan=3, sticky="w", padx=12, pady=(14, 2))
-            row[0] += 1
+        # ttk draws the tabs, in the lens's colours; the pages are plain frames,
+        # so every control is the widget it was when the dialog was one column
+        style = ttk.Style(t)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure("Lens.TNotebook", background=BG, borderwidth=0, tabmargins=(8, 8, 8, 0))
+        style.configure("Lens.TNotebook.Tab", background="#1e293b", foreground=DIM, borderwidth=0,
+                        padding=(14, 6), font=("Segoe UI", 10))
+        style.map("Lens.TNotebook.Tab", background=[("selected", BG)], foreground=[("selected", FG)],
+                  expand=[("selected", (0, 0, 0, 0))])
+        nb = ttk.Notebook(t, style="Lens.TNotebook")
+        nb.grid(row=0, column=0, sticky="nsew", padx=8, pady=(8, 0))
 
-        def explain(text):
-            tk.Label(t, text=text, bg=BG, fg=DIM, justify="left", wraplength=560,
-                     font=("Segoe UI", 9)).grid(row=row[0], column=0, columnspan=3,
-                                                sticky="w", padx=12, pady=(0, 2))
-            row[0] += 1
+        def page(name):
+            p = tk.Frame(nb, bg=BG)
+            p.row = 0
+            p.columnconfigure(0, weight=1)
+            nb.add(p, text=name)
+            return p
 
-        def switch(text, var):
-            b = tk.Checkbutton(t, text=text, variable=var, bg=BG, fg=FG, selectcolor="#0b1220",
+        def heading(p, text):
+            tk.Label(p, text=text, bg=BG, fg=FG, font=("Segoe UI", 10, "bold")).grid(
+                row=p.row, column=0, columnspan=3, sticky="w", padx=12, pady=(14, 2))
+            p.row += 1
+
+        def explain(p, text):
+            tk.Label(p, text=text, bg=BG, fg=DIM, justify="left", wraplength=560,
+                     font=("Segoe UI", 9)).grid(row=p.row, column=0, columnspan=3,
+                                                sticky="w", padx=12, pady=(0, 4))
+            p.row += 1
+
+        def note(p, text):
+            """A short description under the switch it belongs to."""
+            tk.Label(p, text=text, bg=BG, fg=DIM, justify="left", wraplength=530,
+                     font=("Segoe UI", 9)).grid(row=p.row, column=0, columnspan=3,
+                                                sticky="w", padx=(34, 12), pady=(0, 8))
+            p.row += 1
+
+        def switch(p, text, var):
+            b = tk.Checkbutton(p, text=text, variable=var, bg=BG, fg=FG, selectcolor="#0b1220",
                                activebackground=BG, activeforeground=FG, disabledforeground=DIM,
                                font=("Segoe UI", 10))
-            b.grid(row=row[0], column=0, columnspan=3, sticky="w", padx=8, pady=(4, 0))
-            row[0] += 1
+            b.grid(row=p.row, column=0, columnspan=3, sticky="w", padx=8, pady=(2, 0))
+            p.row += 1
             return b
 
-        def radio(text, var, value):
-            tk.Radiobutton(t, text=text, variable=var, value=value, bg=BG, fg=FG,
+        def radio(p, text, var, value):
+            tk.Radiobutton(p, text=text, variable=var, value=value, bg=BG, fg=FG,
                            selectcolor="#0b1220", activebackground=BG, activeforeground=FG,
-                           font=("Segoe UI", 10)).grid(row=row[0], column=0, columnspan=3,
+                           font=("Segoe UI", 10)).grid(row=p.row, column=0, columnspan=3,
                                                        sticky="w", padx=8, pady=(2, 0))
-            row[0] += 1
+            p.row += 1
 
-        def folder(var, prompt):
-            tk.Entry(t, textvariable=var, width=58, bg="#0b1220", fg=FG,
+        def folder(p, var, prompt):
+            tk.Entry(p, textvariable=var, width=58, bg="#0b1220", fg=FG,
                      insertbackground=FG, relief="flat").grid(
-                row=row[0], column=0, columnspan=2, padx=(12, 6), pady=4, sticky="we")
+                row=p.row, column=0, columnspan=2, padx=(12, 6), pady=4, sticky="we")
 
             def browse():
                 d = filedialog.askdirectory(initialdir=var.get() or DATA_DIR, title=prompt)
                 if d:
                     var.set(os.path.normpath(d))
 
-            tk.Button(t, text="Browse", command=browse, relief="flat", bg="#334155",
-                      fg=FG).grid(row=row[0], column=2, padx=(0, 12), pady=4)
-            row[0] += 1
+            tk.Button(p, text="Browse", command=browse, relief="flat", bg="#334155",
+                      fg=FG).grid(row=p.row, column=2, padx=(0, 12), pady=4)
+            p.row += 1
 
-        # the console and the menu already name the version; a bug report is
-        # far more likely to be written with this dialog open than either
-        tk.Label(t, text="Neural Lens %s (beta)" % __version__, bg=BG, fg=DIM,
-                 font=("Segoe UI", 9)).grid(row=row[0], column=0, columnspan=3,
-                                            sticky="w", padx=12, pady=(10, 0))
-        row[0] += 1
+        def button(p, text, command):
+            tk.Button(p, text=text, command=command, relief="flat", bg="#334155",
+                      fg=FG).grid(row=p.row, column=0, sticky="w", padx=12, pady=(2, 2))
+            p.row += 1
 
-        # ---- screenshots
-        section("Where to save screenshots")
-        shots = tk.StringVar(value=SHOT_DIR)
-        folder(shots, "Where should screenshots go?")
-        clip = tk.BooleanVar(value=self.clip_shots)
-        switch("Also copy the joined before and after to the clipboard", clip)
-        explain("The side by side image goes onto the clipboard as well as into the folder, ready "
-                "to paste into a message or a document. Applies to the next screenshot.")
+        # ================================================================ picture
+        pic = page("Picture")
 
-        # ---- updates
-        section("Updates")
-        upd = tk.BooleanVar(value=self.check_updates_on)
-        switch("Check for a new version when the lens starts", upd)
-        explain("Asks GitHub for the newest release, at most once a day, and says so only when "
-                "there is one newer than this, %s. Nothing is downloaded or installed by itself: "
-                "the release page opens in the browser and the installer there is run like the "
-                "first one, over this install. Off, the lens never contacts anything. Check now "
-                "does the same once." % __version__)
-        tk.Button(t, text="Check now", command=lambda: self.check_updates(quiet=False), relief="flat",
-                  bg="#334155", fg=FG).grid(row=row[0], column=0, sticky="w", padx=12, pady=(2, 2))
-        row[0] += 1
+        heading(pic, "Ready mode")
+        explain(pic, "Over a non-moving background the lens rests, which lets the card run cooler and "
+                     "draw less power. The picture stays neurally rendered while it rests, so nothing "
+                     "is lost. Resting starts ten seconds after the last change and drops the lens to "
+                     "four presents a second. Waking from a rest can make the first frame after a "
+                     "pause arrive late, up to 150 ms on some cards. Ready mode never rests, holding "
+                     "thirty presents a second, at about 18 W more over a still. Leave it off unless "
+                     "the first frame after a pause looks like a stutter and you don't mind the card "
+                     "running hotter and drawing more power all the time.")
+        ready = tk.BooleanVar(value=self.ready)
+        switch(pic, "Ready mode, thirty presents a second while nothing changes", ready)
 
-        # ---- profiles: rename, delete, or save the current settings as one
-        section("Profiles")
-        explain("A profile is everything that makes the picture, under a name: the window's "
-                "place and size, fullscreen, the pass count, the Cost Scaler, the ready switch, what "
-                "the title bar shows, and every setting in the Home menu. The selector on the title "
-                "bar saves and switches them; the picture restarts when one is applied.")
+        heading(pic, "The Cost Scaler")
+        explain(pic, "DLSSNR-Cost-Scaler runs the neural model at a fraction of the picture's "
+                     "resolution and puts the result back at full size, which means fewer pixels for "
+                     "the model, a higher frame rate, and a slightly smaller change to the picture. "
+                     "Fullscreen at 6144x2560 it took one pass from 42 frames a second to 58 frames "
+                     "a second, and two passes from 26 to 54. The lens uses it only where the model's work would pass "
+                     "about 8 megapixels over all the passes, which a window reaches at 2560x1440 "
+                     "with three passes or 3840x2160 with two. Below that it would only add its own "
+                     "cost. Applies straight away.")
+        if COST_SCALER == "manual":
+            explain(pic, "cost_scaler = manual in neural-lens.ini leaves the Cost Scaler's own ini "
+                         "alone, so these two do nothing until that line goes.")
+        cs_full = tk.BooleanVar(value=COST_SCALER in ("fullscreen", "always"))
+        cs_always = tk.BooleanVar(value=COST_SCALER == "always")
+        cs_full_btn = switch(pic, "Use the Cost Scaler for a fullscreen lens", cs_full)
+        cs_always_btn = switch(pic, "Use the Cost Scaler for a windowed lens too", cs_always)
+        if COST_SCALER == "manual":
+            cs_full_btn.config(state="disabled")
+            cs_always_btn.config(state="disabled")
+
+        def follow_always(*_):
+            if cs_always.get():
+                cs_full.set(True)
+                cs_full_btn.config(state="disabled")
+            elif COST_SCALER != "manual":
+                cs_full_btn.config(state="normal")
+
+        cs_always.trace_add("write", follow_always)
+        follow_always()
+
+        # ================================================================ title bar
+        bar = page("Title bar")
+
+        heading(bar, "What to show on the title bar")
+        size_on = tk.BooleanVar(value=self.show_size)
+        switch(bar, "Current lens size", size_on)
+        note(bar, "The picture's width and height in pixels.")
+        fps_on = tk.BooleanVar(value=self.readout in ("fps", "both"))
+        switch(bar, "Frame rate", fps_on)
+        note(bar, "How many new pictures a second (fps) the content under the lens hands it, averaged "
+                  "over the last few seconds. A 30 frame a second video gives 30 fps, and the lens "
+                  "never limits it. When nothing is moving the bar says idle instead. The picture "
+                  "stays the neural rendering of the last frame, so idle means nothing new arrived, "
+                  "not that the rendering stopped.")
+        latency = tk.BooleanVar(value=self.latency_on)
+        switch(bar, "Latency", latency)
+        note(bar, "How far the lens runs behind what is under it, from the moment Windows composed a "
+                  "frame to the moment the lens showed it, plus a refresh and a half for the display. "
+                  "On a 120 Hz screen the floor is about 8 to 11 ms, so a reading near that is as low "
+                  "as it goes.")
+        style_on = tk.BooleanVar(value=self.show_style)
+        switch(bar, "NR style", style_on)
+        note(bar, "The Home menu's style, Default, Natural or Cinematic, as a picker. Picking one "
+                  "restarts the picture, because the add-on reads its settings only when it starts. "
+                  "A change made in the Home menu shows here within a second.")
+        inten_on = tk.BooleanVar(value=self.show_intensity)
+        switch(bar, "Overall intensity", inten_on)
+        note(bar, "The Home menu's intensity, shown only. A change made in the Home menu shows here "
+                  "within a second. Moving it lives in the Home menu, where the picture follows it "
+                  "live.")
+        explain(bar, "All of these apply straight away.")
+
+        # ================================================================ profiles
+        prof = page("Profiles")
+
+        heading(prof, "Profiles")
+        explain(prof, "A profile is everything that makes the picture, saved under a name. That is "
+                      "the window's place and size, fullscreen, the pass count, the Cost Scaler, the "
+                      "ready switch, what the title bar shows, and every setting in the Home menu. "
+                      "The selector on the title bar saves and switches them, and the picture "
+                      "restarts when one is applied. Here a profile is renamed or deleted, and the "
+                      "current settings can be saved under a name.")
         names = sorted(self.profiles["profiles"], key=str.lower)
-        plist = tk.Listbox(t, height=max(2, min(6, len(names))), bg="#0b1220", fg=FG, relief="flat",
+        plist = tk.Listbox(prof, height=max(3, min(8, len(names))), bg="#0b1220", fg=FG, relief="flat",
                            selectbackground="#334155", selectforeground=FG, exportselection=False,
                            font=("Segoe UI", 10), highlightthickness=0)
         for n in names:
             plist.insert("end", n)
-        plist.grid(row=row[0], column=0, columnspan=2, sticky="we", padx=12, pady=(2, 2))
+        plist.grid(row=prof.row, column=0, columnspan=2, sticky="we", padx=12, pady=(2, 2))
         pname = tk.StringVar(master=t, value="")
-        tk.Entry(t, textvariable=pname, width=24, bg="#0b1220", fg=FG, insertbackground=FG,
-                 relief="flat").grid(row=row[0], column=2, sticky="new", padx=(6, 12), pady=(2, 2))
-        row[0] += 1
+        tk.Entry(prof, textvariable=pname, width=24, bg="#0b1220", fg=FG, insertbackground=FG,
+                 relief="flat").grid(row=prof.row, column=2, sticky="new", padx=(6, 12), pady=(2, 2))
+        prof.row += 1
 
         def chosen():
             sel = plist.curselection()
             return plist.get(sel[0]) if sel else None
 
+        # what the chosen profile holds, the lens's own settings on the left and
+        # the Home menu's on the right, grouped the way the menu groups them
+        facts = tk.Frame(prof, bg=BG)
+        facts.grid(row=prof.row + 1, column=0, columnspan=3, sticky="we", padx=12, pady=(10, 4))
+
+        def fact_rows(p):
+            a = p.get("addon", {}) or {}
+
+            def val(key, names=None):
+                v = a.get(key)
+                if v is None:
+                    return "default"
+                if names is not None:
+                    return names.get(str(v).strip(), str(v))
+                return str(v)
+
+            onoff = {"0": "off", "1": "on"}
+            bar_parts = [x for x in (("size" if p.get("title_size", True) else ""),
+                                     {"fps": "frame rate", "detail": "in and out",
+                                      "both": "frame rate, in and out"}.get(p.get("readout"), ""),
+                                     ("latency" if p.get("latency") else ""),
+                                     ("NR style" if p.get("title_style") else ""),
+                                     ("intensity" if p.get("title_intensity") else "")) if x]
+            lens_rows = [("Passes", str(p.get("passes", ""))),
+                         ("Size", "%s x %s" % (p.get("width", "?"), p.get("height", "?"))),
+                         ("Place", "%s, %s" % (p.get("x", "?"), p.get("y", "?"))),
+                         ("Fullscreen", "yes" if p.get("fullscreen") else "no"),
+                         ("Ready mode", "on" if p.get("ready") else "off"),
+                         ("Cost Scaler", str(p.get("cost_scaler", ""))),
+                         ("Title bar", ", ".join(bar_parts) or "nothing")]
+            nr_rows = [("Neural Rendering", val("NeuralUplift", onoff)),
+                       ("NR style", val("NRStyle", {"0": "Default", "1": "Natural", "2": "Cinematic"})),
+                       ("Overall intensity", val("NRIntensity")),
+                       ("NR passes", val("NRPasses")),
+                       ("Chained temporal history", val("NRChainedHistory", onoff)),
+                       ("Codec", val("NRCodecMode", {"0": "Classic", "1": "Anchored"})),
+                       ("Global tone", val("NRGlobalTone")),
+                       ("Local tone", val("NRLocalTone")),
+                       ("Auto mask", val("NRAutoMask", onoff)),
+                       ("Upscaling", val("NREnableUpscaling", onoff))]
+            return lens_rows, nr_rows
+
+        def show_facts(name):
+            for c in facts.winfo_children():
+                c.destroy()
+            p = self.profiles["profiles"].get(name) if name else None
+            if p is None:
+                return
+            for col, (title, rows) in enumerate((("The lens", fact_rows(p)[0]),
+                                                 ("Neural Rendering, the Home menu", fact_rows(p)[1]))):
+                tk.Label(facts, text=title, bg=BG, fg=FG, font=("Segoe UI", 9, "bold")).grid(
+                    row=0, column=col * 2, columnspan=2, sticky="w", padx=(0, 24), pady=(0, 2))
+                for i, (k, v) in enumerate(rows):
+                    tk.Label(facts, text=k, bg=BG, fg=DIM, font=("Segoe UI", 9)).grid(
+                        row=i + 1, column=col * 2, sticky="w", padx=(0, 10))
+                    tk.Label(facts, text=v, bg=BG, fg=FG, font=("Segoe UI", 9), justify="left",
+                             wraplength=170).grid(row=i + 1, column=col * 2 + 1, sticky="w", padx=(0, 24))
+
         def on_pick(*_):
             n = chosen()
             if n:
                 pname.set(n)
+                show_facts(n)
 
         plist.bind("<<ListboxSelect>>", on_pick)
 
@@ -3438,6 +3768,7 @@ class Lens:
             plist.delete(0, "end")
             for n in sorted(self.profiles["profiles"], key=str.lower):
                 plist.insert("end", n)
+            show_facts(None)
 
         def rename():
             n = chosen()
@@ -3458,66 +3789,28 @@ class Lens:
                 self.profile_store(n)
                 refresh()
 
-        btns = tk.Frame(t, bg=BG)
-        btns.grid(row=row[0], column=0, columnspan=3, sticky="w", padx=12, pady=(0, 4))
+        btns = tk.Frame(prof, bg=BG)
+        btns.grid(row=prof.row, column=0, columnspan=3, sticky="w", padx=12, pady=(0, 4))
         for text, cmd in (("Rename to the name typed", rename), ("Delete", delete),
                           ("Save the current settings under the name typed", save_current)):
             tk.Button(btns, text=text, command=cmd, relief="flat", bg="#334155", fg=FG).pack(side="left", padx=(0, 6))
-        row[0] += 1
+        prof.row += 2
+        # the profile in use starts chosen, with its facts shown
+        if self.profile in self.profiles["profiles"]:
+            plist.selection_set(names.index(self.profile))
+            pname.set(self.profile)
+            show_facts(self.profile)
 
-        # ---- the Cost Scaler: fullscreen, always, or off, as two switches, the
-        # second of which keeps the first on
-        section("The Cost Scaler")
-        cs_full = tk.BooleanVar(value=COST_SCALER in ("fullscreen", "always"))
-        cs_always = tk.BooleanVar(value=COST_SCALER == "always")
-        cs_full_btn = switch("Use the Cost Scaler for a fullscreen lens", cs_full)
-        cs_always_btn = switch("Use the Cost Scaler for a windowed lens too", cs_always)
-        explain("DLSSNR-Cost-Scaler runs the neural model at a fraction of the picture's "
-                "resolution and puts the result back at full size: fewer pixels for the model, "
-                "a higher frame rate, and a slightly smaller change to the picture. Fullscreen at "
-                "6144x2560 it took one pass from 42 frames a second to 58 and two passes from 26 "
-                "to 54. The lens uses it only where the model's work would pass about 8 "
-                "megapixels over all the passes, which a window reaches at 2560x1440 with three "
-                "passes or 3840x2160 with two; below that it would only add its own cost. "
-                "Applies straight away.")
-        if COST_SCALER == "manual":
-            explain("cost_scaler = manual in neural-lens.ini leaves the Cost Scaler's own ini "
-                    "alone, so these two do nothing until that line goes.")
-            cs_full_btn.config(state="disabled")
-            cs_always_btn.config(state="disabled")
+        # ================================================================ hotkeys
+        hk = page("Hotkeys")
 
-        def follow_always(*_):
-            if cs_always.get():
-                cs_full.set(True)
-                cs_full_btn.config(state="disabled")
-            elif COST_SCALER != "manual":
-                cs_full_btn.config(state="normal")
-
-        cs_always.trace_add("write", follow_always)
-        follow_always()
-
-        # ---- while nothing changes: the wake cost against the power cost
-        section("While nothing changes")
-        ready = tk.BooleanVar(value=self.ready)
-        switch("Keep the picture ready while nothing changes", ready)
-        explain("Over a still the neural pass rests, and the first frame after a pause pays "
-                "for the card climbing out of its lowest clocks: measured on an RTX 4070 SUPER "
-                "at 120 Hz, a 1400x1000 lens at one pass, 62 ms after 12 seconds still, up to "
-                "151, against 17 while moving. For ten seconds after any new picture the lens "
-                "keeps presenting thirty times a second, so a pause in the middle of working "
-                "costs nothing; a longer pause costs that one late frame. This switch keeps "
-                "thirty a second throughout: the first frame after any pause takes about 21 ms, "
-                "and a still costs 58 W on that card in place of 40, with the machine idle at "
-                "14. Applies straight away.")
-
-        # ---- global hotkeys: a field per action that takes the next key pressed
-        section("Global hotkeys")
-        explain("A key combination that works from anywhere, whichever window has the keyboard. "
-                "Click a field and press the combination; Clear takes it away. A combination set "
-                "here is taken from every other program while the lens runs, so none is set until "
-                "you set it. Home, F5 and F6 on their own cannot be used: ReShade reads Home and F5 "
-                "and the add-on reads F6 from the keyboard, and taking them would silence the overlay, "
-                "its screenshot and the Neural Rendering toggle.")
+        heading(hk, "Global hotkeys")
+        explain(hk, "A key combination that works from anywhere, whichever window has the keyboard. "
+                    "Click a field and press the combination, and Clear takes it away. A combination "
+                    "set here is taken from every other program while the lens runs, so none is set "
+                    "until you set it. Home, F5 and F6 on their own cannot be used because ReShade "
+                    "reads Home and F5 and the add-on reads F6 from the keyboard, and taking them "
+                    "would silence the overlay, its screenshot and the Neural Rendering toggle.")
         hk_vars, hk_note = {}, {}
         failed = dict(self.hotkeys.failed)
 
@@ -3561,50 +3854,73 @@ class Lens:
         for action, label in HOTKEY_ACTIONS:
             var = tk.StringVar(master=t, value=HOTKEYS.get(action, ""))
             hk_vars[action] = var
-            tk.Label(t, text=label, bg=BG, fg=FG, font=("Segoe UI", 10)).grid(
-                row=row[0], column=0, sticky="w", padx=12, pady=(3, 0))
-            ent = tk.Entry(t, textvariable=var, width=18, bg="#0b1220", fg=FG, insertbackground=BG,
+            tk.Label(hk, text=label, bg=BG, fg=FG, font=("Segoe UI", 10)).grid(
+                row=hk.row, column=0, sticky="w", padx=12, pady=(3, 0))
+            ent = tk.Entry(hk, textvariable=var, width=18, bg="#0b1220", fg=FG, insertbackground=BG,
                            relief="flat", justify="center")
-            ent.grid(row=row[0], column=1, sticky="w", padx=(6, 6), pady=(3, 0))
+            ent.grid(row=hk.row, column=1, sticky="w", padx=(6, 6), pady=(3, 0))
             capture(action, var, ent)
-            fr = tk.Frame(t, bg=BG)
-            fr.grid(row=row[0], column=2, sticky="w", padx=(0, 12), pady=(3, 0))
+            fr = tk.Frame(hk, bg=BG)
+            fr.grid(row=hk.row, column=2, sticky="w", padx=(0, 12), pady=(3, 0))
             tk.Button(fr, text="Clear", command=lambda v=var, a=action: (v.set(""), hk_note[a].config(text="")),
                       relief="flat", bg="#334155", fg=FG).pack(side="left")
             hk_note[action] = tk.Label(fr, text=("in use by another program" if action in failed else ""),
                                        bg=BG, fg=WARN, font=("Segoe UI", 9))
             hk_note[action].pack(side="left", padx=(8, 0))
-            row[0] += 1
+            hk.row += 1
 
-        # ---- title bar
-        section("Title bar")
-        readout = tk.StringVar(value=self.readout)
-        radio("Only the size", readout, "size")
-        radio("The frame rate the content under the lens gives it", readout, "fps")
-        radio("Frames captured and new pictures shown, each per second", readout, "detail")
-        explain("What sits beside the size on the title bar. The frame rate counts the new "
-                "pictures a second the content under the lens hands it, averaged over the last "
-                "few seconds: a 30 frame a second video gives 30, and the lens never limits it. "
-                "Over content that is not changing the bar says idle whichever is chosen, since "
-                "the neural pass then rests. Applies straight away.")
-        latency = tk.BooleanVar(value=self.latency_on)
-        switch("Show the delay from capture to display", latency)
-        explain("How far the picture in the lens runs behind what is under it: from the moment "
-                "Windows composed a captured frame to the moment the lens presented it, plus a "
-                "refresh and a half for the composition and scanout after. Checked against a "
-                "window flipping black and white, it read 8 ms where the flip measured 8 at "
-                "120 Hz. Applies straight away.")
+        # ================================================================ screenshots
+        sh = page("Screenshots")
 
-        # ---- folders
-        section("Folders")
+        heading(sh, "Where to save screenshots")
+        explain(sh, "Each screenshot saves the picture under the lens, the lens's picture, and the "
+                    "two joined side by side, into this folder.")
+        shots = tk.StringVar(value=SHOT_DIR)
+        folder(sh, shots, "Where should screenshots go?")
+
+        heading(sh, "The clipboard")
+        explain(sh, "The side by side image goes onto the clipboard as well as into the folder, ready "
+                    "to paste into a message or a document. Applies to the next screenshot.")
+        clip = tk.BooleanVar(value=self.clip_shots)
+        switch(sh, "Also copy the joined before and after to the clipboard", clip)
+
+        # ================================================================ program
+        prog = page("Program")
+
+        heading(prog, "Updates")
+        explain(prog, "With the first switch on, the lens asks GitHub for the newest release when it "
+                      "starts, at most once a day, and says nothing unless there is one newer than "
+                      "this, %s. Then it asks, and opens the release page only if you say so. With "
+                      "the second switch on it offers to download that release's installer and run "
+                      "it over this install instead, again only if you say yes, and the lens comes "
+                      "back on the new version. Off, the lens never contacts anything. Check now "
+                      "asks once, straight away." % __version__)
+        upd = tk.BooleanVar(value=self.check_updates_on)
+        auto = tk.BooleanVar(value=self.auto_update_on)
+        upd_btn = switch(prog, "Check for a new version when the lens starts", upd)
+        switch(prog, "Offer to download and install it, after asking", auto)
+        button(prog, "Check now", lambda: self.check_updates(quiet=False))
+
+        def follow_auto(*_):
+            if auto.get():
+                upd.set(True)
+                upd_btn.config(state="disabled")
+            else:
+                upd_btn.config(state="normal")
+
+        auto.trace_add("write", follow_auto)
+        follow_auto()
+
+        heading(prog, "Folders")
+        explain(prog, "Both take effect at the next launch. Changing either restarts the lens.")
+        explain(prog, "The folder that holds the Neural Rendering stack and lens-presenter.exe.")
         stack = tk.StringVar(value=STACK_DIR or "")
-        explain("The folder that holds the Neural Rendering stack and lens-presenter.exe.")
-        folder(stack, "Where is the Neural Rendering stack?")
+        folder(prog, stack, "Where is the Neural Rendering stack?")
+        explain(prog, "Where the lens keeps its window state and archived logs.")
         data = tk.StringVar(value=DATA_DIR)
-        explain("Where the lens keeps its window state and archived logs.")
-        folder(data, "Where should the lens keep its state and logs?")
-        explain("Both take effect at the next launch. Changing either restarts the lens.")
+        folder(prog, data, "Where should the lens keep its state and logs?")
 
+        # ================================================================ footer
         def save():
             global SHOT_DIR
             restart = False
@@ -3620,14 +3936,32 @@ class Lens:
             if dd and dd != DATA_DIR:
                 _save_ini("data_dir", dd)
                 restart = True
-            r = readout.get()
+            # the in-and-out readout is the ini's alone, readout = detail, so a save
+            # here keeps it if it was set
+            detail = self.readout in ("detail", "both")
+            r = ("both" if detail and fps_on.get() else "detail" if detail
+                 else "fps" if fps_on.get() else "size")
             if r != self.readout:
                 self.readout = r
                 _save_ini("readout", None if r == "size" else r)
+            mirrors_changed = False
+            if bool(style_on.get()) != self.show_style:
+                self.show_style = bool(style_on.get())
+                _save_ini("title_style", "1" if self.show_style else None)
+                mirrors_changed = True
+            if bool(inten_on.get()) != self.show_intensity:
+                self.show_intensity = bool(inten_on.get())
+                _save_ini("title_intensity", "1" if self.show_intensity else None)
+                mirrors_changed = True
+            if mirrors_changed:
+                self.show_bar_mirrors()
             if bool(latency.get()) != self.latency_on:
                 self.latency_on = bool(latency.get())
                 self.latency_ms = None
                 _save_ini("latency", None if self.latency_on else "0")
+            if bool(size_on.get()) != self.show_size:
+                self.show_size = bool(size_on.get())
+                _save_ini("title_size", None if self.show_size else "0")
             if bool(ready.get()) != self.ready:
                 self.ready = bool(ready.get())
                 _save_ini("ready", "1" if self.ready else None)
@@ -3644,6 +3978,9 @@ class Lens:
             if bool(upd.get()) != self.check_updates_on:
                 self.check_updates_on = bool(upd.get())
                 _save_ini("check_updates", "1" if self.check_updates_on else None)
+            if bool(auto.get()) != self.auto_update_on:
+                self.auto_update_on = bool(auto.get())
+                _save_ini("auto_update", "1" if self.auto_update_on else None)
             self.update_info()              # the profile's name on the bar follows the settings
             t.destroy()
             if restart:
@@ -3654,12 +3991,58 @@ class Lens:
                     self.save_state()
                 self.quit(restart=True)
 
-        tk.Button(t, text="Save", command=save, relief="flat", bg=ACCENT,
-                  fg="#0b1220").grid(row=row[0], column=1, sticky="e", pady=(12, 12))
-        tk.Button(t, text="Cancel", command=t.destroy, relief="flat",
-                  bg="#334155", fg=FG).grid(row=row[0], column=2, sticky="w",
-                                            padx=(6, 12), pady=(12, 12))
+        # the version sits beside Save on every page: a bug report is far more
+        # likely to be written with this dialog open than with the console
+        foot = tk.Frame(t, bg=BG)
+        foot.grid(row=1, column=0, sticky="we", padx=8, pady=(6, 10))
+        foot.columnconfigure(0, weight=1)
+        tk.Label(foot, text="Neural Lens %s (beta)" % __version__, bg=BG, fg=DIM,
+                 font=("Segoe UI", 9)).grid(row=0, column=0, sticky="w", padx=12)
+        tk.Button(foot, text="Save", command=save, relief="flat", bg=ACCENT,
+                  fg="#0b1220").grid(row=0, column=1, sticky="e", padx=(0, 6))
+        tk.Button(foot, text="Cancel", command=t.destroy, relief="flat",
+                  bg="#334155", fg=FG).grid(row=0, column=2, sticky="w", padx=(0, 12))
+        self._place_over_lens(t)
 
+    def _place_over_lens(self, win):
+        """Put a dialog over the middle of the lens, kept inside that monitor's
+        work area, rather than wherever Tk would put it."""
+        win.update_idletasks()
+        w, h = win.winfo_reqwidth(), win.winfo_reqheight()
+        try:
+            x, y = self.inner()
+            cx, cy = x + self.cw // 2, y + self.ch // 2
+        except Exception:
+            cx, cy = win.winfo_screenwidth() // 2, win.winfo_screenheight() // 2
+        left, top = cx - w // 2, cy - h // 2
+        try:
+            l, t, ww, hh = tuple(work_area(cx, cy))[:4]
+            left = max(l, min(left, l + ww - w))
+            top = max(t, min(top, t + hh - h))
+        except Exception:
+            pass
+        win.geometry("+%d+%d" % (left, top))
+
+    def _ask(self, title, text, choices):
+        """A question with these buttons, the first one the accent. Returns the
+        one chosen, or None when the window is closed instead."""
+        d = tk.Toplevel(self.root)
+        d.title(title)
+        d.attributes("-topmost", True)
+        d.configure(bg=BG)
+        d.resizable(False, False)
+        tk.Label(d, text=text, bg=BG, fg=FG, justify="left", wraplength=460, font=("Segoe UI", 10)).grid(
+            row=0, column=0, columnspan=len(choices), sticky="w", padx=14, pady=(14, 12))
+        picked = []
+        for i, c in enumerate(choices):
+            tk.Button(d, text=c, command=lambda c=c: (picked.append(c), d.destroy()), relief="flat",
+                      bg=ACCENT if i == 0 else "#334155", fg="#0b1220" if i == 0 else FG).grid(
+                row=1, column=i, sticky="w", padx=(14 if i == 0 else 6, 14 if i == len(choices) - 1 else 0),
+                pady=(0, 14))
+        self._place_over_lens(d)
+        d.grab_set()
+        self.root.wait_window(d)
+        return picked[0] if picked else None
     def quit(self, restart=False):
         if self.closing:
             return
@@ -3889,16 +4272,16 @@ def main():
     # or larger than a lowered resolution leaves room for
     x, y, cw, ch = fit_rect(x, y, cw, ch)
     if FULLSCREEN:
-        # the work area of the monitor the windowed lens sits on, with the bar
-        # across its top and the picture filling the rest. The ReShade overlay
-        # opens at the picture's top left with its tabs along its top edge, so a
-        # picture that starts below the bar keeps them clear of it without the
-        # bar ever moving, and nothing of the lens shares its place with the
-        # taskbar, which is always on top as well. Starting below the bar, the
-        # picture never covers a monitor exactly, which would hand it to the
-        # compositor's fullscreen path and stop the bar being drawn. The pass
-        # count comes from the fullscreen lens's own file.
-        mx, my, mw, mh = work_area(x + cw // 2, y + ch // 2)
+        # the whole of the monitor the windowed lens sits on, the taskbar's place
+        # included, with the bar across its top and the picture filling the rest,
+        # so a fullscreen video behind the lens is covered to the bottom edge.
+        # The ReShade overlay opens at the picture's top left with its tabs along
+        # its top edge, so a picture that starts below the bar keeps them clear of
+        # it without the bar ever moving. Starting below the bar, the picture
+        # never covers a monitor exactly, which would hand it to the compositor's
+        # fullscreen path and stop the bar being drawn. The pass count comes from
+        # the fullscreen lens's own file.
+        mx, my, mw, mh = monitor_rect(x + cw // 2, y + ch // 2)
         x, y, cw, ch = mx, my + BAR, mw, mh - BAR
         if os.path.exists(FULL_STATE):
             try:

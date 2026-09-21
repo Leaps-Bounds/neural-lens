@@ -80,7 +80,7 @@ import urllib.request
 import winreg
 import zipfile
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 FROZEN = getattr(sys, "frozen", False)
 # Everything lives in the lens's own folder, the one the installer put it in or
@@ -153,6 +153,10 @@ HASHES = {
     "renodx-dlss5.zip": ["125506b22edd8e0d6f8117579fe2a516288440fc068a5310680065db5d027129"],
     "renodx-dlss5.addon64": ["a1b78052b58fc285f018362ac8652df8a01d31be9f3ecbb9e31776866ead5887"],
     "cost-scaler.zip": ["525cc45b00dcb1ba03ce6c25905ff02c3ff3458b5e90ebf4138b307f46e13095"],
+    # the Feed's zip is normally checked against the SHA-256 its release notes
+    # print; these are the ones verified by hand, for a release whose notes
+    # leave it out
+    "dlss5-feeder.zip": ["0d1deebf531436a6d0914548e450a790aefa53cb4e9f6dfdcd48aff74831cb21"],
     "cost-scaler.dll": ["975b0a063b32463a8812209810f338f3025b47b97d7cb621330c11a7d13898e8"],
 }
 # One Neural Rendering model serves every RTX card. The SF-v2 build was thought
@@ -286,6 +290,33 @@ def fetch_json(url):
                                                "Accept": "application/vnd.github+json"})
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read().decode("utf-8"))
+
+
+def feeder_hash_in_notes(notes, asset_name):
+    """The SHA-256 the Feed's release notes print for this zip, or None."""
+    m = re.search(r"SHA-256 of `?%s`?\s*:\s*`?([0-9A-Fa-f]{64})" % re.escape(asset_name), notes or "")
+    return m.group(1).lower() if m else None
+
+
+def verify_feeder_zip(path, asset_name, notes):
+    """Refuse a Feed zip unless its hash is the one its release notes print, or
+    one this file knows. Fake copies of the Feed are circulating, so a zip that
+    matches neither is removed and named, not installed."""
+    got = sha256(path).lower()
+    want = feeder_hash_in_notes(notes, asset_name)
+    if got == want or got in HASHES.get("dlss5-feeder.zip", []):
+        return path
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+    if want is None:
+        raise StackError("%s was not installed. Its release notes print no SHA-256 for it, and its hash "
+                         "is not one this program knows.\n  got  %s\nThe lens's next release will carry the "
+                         "hash once the zip is verified." % (asset_name, got))
+    raise StackError("%s was not installed. It does not match the SHA-256 its release notes print.\n"
+                     "  got    %s\n  notes  %s\nEither the download was tampered with or the release was "
+                     "replaced. Nothing was changed." % (asset_name, got, want))
 
 
 def check_hash(path, want, label):
@@ -630,6 +661,10 @@ class Install:
         self.record["components"]["feeder"] = rel.get("tag_name")
         z = fetch(asset["browser_download_url"], os.path.join(CACHE_DIR, asset["name"]), self.log,
                   "DLSS5-Feeder " + rel.get("tag_name", ""))
+        # the maintainer prints each zip's SHA-256 in the release notes, and fake
+        # copies of the Feed exist, so the zip must match that line or a hash
+        # this file knows before anything is taken out of it
+        verify_feeder_zip(z, asset["name"], rel.get("body"))
         with zipfile.ZipFile(z) as zf:
             names = zf.namelist()
             addon = next(n for n in names if n.lower().endswith("dlss5-feed.addon64"))

@@ -3,34 +3,69 @@
 Versions follow semantic versioning. While the major version is 0 the project is beta, and
 settings, the state file format and behaviour may change between releases.
 
-## Unreleased
+## 0.4.0, 2026-09-15
 
-- A switch in Settings copies the joined before and after to the clipboard each time a
-  screenshot is saved.
-- A check for updates in Settings, off by default: when the lens starts, at most once a day,
-  it asks GitHub for the newest release and says so only when there is a newer one, with the
-  release page a click away. Nothing is downloaded or installed by itself.
-- Global hotkeys, set in Settings, none by default: a combination per action that works from
-  anywhere, for a screenshot, a pass more or fewer, the A/B split, minimise, fullscreen, the
-  next profile, the ready switch and detaching. Home, F5 and F6 alone are refused, since
-  ReShade and the add-on read them from the keyboard.
-- Profiles: named sets of the window's place and size, fullscreen, the pass count, the Cost
-  Scaler rule, the ready switch, the title bar's readout and delay meter, and the add-on's
-  whole section of ReShade.ini, which is the Home menu. A selector on the title bar saves and
-  switches them, and Settings renames and deletes. Applying one rewrites the add-on's section
+Attach the lens to a window, profiles, global hotkeys, Settings on pages, and a quicker
+first frame after a pause.
+
+- **Attach the lens to a window, or to a region inside one.** Pick the entry from the menu
+  and click the window, or drag a rectangle over the part of it you want. The lens then
+  follows that window. It moves with it, restarts its picture when the window's size settles,
+  minimises and comes back with it, and closes when it closes. A region is kept as a share of
+  the window, so it scales with it. While attached, the lens is a thin click-through line
+  around the region with a small tab on its top edge that opens the menu, where Detach is,
+  and it sits one step above its window in the stacking order rather than above everything.
+- **Profiles.** A profile is everything that makes the picture, saved under a name. That is
+  the window's place and size, fullscreen, the pass count, the Cost Scaler rule, the ready
+  switch, what the title bar shows, and the add-on's whole section of ReShade.ini, which is
+  the Home menu. A selector on the title bar saves the current settings as a profile and
+  switches between them, and marks the name with a star once the lens no longer matches it.
+  Settings renames and deletes them. Applying a profile rewrites the add-on's section whole
   and restarts the picture.
-- Attach the lens to a window, or to a region inside one, and it follows: moves with the
-  window, restarts its picture when the window's size settles, minimises and closes with it,
-  and sits one step above it in the stacking order rather than above everything. While attached
-  the chrome is a click-through line around the region and a tab on its top edge that slides
-  along the edge and opens the menu.
-- The first frame after a pause is on time when the pause was short. Over a still the neural
-  pass rests and the card drops to its lowest clocks, and the first frame after that measured
-  62 ms on an RTX 4070 SUPER at 120 Hz, up to 151, against 17 while moving. The lens now keeps
-  presenting thirty times a second for ten seconds after any new picture, then four, so a pause
-  in the middle of working costs nothing and a long one costs one late frame. A switch in
-  Settings, While nothing changes, keeps thirty a second throughout: about 21 ms after any pause,
-  at 58 W over a still on that card in place of 40.
+- **Global hotkeys** are off until you set them on the Hotkeys page of Settings. Each action
+  can have a key combination that works from anywhere, for a screenshot, a pass more or
+  fewer, the A/B split, minimise, fullscreen, the next profile, the ready switch and
+  detaching. Home, F5 and F6 on their own are refused, since ReShade and the add-on read them
+  from the keyboard.
+- **Settings is six pages** rather than one column. They are Picture, Title bar, Profiles,
+  Hotkeys, Screenshots and Program, and on each page the explanation comes before the
+  controls it explains. The dialog opens over the middle of the lens. On the Profiles page,
+  choosing a profile shows what it holds, the lens's own settings and the Home menu's.
+- **The title bar's size can be turned off** like the rest of what it shows, and the delay
+  meter is now called what it measures, latency, with its floor on a 120 Hz screen stated in
+  Settings, about 8 to 11 ms. The frames-in-and-out readout leaves Settings and stays in the
+  ini as `readout = detail`, for anyone debugging a capture.
+- **The Home menu's NR style and overall intensity can sit on the title bar**, each with its
+  own switch on the Title bar page, off by default. Both follow the Home menu within a second
+  of a change there. The style is picked from the bar and restarts the picture, since the
+  add-on reads its settings only when it starts. The intensity is shown and not moved from
+  the bar, because a value worth adjusting needs the picture to follow it live, and only the
+  Home menu can do that today.
+- **The first frame after a pause.** Over a still the neural pass rests and the card drops to
+  its lowest clocks. Measured at 120 Hz with a 1400x1000 lens at one pass, an RTX 4070 SUPER
+  took 62 ms for the first frame after 12 seconds still, and up to 151 ms, against 17 ms
+  while moving. The lens now keeps presenting thirty times a second for ten seconds after any
+  new picture and then drops to four, so a pause in the middle of working costs nothing and a
+  longer one costs one late frame. Ready mode, on the Picture page of Settings, keeps
+  thirty a second throughout. On that card it brought the first frame after any pause to
+  about 21 ms and took a still from 40 W to 58 W. On an RTX 5090 the first frame after a 12
+  or 30 second pause took 10 ms with the switch off, so there is nothing for it to buy there.
+- **Screenshots to the clipboard.** A switch on the Screenshots page copies the joined before
+  and after to the clipboard each time a screenshot is saved.
+- **Check for updates** is on the Program page and off by default. With it on, the lens asks
+  GitHub for the newest release when it starts, at most once a day, and only says something
+  when there is a newer one, with the release page a click away. A second switch offers to
+  download that release's installer and run it over this install, and the lens comes back on
+  the new version. Nothing is downloaded or installed without a yes.
+- **The window buttons have a shade of their own** on the title bar, with a line between them
+  and the pass controls, so the minimise glyph no longer reads as the minus of the pass count.
+- **Fullscreen covers the whole monitor**, the taskbar's place included, where 0.3.0 stopped at
+  the taskbar's edge. A fullscreen video behind the lens is now covered to the bottom of the
+  screen.
+- **The Feed's download is checked.** Fake copies of DLSS5-Feeder are circulating, so the stack
+  setup now compares the zip it fetched with the SHA-256 the Feed's maintainer prints in each
+  release's notes, or with a hash verified by hand, and refuses anything that matches neither.
+  The other parts of the stack were already checked this way.
 
 ## 0.3.0, 2026-09-14
 

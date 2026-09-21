@@ -132,10 +132,10 @@ throughout. windows-capture numbers monitors from 1 in `EnumDisplayMonitors` ord
 ### The first frame after a rest
 
 Idling has a cost the 8 ms figure above does not show, since that was measured before the
-presenter idled: the first frame after a rest. Measured with `_harnesses/idle_wake_test.py` on
-an RTX 4070 SUPER with a 120 Hz display, a 1400x1000 presenter at one pass capturing a window
-that flips black and white and sits still between flips, flip to flip through the compositor
-both ways, nine flips a case:
+presenter idled. It is the first frame after a rest. It was measured with
+`_harnesses/idle_wake_test.py` on an RTX 4070 SUPER with a 120 Hz display, using a 1400x1000
+presenter at one pass capturing a window that flips black and white and sits still between
+flips, flip to flip through the compositor both ways, nine flips a case:
 
 ```
                                                        first frame after rest
@@ -146,13 +146,13 @@ idle, four a second, clocks free, 12 s still            65 ms median, up to 156
 idle, four a second, Neural Rendering off, 12 s still   62 ms median, up to 82
 ```
 
-Two causes, neither the neural pass. With the clock locked, a lone present after silence still
-reaches the screen 35 ms later than a frame in a stream, while the presenter's meter shows it
-presented within 2 ms of the capture: a sporadic present takes the compositor's slow path where
-a stream gets the fast one. With clocks free, the card drops to 210 MHz within a second of
-resting, and a flip that meets it at 225 to 675 MHz costs anything from 30 to 156 ms; locking
-the clock removed every outlier, and a sampler reading `nvidia-smi` at 10 Hz showed the clock at
-each flip tracking the delay.
+There are two causes, and neither is the neural pass. With the clock locked, a lone present
+after silence still reaches the screen 35 ms later than a frame in a stream, while the
+presenter's meter shows it presented within 2 ms of the capture. A sporadic present takes the
+compositor's slow path where a stream gets the fast one. With clocks free, the card drops to
+210 MHz within a second of resting, and a flip that meets it at 225 to 675 MHz costs anything
+from 30 to 156 ms. Locking the clock removed every outlier, and a sampler reading `nvidia-smi`
+at 10 Hz showed the clock at each flip tracking the delay.
 
 What a heartbeat buys, 12 seconds still, clocks free, GPU use and power over the quiet time:
 
@@ -165,24 +165,46 @@ the machine idle, no lens                                   0%    14 W
 ```
 
 So the presenter keeps thirty presents a second for ten seconds after any new picture and four
-after, and `ready` keeps thirty throughout. Verified on the same rig: a 5 second pause, inside
-the cooldown, 21 ms median; a 12 second pause 69 ms, 65 to 76, with the spikes gone since the
-clocks never fall as far; 12 seconds with `ready` 21 ms. The presenter's meter cannot see any of
-this, since it measures from the capture's composition to the present call, which is where the
-delay is not.
+after, and `ready` keeps thirty throughout. On the same rig a 5 second pause, inside the
+cooldown, gave 21 ms median, a 12 second pause gave 69 ms, 65 to 76, with the spikes gone since
+the clocks never fall as far, and 12 seconds with `ready` gave 21 ms. The presenter's meter
+cannot see any of this, since it measures from the capture's composition to the present call,
+which is where the delay is not.
+
+Measured again on an RTX 5090 with the same rig, a 6144x2560 display at 120 Hz, and the
+presenter as it now is, thirty a second for ten seconds after a change and four after, nine
+flips a case:
+
+```
+                                          first frame after rest
+1.2 s still                               10 ms median, 9 to 12; one flip of eleven at 200
+12 s still                                10 ms median; three flips of nine at 181 to 182
+30 s still                                13 ms median; four of nine at 180 to 222
+12 s still, heartbeat forced to 100 ms    10 ms median; one of nine at 217
+12 s still, ready, thirty throughout       9 ms median; one of nine at 198
+```
+
+On this card the first frame after a rest costs nothing beyond the stream's 10 ms, and the
+clock at the flip, 180 to 390 MHz after every long pause, made no difference to it. What the
+card has instead is a second mode near 200 ms. It is a fixed delay that a faster heartbeat did
+not shorten and `ready` did not remove, it appeared once even at 1.2 s pauses, and the
+presenter's meter never saw it, reading 1 to 8 ms on those flips as on the others. It happens
+after the present, in the compositor, the driver or the display path, and it grows more likely
+the longer the whole machine has been quiet. So `ready` buys nothing on this card, and the
+outlier is not the lens's to fix.
 
 ## Global hotkeys
 
 RegisterHotKey delivers WM_HOTKEY to the registering thread's queue, and Tk's loop never
 hands that message out, so the combinations are registered on a thread of the lens's own
 with a message queue, which waits on MsgWaitForMultipleObjectsEx and drains with
-PeekMessage; the actions go through a queue the lens reads on a 50 ms timer, so they run on
+PeekMessage. The actions go through a queue the lens reads on a 50 ms timer, so they run on
 the Tk thread. A registered combination is taken from every other program, which is why none
 is set by default, and a combination another program already holds fails to register and is
-named as such in Settings. Home, F5 and F6 alone are refused: ReShade reads Home and F5 from
-the presenter's own messages and the add-on reads F6 with GetAsyncKeyState, and a hotkey on
-them would take the key before either saw it. Injected input fires them, which is how
-`_harnesses/hotkeys_test.py` checks them with the desktop holding the keyboard.
+named as such in Settings. Home, F5 and F6 alone are refused because ReShade reads Home and
+F5 from the presenter's own messages and the add-on reads F6 with GetAsyncKeyState, and a
+hotkey on them would take the key before either saw it. Injected input fires them, which is
+how `_harnesses/hotkeys_test.py` checks them with the desktop holding the keyboard.
 
 ## Profiles
 
@@ -196,29 +218,43 @@ The name on the bar compares the pass count, the Cost Scaler rule, ready, the re
 delay meter and fullscreen against the profile, not the add-on's section, since reading the
 file on every tick is not worth it. Verified with `_harnesses/profiles_test.py`.
 
+A control on the title bar that answers a click of its own has to be named in the bar's
+`nodrag` list, because the bar binds the drag handlers to every other child after it is
+built and a later bind on the same event replaces the earlier one. The profile selector and
+the style picker both lost their click that way, and `profiles_test.py` did not see it
+because it called the method. `_harnesses/style_probe.py` clicks both with real mouse input.
+
+The add-on reads its section when its process starts and not again, for intensity as for
+passes. Measured with `_harnesses/intensity_live_probe.py` on the RTX 5090 computer over the
+still, the picture at NRIntensity 1.00: writing 0.05 into the ini and waiting five seconds
+changed the lens's picture by 0.40 of 255 mean, the noise between two frames of a still, and
+the same value after a restart changed it by 1.47. So a control on the lens can show the Home
+menu's values live, since the add-on writes them within a second, but can only set them by
+restarting the picture. The Home menu itself is the live path.
+
 ## Attached to a window
 
 The lens can attach to another window, or to a region inside it, and follow it. The target's
 client area comes from GetClientRect and ClientToScreen, a region is kept as fractions of it,
 and the result is clipped to the monitor it is mostly on, since the presenter captures one
-monitor. A follower on a 50 ms timer reads that rectangle: a move relays the chrome and the
-picture without a restart; a new size restarts the picture once it has held for half a second,
-since a resize arrives as many sizes; a minimised target minimises the lens and a restored
-one restores it; a target that is gone closes the lens.
+monitor. A follower on a 50 ms timer reads that rectangle. A move relays the chrome and the
+picture without a restart. A new size restarts the picture once it has held for half a second,
+since a resize arrives as many sizes. A minimised target minimises the lens and a restored one
+restores it, and a target that is gone closes the lens.
 
 The chrome while attached is the two pixel line around the region, made click-through with
-WS_EX_TRANSPARENT, since it lies exactly on the target's own edges, and a tab of 28 by 14 on
-the top edge, the only part that takes the mouse: a drag slides it along the edge, a click
-opens the menu. The lens is not topmost while attached. It sits one step above the target:
-each window is inserted after the window above the target, or at HWND_TOP when that window is
-itself topmost, since inserting after a topmost window would make the lens topmost too, and
-the follower restacks whenever the window above the target is not the picture. So a window
-brought over the target covers the lens, and the target brought forward, by a real click, brings
-the lens with it. Verified with `_harnesses/attach_test.py` and `attach_pick_test.py`: 21 and 9
-checks, the follower through the lens's own methods and the pick through real mouse and
-keyboard input. SetForegroundWindow from another process is refused by Windows, which one
-version of the test mistook for a stacking failure, and an odd client height loses one row,
-since the picture keeps even sizes.
+WS_EX_TRANSPARENT since it lies exactly on the target's own edges, and a tab of 28 by 14 on
+the top edge, the only part that takes the mouse. A drag slides the tab along the edge and a
+click opens the menu. The lens is not topmost while attached. It sits one step above the
+target. Each window is inserted after the window above the target, or at HWND_TOP when that
+window is itself topmost, since inserting after a topmost window would make the lens topmost
+too, and the follower restacks whenever the window above the target is not the picture. So a
+window brought over the target covers the lens, and the target brought forward, by a real
+click, brings the lens with it. This is verified with `_harnesses/attach_test.py` and
+`attach_pick_test.py`, 21 and 9 checks, the follower through the lens's own methods and the
+pick through real mouse and keyboard input. SetForegroundWindow from another process is
+refused by Windows, which one version of the test mistook for a stacking failure, and an odd
+client height loses one row, since the picture keeps even sizes.
 
 ## Capture under the lens's own windows
 
@@ -448,14 +484,14 @@ batch file inside a directory whose name contains a space.
 
 ### A zoom
 
-Measured with `_harnesses/zoom_probe.py` on the RTX 4070 SUPER, a 1400x1000 presenter at one
-pass over a page of text, edge detail as the variance of a Laplacian and the partial ink
-fraction as the share of pixels between 40 and 160 of 255: at the page's own size Neural
-Rendering took edge detail from 12035 to 2516 and partial ink from 0.034 to 0.066, and over
-the page's centre enlarged two times, bilinear, from 653 to 402 and 0.083 to 0.091. On text
-the model softens, and on enlarged pixels it softens what was already soft; it recovers
-nothing. A zoom would enlarge pixels for the model to soften, which Windows Magnifier does
-without the GPU, so none is built.
+This was measured with `_harnesses/zoom_probe.py` on the RTX 4070 SUPER, with a 1400x1000
+presenter at one pass over a page of text, taking edge detail as the variance of a Laplacian
+and the partial ink fraction as the share of pixels between 40 and 160 of 255. At the page's
+own size Neural Rendering took edge detail from 12035 to 2516 and partial ink from 0.034 to
+0.066, and over the page's centre enlarged two times, bilinear, it went from 653 to 402 and
+0.083 to 0.091. On text the model softens, and on enlarged pixels it softens what was already
+soft. It recovers nothing. A zoom would enlarge pixels for the model to soften, which Windows
+Magnifier does without the GPU, so none is built.
 
 ### mpv as the host
 
@@ -602,9 +638,21 @@ instead, measuring 12.7/255 on plain text.
 The joined screenshot goes onto the clipboard from the presenter, which holds the pixels, as
 a 32 bit bottom up CF_DIB in moveable global memory the system owns once SetClipboardData
 takes it. The update check reads the releases list rather than the latest release, since
-GitHub's latest excludes prereleases and every release so far is one; it runs on a thread and
+GitHub's latest excludes prereleases and every release so far is one. It runs on a thread and
 answers on the Tk thread, and a quiet check records the time in `update-check.txt` in the data
 folder so the start check waits a day.
+
+### A locked workstation
+
+Windows lets nothing capture the lock screen. With the workstation locked, the monitor
+capture delivered 2 frames while a window flashed 40 times, a screen grab returned the lock
+screen's blue, the presenter saw no frame for 4 seconds, declared the capture lost and
+started again, and every check that depends on frames failed, 25 of them in a suite that had
+passed 118 of 118 the evening before with nothing in the lens changed. The state to check
+before any run is `LogonUI.exe`, which runs only while the lock screen is up. The same
+morning the display API also reported advanced colour on, and that was taken for the cause
+until HDR off changed nothing. What HDR does to the capture is still unmeasured; the tool
+that reads and sets it is a DisplayConfig call and needs no elevation.
 
 ### The taskbar button is the tk root
 
@@ -697,12 +745,15 @@ to 200 percent.
   plus a title bar plus a border, so over a whole monitor it was 3844x2194 on a 3840x2160 display.
   It existed, was visible and topmost, and drew nothing. Fullscreen the chrome is therefore just the
   bar.
-- **The picture fills the work area below the bar.** The ReShade overlay opens at the picture's top
+- **The picture fills the monitor below the bar.** The ReShade overlay opens at the picture's top
   left with its tabs along its top edge, so a bar laid over the picture would cover them, and with
-  the picture below the bar nothing has to move for tweak mode. The work area rather than the whole
-  monitor keeps the lens clear of the taskbar, which is always on top as well. Measured over flat
-  grey on a 6144x2560 monitor at 125 percent, the picture was 6144x2466 at (0,34) and the open
-  overlay lay wholly below the bar and above the taskbar.
+  the picture below the bar nothing has to move for tweak mode. 0.3.0 stopped at the work area to
+  stay clear of the taskbar, which is always on top as well, and that left the bottom of a
+  fullscreen video uncovered once the video had hidden the taskbar, so 0.4.0 takes the whole
+  monitor. The lens is topmost and comes back within a fifth of a second when something covers it,
+  so the taskbar sits under it while the lens is fullscreen, and the lens's own bar holds minimise
+  and restore. Measured over flat grey on a 6144x2560 monitor at 125 percent, the picture is
+  6144x2526 at (0,34).
 - **A borderless window that covers a monitor exactly is taken over by the compositor's fullscreen
   path**, and a title bar on top of it stops being drawn. A picture that starts below the bar never
   covers its monitor exactly.

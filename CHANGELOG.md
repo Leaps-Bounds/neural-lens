@@ -3,7 +3,7 @@
 Versions follow semantic versioning. While the major version is 0 the project is beta, and
 settings, the state file format and behaviour may change between releases.
 
-## Unreleased
+## 0.5.0, 2026-09-21
 
 - **Themes.** The Look page of Settings picks the colours of the title bar, the menus and the
   dialog. Slate is the lens as it always looked, and Graphite, Paper and Industrial come with

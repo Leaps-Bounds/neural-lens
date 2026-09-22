@@ -1,12 +1,20 @@
 # DLSS 5 Neural Lens
 
-**Beta, version 0.3.0.** See [CHANGELOG.md](CHANGELOG.md). While the version starts with 0,
+**Beta, version 0.5.0.** See [CHANGELOG.md](CHANGELOG.md). While the version starts with 0,
 settings, the state file format and behaviour may change between releases.
 
 A floating see-through window for Windows. Drag it over anything on your desktop and the
 content underneath appears inside it with **NVIDIA DLSS Neural Rendering** applied, live. The
 mouse passes straight through the viewport, so you can keep using whatever is beneath it, much
 like the Windows Magnifier lens.
+
+![Blender's viewport with a game character, as Blender draws it](docs/images/blender-before.png)
+
+![The same viewport with one Neural Rendering pass applied by the lens](docs/images/blender-after.png)
+
+*Blender 5.2 under the lens in fullscreen, before and after one pass. Model: [Dark Knight, Female
+Character](https://www.fab.com/listings/5be9349e-acb1-4a0b-8811-9e999e036755) by Hawtor Studio,
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*
 
 The point of it is that Neural Rendering normally exists only inside an application that
 integrates DLSS. This puts it on anything that can be drawn on your screen: a browser, a video,
@@ -22,6 +30,8 @@ applied with Set, and its picture runs about one refresh behind the screen.
   path uses Windows.Graphics.Capture. It has only ever been tested here on Windows 11 25H2.
 - An NVIDIA RTX card with a driver new enough for DLSS Neural Rendering. The setup reads the
   compute capability from `nvidia-smi` and stops below 7.5, which is the RTX 20 series and newer.
+  This release was tested with NVIDIA driver 616.56 on Windows 11 25H2, and the driver a
+  release was tested with is named in its release notes.
 - Room on disk for about 400 MB once the stack is in place, of which about 150 MB is downloaded
   during installation.
 
@@ -431,13 +441,10 @@ off windowed, where the neural pass is rarely what limits the frame rate.
 - **An attached lens shows whatever is on screen in its region.** It captures the monitor, not
   the window, so while another window covers part of the target that part of the lens shows the
   covering window, until the target is brought forward again.
-- **HDR content has not been measured.** The presenter captures 8 bit frames and presents them
+- **HDR content is not yet tested.** The presenter captures 8 bit frames and presents them
   in an 8 bit window in the standard colour space, so what the lens shows over HDR content is
   whatever Windows hands an 8 bit capture of it. A 10 bit swapchain exists behind
   `LENS_PRESENTER_10BIT` for that measurement, which has not been made.
-- **A locked workstation gives the lens nothing.** Windows lets nothing capture the lock
-  screen, so a lens left running while the computer is locked reports the capture lost and
-  starts again every few seconds until the desktop is back. That is Windows, not a fault.
 
 ## Troubleshooting
 

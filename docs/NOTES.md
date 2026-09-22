@@ -642,18 +642,6 @@ GitHub's latest excludes prereleases and every release so far is one. It runs on
 answers on the Tk thread, and a quiet check records the time in `update-check.txt` in the data
 folder so the start check waits a day.
 
-### A locked workstation
-
-Windows lets nothing capture the lock screen. With the workstation locked, the monitor
-capture delivered 2 frames while a window flashed 40 times, a screen grab returned the lock
-screen's blue, the presenter saw no frame for 4 seconds, declared the capture lost and
-started again, and every check that depends on frames failed, 25 of them in a suite that had
-passed 118 of 118 the evening before with nothing in the lens changed. The state to check
-before any run is `LogonUI.exe`, which runs only while the lock screen is up. The same
-morning the display API also reported advanced colour on, and that was taken for the cause
-until HDR off changed nothing. What HDR does to the capture is still unmeasured; the tool
-that reads and sets it is a DisplayConfig call and needs no elevation.
-
 ### The taskbar button is the tk root
 
 The title bar is an override redirect window that never activates, so the mouse reaches the
@@ -965,13 +953,20 @@ touching the program. A theme takes effect at the next launch because the colour
 the widgets when they are built; choosing one in Settings restarts the lens, as the folders do.
 The picture is never touched: the presenter draws nothing but the picture.
 
-## Folded
+## The title bar hidden
 
-Folding reuses the attached chrome, the two pixel line and the tab, without the follower. The
-picture does not move or restart, since only the chrome changes. The tab drags the whole lens by
-running the bar drag handlers, and a click without movement opens the menu. The tab has to be
-re-raised every time the picture is, since both are topmost and the picture is put back on top
-whenever something covers it; `raise_chrome` does that, which is what the first fold probe
-found missing when a real click on the tab reached the picture instead. Fullscreen, the chrome
-shrinks to two pixels in the corner, since a layered window the size of the screen comes up
-blank, and the tab alone stays. Verified with `_harnesses/fold_probe.py`.
+Hiding the title bar reuses the attached chrome, the two pixel line and the tab, without the
+follower. The picture does not move or restart, since only the chrome changes. The tab drags the
+whole lens by running the bar drag handlers, a click without movement opens the menu, and the
+right button slides the tab along the edge. The tab has to be re-raised every time the picture
+is, since both are topmost and the picture is put back on top whenever something covers it;
+`raise_chrome` does that, which the first probe found missing when a real click on the tab
+reached the picture instead. Fullscreen, the chrome shrinks to two pixels in the corner, since a
+layered window the size of the screen comes up blank, and the tab alone stays. In the code this
+state is called folded. Verified with `_harnesses/fold_probe.py`.
+
+## Upstream versions and what was measured against them
+
+On 2026-09-21 the projects the stack draws on stood at ReShade 6.8.0, DLSSNR-Cost-Scaler 1.0.6, DLSS5-Feeder v1.16.0-beta.6 and RenoDX DLSS 5 6.5.3, and the RHI manifest still named 310.8.SF-v2 as the newest Neural Rendering model. The Feed at beta.6 is what the 0.4.0 installer fetched, since the stack takes the newest full release and checks the zip against the SHA-256 the maintainer prints, and the whole suite passed on it, 118 of 118. RenoDX 6.5.3, and 6.4.1 before it, carry no release notes; against 5.2.1 the add-on gains eighteen section keys, per pass colour, intensity and transfer among them, and loses NRAdaptiveExposure and NRDiffuseWhite, with the keys the lens reads unchanged. It also migrates the section from schema v2 to v6 in memory, backing the ini up beside itself. Run in the presenter, 6.5.3 loads, pre-loads the NR runtime, installs its queue completion tracker on the D3D12 command queue, and the process then dies with 0xC0000005 before any feature is created, in twenty seconds of the pattern source, where 5.2.1 in the same stack builds the feature and evaluates it. So the stack stays pinned to 5.2.1 by hash. Measured with `_harnesses/shot_probe.py` and a presenter run on its own. The crash leaves no Windows error event, but the Feed writes a minidump beside itself, dlss5-feed-crash.dmp, and it shows the fault: an access violation reading 0xEB9A4188, a 32 bit value where a pointer belongs, inside nvoglv64.dll, the NVIDIA Vulkan driver, on the presenter's main thread, with renodx-dlss5.addon64 and ReShade's Vulkan hooks above it on the stack. So 6.5.3 hands the driver a bad handle from inside ReShade's hook before the feature exists, and no ini setting is involved.
+
+ShortFuse's own renodx-dlss add-on, which is not on GitHub, hooks D3D11 and D3D12 only as of its 2026-09-17 build, so it does nothing on the Vulkan presenter and is not a swap for renodx-dlss5.

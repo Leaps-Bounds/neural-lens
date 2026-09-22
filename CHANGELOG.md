@@ -3,6 +3,19 @@
 Versions follow semantic versioning. While the major version is 0 the project is beta, and
 settings, the state file format and behaviour may change between releases.
 
+## Unreleased
+
+- **Themes.** The Look page of Settings picks the colours of the title bar, the menus and the
+  dialog. Slate is the lens as it always looked, and Graphite, Paper and Industrial come with
+  it. A themes.json in the data folder adds themes of your own, one per name, with the same
+  keys as the built-in ones. The picture is never touched. A theme takes effect at the next
+  launch, so choosing one restarts the lens.
+- **Fold the title bar away.** From the menu, the title bar and frame fold into the small tab
+  on the picture's top edge, the one an attached lens has. The picture stays exactly where it
+  is and nothing restarts. The tab drags the lens and opens the menu, where Unfold is.
+  Fullscreen, folding leaves only the tab, so a fullscreen video behind the lens is covered to
+  the top edge as well.
+
 ## 0.4.0, 2026-09-15
 
 Attach the lens to a window, profiles, global hotkeys, Settings on pages, and a quicker

@@ -51,3 +51,8 @@
 # opens the way it was left. The pass count for fullscreen is kept apart from
 # the windowed one.
 # fullscreen = 0
+
+# The colours of the title bar, the menus and the Settings dialog. Slate is the
+# lens as it always looked; Graphite, Paper and Industrial come with it, and a
+# themes.json in the data folder adds more. Takes effect at the next launch.
+# theme = Slate

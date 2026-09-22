@@ -953,3 +953,25 @@ different case or an older build. VORT is fetched as well and can be chosen inst
 measured best of all, but its licence requires its author's explicit permission to use it as
 part of another project, so it is not fetched. qUINT is all rights reserved and no longer ships
 a motion shader.
+
+## Themes
+
+Every colour the lens draws comes from one table, `THEMES` in neural_lens.py, resolved once at
+start into the constants the rest of the file always used, BG, FG, ACCENT, DIM, WARN, CAP and the
+four that used to be literals, HOVER, FIELD, TAB_BG and CLOSE. The chosen theme is `theme` in the
+ini, and `themes.json` in the data folder is laid over the table, a theme there with a built-in
+name replacing it and a theme missing keys taking them from Slate, so a theme can be made without
+touching the program. A theme takes effect at the next launch because the colours are baked into
+the widgets when they are built; choosing one in Settings restarts the lens, as the folders do.
+The picture is never touched: the presenter draws nothing but the picture.
+
+## Folded
+
+Folding reuses the attached chrome, the two pixel line and the tab, without the follower. The
+picture does not move or restart, since only the chrome changes. The tab drags the whole lens by
+running the bar drag handlers, and a click without movement opens the menu. The tab has to be
+re-raised every time the picture is, since both are topmost and the picture is put back on top
+whenever something covers it; `raise_chrome` does that, which is what the first fold probe
+found missing when a real click on the tab reached the picture instead. Fullscreen, the chrome
+shrinks to two pixels in the corner, since a layered window the size of the screen comes up
+blank, and the tab alone stays. Verified with `_harnesses/fold_probe.py`.

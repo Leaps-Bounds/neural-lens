@@ -223,8 +223,10 @@ every card.
   and bottom corners, the way any window is resized, and the title bar shows the size as you go.
   Let go and the picture restarts at the new size, which takes a second or two; see
   [Limits](#limits) for why.
-- **Settings** in the menu is six pages, Picture, Title bar, Profiles, Hotkeys, Screenshots and
-  Program, each setting with its explanation above it. It opens over the middle of the lens
+- **Settings** in the menu is seven pages, Picture, Title bar, Profiles, Hotkeys, Screenshots,
+  Look and Program, each setting with its explanation above it. Look picks a theme for the
+  title bar, the menus and the dialog, four come with the lens, and a `themes.json` in the
+  data folder adds your own. It opens over the middle of the lens
   and writes `neural-lens.ini`, so nothing needs editing by hand.
 - **Profiles** keep everything that makes the picture under a name. That is the window's
   place and size, fullscreen, the pass count, the Cost Scaler rule, the ready switch, what the
@@ -256,6 +258,10 @@ every card.
   set to stay on top has left it underneath. The button's Close window closes the lens. A
   maximised or full screen window, which Windows puts above everything when it becomes the
   foreground, is handled on its own: the lens notices and comes back within a fifth of a second.
+- **Fold the title bar away** from the menu when the settings are where you want them and the
+  bar is in the way. The bar and frame fold into the small tab on the picture's top edge, the
+  picture stays exactly where it is, and nothing restarts. The tab drags the lens and opens the
+  menu, where Unfold is. Fullscreen, folding leaves only the tab.
 - **Fullscreen** is the maximise button. The lens fills the whole of the monitor it is on, the
   taskbar's place included, with the title bar across the top and the picture below it, and
   cannot be dragged or resized. A fullscreen video behind it is covered to the bottom edge. Going fullscreen or back restarts the picture, like a resize, and the windowed

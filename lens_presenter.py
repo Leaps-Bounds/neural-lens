@@ -84,7 +84,7 @@ import glfw
 import vulkan as vk
 from windows_capture import WindowsCapture
 
-__version__ = "0.4.0"        # named in the ready line, so a log says which presenter ran
+__version__ = "0.5.0"        # named in the ready line, so a log says which presenter ran
 
 
 def main():

@@ -576,7 +576,7 @@ def _write_proxy(enabled, scale):
 # process's id, so two lenses at once, one per monitor say, never pick up each
 # other's presenter.
 TITLE = "LensNR %d" % os.getpid()
-__version__ = "0.4.0"        # beta; see CHANGELOG.md
+__version__ = "0.5.0"        # beta; see CHANGELOG.md
 
 DATA_DIR = (os.environ.get("NEURAL_LENS_DATA") or _INI.get("data_dir")
             or os.path.join(_script_dir(), "data"))
@@ -628,9 +628,56 @@ TAB_W, TAB_H = 28, 14
 ATTACH_SETTLE = 0.5          # seconds a target's new size must hold before the picture restarts
 DIVIDER = 14                 # grab width of the A/B divider; the line drawn is 4
 KEY_HOLD = 350               # ms a posted key stays down, longer than any frame
-KEY, BG, FG, ACCENT = "#010203", "#1b2430", "#cbd5e1", "#4ade80"
-DIM, WARN = "#64748b", "#fbbf24"
-CAP = "#243040"          # the window buttons' own shade on the title bar
+# Themes. Every colour the lens draws comes from one of these, chosen by
+# theme = Name in the ini; Slate is the lens as it always looked. A themes.json
+# in the data folder adds or replaces themes, one object per name with the same
+# keys, so a theme can be made without touching the program.
+THEMES = {
+    "Slate": {"bg": "#1b2430", "fg": "#cbd5e1", "accent": "#4ade80", "dim": "#64748b", "warn": "#fbbf24",
+              "cap": "#243040", "hover": "#334155", "field": "#0b1220", "tab": "#1e293b", "close": "#e11d48"},
+    "Graphite": {"bg": "#232323", "fg": "#d6d6d6", "accent": "#f0b429", "dim": "#8a8a8a", "warn": "#f0b429",
+                 "cap": "#2e2e2e", "hover": "#3d3d3d", "field": "#161616", "tab": "#2a2a2a", "close": "#d13c3c"},
+    "Paper": {"bg": "#f3f4f6", "fg": "#1f2937", "accent": "#15803d", "dim": "#6b7280", "warn": "#b45309",
+              "cap": "#e5e7eb", "hover": "#d1d5db", "field": "#ffffff", "tab": "#e5e7eb", "close": "#dc2626"},
+    "Industrial": {"bg": "#2b2622", "fg": "#e7dcc8", "accent": "#f59e0b", "dim": "#8a7f70", "warn": "#fbbf24",
+                   "cap": "#35302b", "hover": "#4a413a", "field": "#1f1b18", "tab": "#332d28", "close": "#b91c1c"},
+}
+THEME_KEYS = ("bg", "fg", "accent", "dim", "warn", "cap", "hover", "field", "tab", "close")
+
+
+def _is_colour(v):
+    v = str(v)
+    return len(v) == 7 and v[0] == "#" and all(c in "0123456789abcdefABCDEF" for c in v[1:])
+
+
+def _load_themes():
+    """The built-in themes, with the data folder's themes.json laid over them:
+    a theme there with a built-in name replaces it, a new name is added, and a
+    theme missing keys takes them from Slate. A file that cannot be read is
+    ignored, since a bad file must not stop the lens."""
+    themes = {k: dict(v) for k, v in THEMES.items()}
+    try:
+        with open(os.path.join(DATA_DIR, "themes.json"), encoding="utf-8") as f:
+            extra = json.load(f)
+        for name, vals in (extra or {}).items():
+            if isinstance(vals, dict) and str(name).strip():
+                merged = dict(THEMES["Slate"])
+                merged.update({k: str(v) for k, v in vals.items() if k in THEME_KEYS and _is_colour(v)})
+                themes[str(name).strip()] = merged
+    except Exception:
+        pass
+    return themes
+
+
+ALL_THEMES = _load_themes()
+THEME_NAME = str(_INI.get("theme", "Slate")).strip() or "Slate"
+if THEME_NAME not in ALL_THEMES:
+    THEME_NAME = "Slate"
+_T = ALL_THEMES[THEME_NAME]
+KEY = "#010203"                     # the colour keyed out of the chrome, never drawn
+BG, FG, ACCENT, DIM, WARN = _T["bg"], _T["fg"], _T["accent"], _T["dim"], _T["warn"]
+CAP = _T["cap"]                     # the window buttons' own shade on the title bar
+HOVER, FIELD, TAB_BG, CLOSE = _T["hover"], _T["field"], _T["tab"], _T["close"]
 
 # The title bar's minimise, maximise, restore and close buttons use Windows'
 # own caption glyphs, from whichever Segoe icon font the machine has, so they
@@ -1165,14 +1212,14 @@ class PopupMenu:
         box.pack(padx=1, pady=1)
         for item in items:
             if item is None:
-                tk.Frame(box, bg="#334155", height=1).pack(fill="x", padx=6, pady=3)
+                tk.Frame(box, bg=HOVER, height=1).pack(fill="x", padx=6, pady=3)
                 continue
             text, command, enabled = item
             lbl = tk.Label(box, text=text, bg=BG, fg=FG if enabled else DIM, anchor="w",
                            padx=14, pady=4, font=("Segoe UI", 10))
             lbl.pack(fill="x")
             if enabled and command is not None:
-                lbl.bind("<Enter>", lambda e, l=lbl: l.config(bg="#334155"))
+                lbl.bind("<Enter>", lambda e, l=lbl: l.config(bg=HOVER))
                 lbl.bind("<Leave>", lambda e, l=lbl: l.config(bg=BG))
                 lbl.bind("<Button-1>", lambda e, c=command: self.choose(c))
         t.update_idletasks()
@@ -1278,7 +1325,8 @@ class Lens:
             self.profile = None
         self.anchor_widget = None   # what the menu opens under, when not the bar
         self.attach = None          # the window the lens is attached to, see attach_to
-        self.tab = None             # the tab on the top edge while attached
+        self.tab = None             # the tab on the top edge while attached or folded
+        self.folded = False         # the title bar and frame folded away, see fold
         self.tab_x = 12             # where along the top edge the tab sits
         self.tab_drag = None
         self.picking = None         # a pick of a window or region in progress
@@ -1332,7 +1380,7 @@ class Lens:
         self.prof_btn = tk.Label(bar, text="▾ Profile", bg=BG, fg=DIM, font=("Segoe UI", 9), padx=4)
         self.prof_btn.pack(side="left")
         self.prof_btn.bind("<Button-1>", lambda e: self.profile_menu())
-        self.prof_btn.bind("<Enter>", lambda e: self.prof_btn.config(bg="#334155"))
+        self.prof_btn.bind("<Enter>", lambda e: self.prof_btn.config(bg=HOVER))
         self.prof_btn.bind("<Leave>", lambda e: self.prof_btn.config(bg=BG))
 
         # the Home menu's NR style and overall intensity, on the bar when Settings
@@ -1342,7 +1390,7 @@ class Lens:
         # intensity is shown only, the Home menu being the live way to move it
         self.style_btn = tk.Label(bar, text="▾ Default", bg=BG, fg=DIM, font=("Segoe UI", 9), padx=4)
         self.style_btn.bind("<Button-1>", lambda e: self.style_menu())
-        self.style_btn.bind("<Enter>", lambda e: self.style_btn.config(bg="#334155"))
+        self.style_btn.bind("<Enter>", lambda e: self.style_btn.config(bg=HOVER))
         self.style_btn.bind("<Leave>", lambda e: self.style_btn.config(bg=BG))
         self.intensity_lbl = tk.Label(bar, text="intensity 1.00", bg=BG, fg=DIM, font=("Consolas", 9), padx=4)
         self.show_bar_mirrors()
@@ -1357,7 +1405,7 @@ class Lens:
         self.x_btn = tk.Label(bar, text=self.glyphs["close"], bg=CAP, fg=FG, font=capfont, padx=11)
         self.x_btn.pack(side="right", fill="y")
         self.x_btn.bind("<Button-1>", lambda e: self.quit())
-        self.x_btn.bind("<Enter>", lambda e: self.x_btn.config(bg="#e11d48"))
+        self.x_btn.bind("<Enter>", lambda e: self.x_btn.config(bg=CLOSE))
         self.x_btn.bind("<Leave>", lambda e: self.x_btn.config(bg=CAP))
         self.max_btn = tk.Label(bar, text=self.glyphs["restore" if fullscreen else "max"], bg=CAP,
                                 fg=FG, font=capfont, padx=11)
@@ -1367,11 +1415,11 @@ class Lens:
         self.min_btn.pack(side="right", fill="y")
         self.min_btn.bind("<Button-1>", lambda e: self.minimize())
         for b in (self.max_btn, self.min_btn):
-            b.bind("<Enter>", lambda e, b=b: b.config(bg="#334155"))
+            b.bind("<Enter>", lambda e, b=b: b.config(bg=HOVER))
             b.bind("<Leave>", lambda e, b=b: b.config(bg=CAP))
         # a line between the caption buttons and the pass controls: without it
         # the minimise glyph reads as the minus of the pass count
-        tk.Frame(bar, bg="#334155", width=1).pack(side="right", fill="y", padx=(4, 6), pady=9)
+        tk.Frame(bar, bg=HOVER, width=1).pack(side="right", fill="y", padx=(4, 6), pady=9)
 
         # plus and minus only choose a number; Set restarts the presenter at it,
         # so going from one pass to three is one restart rather than two
@@ -1387,7 +1435,7 @@ class Lens:
         self.minus.pack(side="right")
         self.minus.bind("<Button-1>", lambda e: self.bump_passes(-1))
         for b in (self.plus, self.minus, self.set_btn):
-            b.bind("<Enter>", lambda e, b=b: b.config(bg="#334155"))
+            b.bind("<Enter>", lambda e, b=b: b.config(bg=HOVER))
             b.bind("<Leave>", lambda e, b=b: b.config(bg=BG))
 
         # the frame the lens is resized by: a strip down each side and one along
@@ -1656,6 +1704,15 @@ class Lens:
     def raise_chrome(self):
         u.SetWindowPos(self.chrome, HWND_TOPMOST, 0, 0, 0, 0,
                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+        if self.tab is not None and self.attach is None:
+            # folded: the tab is the only thing that takes the mouse, and it has
+            # to stay above the picture, which is re-raised the same way
+            try:
+                th = u.GetParent(self.tab.winfo_id()) or self.tab.winfo_id()
+                u.SetWindowPos(th, HWND_TOPMOST, 0, 0, 0, 0,
+                               SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+            except Exception:
+                pass
         if self.divider is not None:
             try:
                 h = u.GetParent(self.divider.winfo_id()) or self.divider.winfo_id()
@@ -1910,9 +1967,9 @@ class Lens:
         ov.overrideredirect(True)
         ov.attributes("-topmost", True)
         ov.attributes("-alpha", 0.35)
-        ov.configure(bg="#0b1220")
+        ov.configure(bg=FIELD)
         ov.geometry("%dx%d+%d+%d" % (cw, ch, cx, cy))
-        cv = tk.Canvas(ov, bg="#0b1220", highlightthickness=0, cursor="crosshair")
+        cv = tk.Canvas(ov, bg=FIELD, highlightthickness=0, cursor="crosshair")
         cv.pack(fill="both", expand=True)
         p["overlay"], p["canvas"] = ov, cv
         p["label"].config(text="Drag the region the lens should cover.  Escape cancels.")
@@ -1984,6 +2041,8 @@ class Lens:
     def attach_to(self, h, frac):
         if self.attach is not None or self.closing or self.fullscreen:
             return
+        if self.folded:
+            self.unfold()
         x, y = self.inner()
         self.attach = {"hwnd": h, "frac": frac, "rect": (x, y, self.cw, self.ch),
                        "saved": (self.cw, self.ch, x, y), "size_seen": None, "since": 0.0,
@@ -2029,6 +2088,42 @@ class Lens:
         self.resize_to(x, y, cw, ch)
         self.bring_back()
         self.save_state()
+
+    def toggle_fold(self):
+        if self.folded:
+            self.unfold()
+        else:
+            self.fold()
+
+    def fold(self):
+        """Fold the title bar and frame away, leaving the tab on the picture's
+        top edge, which drags the lens and opens the menu, where Unfold is. The
+        picture stays exactly where it is, so nothing restarts."""
+        if self.folded or self.attach is not None or self.closing or self.rs is not None:
+            return
+        self.popup.close()
+        x, y = self.inner()
+        self.folded = True
+        self._chrome_passthrough(True)
+        self.make_tab()
+        self.layout_chrome(x, y)
+        self.raise_chrome()
+        print("title bar folded", flush=True)
+
+    def unfold(self):
+        if not self.folded:
+            return
+        x, y = self.inner()
+        self.folded = False
+        if self.tab is not None:
+            try:
+                self.tab.destroy()
+            except Exception:
+                pass
+            self.tab = None
+        self._chrome_passthrough(False)
+        self.layout_chrome(x, y)
+        print("title bar unfolded", flush=True)
 
     def _chrome_passthrough(self, on):
         ex = u.GetWindowLongPtrW(self.chrome, GWL_EXSTYLE)
@@ -2112,7 +2207,7 @@ class Lens:
         self.tab = tab
         tab.overrideredirect(True)
         tab.configure(bg=ACCENT)
-        lbl = tk.Label(tab, text="☰", bg=ACCENT, fg="#0b1220", font=("Segoe UI", 8))
+        lbl = tk.Label(tab, text="☰", bg=ACCENT, fg=FIELD, font=("Segoe UI", 8))
         lbl.place(x=0, y=0, width=TAB_W, height=TAB_H)
         for wdg in (tab, lbl):
             wdg.bind("<ButtonPress-1>", self._tab_down)
@@ -2137,9 +2232,17 @@ class Lens:
 
     def _tab_down(self, e):
         self.tab_drag = (e.x_root, self.tab_x)
+        if self.attach is None and not self.fullscreen:
+            self.down(e)                 # folded and free: the tab drags the whole lens
 
     def _tab_move(self, e):
-        if self.tab_drag is None or self.attach is None:
+        if self.tab_drag is None:
+            return
+        if self.attach is None:
+            if not self.fullscreen:
+                self.move(e)
+                x, y = self.inner()
+                self.place_tab(x, y, self.cw)
             return
         x0, tx0 = self.tab_drag
         self.tab_x = tx0 + (e.x_root - x0)
@@ -2151,7 +2254,12 @@ class Lens:
             return
         x0, _ = self.tab_drag
         self.tab_drag = None
-        if abs(e.x_root - x0) < 3:
+        moved = abs(e.x_root - x0) >= 3
+        if self.attach is None and self.drag:
+            self.up(e)                   # settles the picture where the drag ended
+            x, y = self.inner()
+            self.place_tab(x, y, self.cw)
+        if not moved:
             self.menu(e)
 
     def menu_anchor(self):
@@ -2163,7 +2271,7 @@ class Lens:
                 return wdg.winfo_rootx() - 6, wdg.winfo_rooty(), wdg.winfo_rooty() + wdg.winfo_height()
             except Exception:
                 pass
-        if self.attach is not None and self.tab is not None:
+        if (self.attach is not None or self.folded) and self.tab is not None:
             try:
                 tx, ty = self.tab.winfo_rootx(), self.tab.winfo_rooty()
                 return tx - 6, ty, ty + TAB_H
@@ -2479,7 +2587,7 @@ class Lens:
         while "Profile %d" % n in self.profiles["profiles"]:
             n += 1
         var.set("Profile %d" % n)
-        ent = tk.Entry(d, textvariable=var, width=32, bg="#0b1220", fg=FG, insertbackground=FG, relief="flat")
+        ent = tk.Entry(d, textvariable=var, width=32, bg=FIELD, fg=FG, insertbackground=FG, relief="flat")
         ent.grid(row=1, column=0, columnspan=2, sticky="we", padx=12)
         ent.selection_range(0, "end")
 
@@ -2489,9 +2597,9 @@ class Lens:
             if name:
                 self.profile_store(name)
 
-        tk.Button(d, text="Save", command=save, relief="flat", bg=ACCENT, fg="#0b1220").grid(
+        tk.Button(d, text="Save", command=save, relief="flat", bg=ACCENT, fg=FIELD).grid(
             row=2, column=0, sticky="e", padx=(12, 4), pady=12)
-        tk.Button(d, text="Cancel", command=d.destroy, relief="flat", bg="#334155", fg=FG).grid(
+        tk.Button(d, text="Cancel", command=d.destroy, relief="flat", bg=HOVER, fg=FG).grid(
             row=2, column=1, sticky="w", padx=(4, 12), pady=12)
         ent.bind("<Return>", save)
         d.update_idletasks()
@@ -2866,6 +2974,8 @@ class Lens:
             return self.fs_origin
         if self.attach is not None:
             return self.attach["rect"][:2]
+        if self.folded:
+            return self.t.winfo_x() + LINE, self.t.winfo_y() + LINE
         return self.t.winfo_x() + EDGE, self.t.winfo_y() + BAR
 
     def layout_chrome(self, x, y, cw=None, ch=None, settle=True):
@@ -2881,16 +2991,26 @@ class Lens:
         cw = self.cw if cw is None else cw
         ch = self.ch if ch is None else ch
         t = self.t
-        if self.fullscreen:
+        if self.fullscreen and self.folded:
+            # folded fullscreen: the chrome is as good as gone, two pixels in the
+            # corner, and the tab alone stays on the picture's top edge; a layered
+            # window the size of the screen would come up blank
+            t.geometry("2x2+%d+%d" % (x, y - BAR))
+            self.bar.place_forget()
+            self.hole.place_forget()
+            for g in self.grips.values():
+                g.place_forget()
+            self.place_tab(x, y, cw)
+        elif self.fullscreen:
             t.geometry("%dx%d+%d+%d" % (cw, BAR, x, y - BAR))
             self.bar.place(x=0, y=0, width=cw, height=BAR)
             self.hole.place_forget()
             for g in self.grips.values():
                 g.place_forget()
-        elif self.attach is not None:
-            # attached, the chrome is the line around the region and the tab on
-            # its top edge; no bar and no grips, since the target decides the
-            # size and the line lies on its edges
+        elif self.attach is not None or self.folded:
+            # attached or folded, the chrome is the line around the picture and
+            # the tab on its top edge; no bar and no grips. Attached, the target
+            # decides the size; folded, the tab drags the lens and opens the menu
             t.geometry("%dx%d+%d+%d" % (cw + 2 * LINE, ch + 2 * LINE, x - LINE, y - LINE))
             self.bar.place_forget()
             self.hole.place(x=LINE, y=LINE, width=cw, height=ch)
@@ -3078,6 +3198,8 @@ class Lens:
              lambda: self.pick_target(True), not self.fullscreen),
         ]) + [
             None,
+            (("Unfold the title bar" if self.folded else "Fold the title bar away   (only the tab stays)"),
+             self.toggle_fold, self.attach is None),
             ("Settings...", self.settings_dialog, True),
             None,
             ("Close", self.quit, True),
@@ -3529,7 +3651,7 @@ class Lens:
         except tk.TclError:
             pass
         style.configure("Lens.TNotebook", background=BG, borderwidth=0, tabmargins=(8, 8, 8, 0))
-        style.configure("Lens.TNotebook.Tab", background="#1e293b", foreground=DIM, borderwidth=0,
+        style.configure("Lens.TNotebook.Tab", background=TAB_BG, foreground=DIM, borderwidth=0,
                         padding=(14, 6), font=("Segoe UI", 10))
         style.map("Lens.TNotebook.Tab", background=[("selected", BG)], foreground=[("selected", FG)],
                   expand=[("selected", (0, 0, 0, 0))])
@@ -3562,7 +3684,7 @@ class Lens:
             p.row += 1
 
         def switch(p, text, var):
-            b = tk.Checkbutton(p, text=text, variable=var, bg=BG, fg=FG, selectcolor="#0b1220",
+            b = tk.Checkbutton(p, text=text, variable=var, bg=BG, fg=FG, selectcolor=FIELD,
                                activebackground=BG, activeforeground=FG, disabledforeground=DIM,
                                font=("Segoe UI", 10))
             b.grid(row=p.row, column=0, columnspan=3, sticky="w", padx=8, pady=(2, 0))
@@ -3571,13 +3693,13 @@ class Lens:
 
         def radio(p, text, var, value):
             tk.Radiobutton(p, text=text, variable=var, value=value, bg=BG, fg=FG,
-                           selectcolor="#0b1220", activebackground=BG, activeforeground=FG,
+                           selectcolor=FIELD, activebackground=BG, activeforeground=FG,
                            font=("Segoe UI", 10)).grid(row=p.row, column=0, columnspan=3,
                                                        sticky="w", padx=8, pady=(2, 0))
             p.row += 1
 
         def folder(p, var, prompt):
-            tk.Entry(p, textvariable=var, width=58, bg="#0b1220", fg=FG,
+            tk.Entry(p, textvariable=var, width=58, bg=FIELD, fg=FG,
                      insertbackground=FG, relief="flat").grid(
                 row=p.row, column=0, columnspan=2, padx=(12, 6), pady=4, sticky="we")
 
@@ -3586,12 +3708,12 @@ class Lens:
                 if d:
                     var.set(os.path.normpath(d))
 
-            tk.Button(p, text="Browse", command=browse, relief="flat", bg="#334155",
+            tk.Button(p, text="Browse", command=browse, relief="flat", bg=HOVER,
                       fg=FG).grid(row=p.row, column=2, padx=(0, 12), pady=4)
             p.row += 1
 
         def button(p, text, command):
-            tk.Button(p, text=text, command=command, relief="flat", bg="#334155",
+            tk.Button(p, text=text, command=command, relief="flat", bg=HOVER,
                       fg=FG).grid(row=p.row, column=0, sticky="w", padx=12, pady=(2, 2))
             p.row += 1
 
@@ -3683,14 +3805,14 @@ class Lens:
                       "restarts when one is applied. Here a profile is renamed or deleted, and the "
                       "current settings can be saved under a name.")
         names = sorted(self.profiles["profiles"], key=str.lower)
-        plist = tk.Listbox(prof, height=max(3, min(8, len(names))), bg="#0b1220", fg=FG, relief="flat",
-                           selectbackground="#334155", selectforeground=FG, exportselection=False,
+        plist = tk.Listbox(prof, height=max(3, min(8, len(names))), bg=FIELD, fg=FG, relief="flat",
+                           selectbackground=HOVER, selectforeground=FG, exportselection=False,
                            font=("Segoe UI", 10), highlightthickness=0)
         for n in names:
             plist.insert("end", n)
         plist.grid(row=prof.row, column=0, columnspan=2, sticky="we", padx=12, pady=(2, 2))
         pname = tk.StringVar(master=t, value="")
-        tk.Entry(prof, textvariable=pname, width=24, bg="#0b1220", fg=FG, insertbackground=FG,
+        tk.Entry(prof, textvariable=pname, width=24, bg=FIELD, fg=FG, insertbackground=FG,
                  relief="flat").grid(row=prof.row, column=2, sticky="new", padx=(6, 12), pady=(2, 2))
         prof.row += 1
 
@@ -3793,7 +3915,7 @@ class Lens:
         btns.grid(row=prof.row, column=0, columnspan=3, sticky="w", padx=12, pady=(0, 4))
         for text, cmd in (("Rename to the name typed", rename), ("Delete", delete),
                           ("Save the current settings under the name typed", save_current)):
-            tk.Button(btns, text=text, command=cmd, relief="flat", bg="#334155", fg=FG).pack(side="left", padx=(0, 6))
+            tk.Button(btns, text=text, command=cmd, relief="flat", bg=HOVER, fg=FG).pack(side="left", padx=(0, 6))
         prof.row += 2
         # the profile in use starts chosen, with its facts shown
         if self.profile in self.profiles["profiles"]:
@@ -3856,14 +3978,14 @@ class Lens:
             hk_vars[action] = var
             tk.Label(hk, text=label, bg=BG, fg=FG, font=("Segoe UI", 10)).grid(
                 row=hk.row, column=0, sticky="w", padx=12, pady=(3, 0))
-            ent = tk.Entry(hk, textvariable=var, width=18, bg="#0b1220", fg=FG, insertbackground=BG,
+            ent = tk.Entry(hk, textvariable=var, width=18, bg=FIELD, fg=FG, insertbackground=BG,
                            relief="flat", justify="center")
             ent.grid(row=hk.row, column=1, sticky="w", padx=(6, 6), pady=(3, 0))
             capture(action, var, ent)
             fr = tk.Frame(hk, bg=BG)
             fr.grid(row=hk.row, column=2, sticky="w", padx=(0, 12), pady=(3, 0))
             tk.Button(fr, text="Clear", command=lambda v=var, a=action: (v.set(""), hk_note[a].config(text="")),
-                      relief="flat", bg="#334155", fg=FG).pack(side="left")
+                      relief="flat", bg=HOVER, fg=FG).pack(side="left")
             hk_note[action] = tk.Label(fr, text=("in use by another program" if action in failed else ""),
                                        bg=BG, fg=WARN, font=("Segoe UI", 9))
             hk_note[action].pack(side="left", padx=(8, 0))
@@ -3883,6 +4005,29 @@ class Lens:
                     "to paste into a message or a document. Applies to the next screenshot.")
         clip = tk.BooleanVar(value=self.clip_shots)
         switch(sh, "Also copy the joined before and after to the clipboard", clip)
+
+        # ================================================================ look
+        look = page("Look")
+
+        heading(look, "Theme")
+        explain(look, "The colours of the title bar, the menus and this dialog. The picture is never "
+                      "touched. A themes.json in the data folder adds themes of your own, one per "
+                      "name, with the keys the built-in ones use. Takes effect at the next launch, "
+                      "so choosing one restarts the lens.")
+        theme_var = tk.StringVar(value=THEME_NAME)
+        for name in sorted(ALL_THEMES, key=lambda n: (n != "Slate", n.lower())):
+            t_ = ALL_THEMES[name]
+            row_ = tk.Frame(look, bg=BG)
+            row_.grid(row=look.row, column=0, columnspan=3, sticky="w", padx=8, pady=(3, 0))
+            tk.Radiobutton(row_, text=name, variable=theme_var, value=name, bg=BG, fg=FG,
+                           selectcolor=FIELD, activebackground=BG, activeforeground=FG,
+                           font=("Segoe UI", 10), width=12, anchor="w").pack(side="left")
+            for key in ("bg", "field", "hover", "cap", "fg", "dim", "accent", "warn", "close"):
+                tk.Frame(row_, bg=t_[key], width=22, height=16, highlightthickness=1,
+                         highlightbackground=t_["dim"]).pack(side="left", padx=1)
+            look.row += 1
+        note(look, "Each swatch row is the theme's background, field, hover, window buttons, text, "
+                   "dim text, accent, warning and close, in that order.")
 
         # ================================================================ program
         prog = page("Program")
@@ -3935,6 +4080,9 @@ class Lens:
             dd = data.get().strip()
             if dd and dd != DATA_DIR:
                 _save_ini("data_dir", dd)
+                restart = True
+            if theme_var.get() != THEME_NAME:
+                _save_ini("theme", None if theme_var.get() == "Slate" else theme_var.get())
                 restart = True
             # the in-and-out readout is the ini's alone, readout = detail, so a save
             # here keeps it if it was set
@@ -3999,9 +4147,9 @@ class Lens:
         tk.Label(foot, text="Neural Lens %s (beta)" % __version__, bg=BG, fg=DIM,
                  font=("Segoe UI", 9)).grid(row=0, column=0, sticky="w", padx=12)
         tk.Button(foot, text="Save", command=save, relief="flat", bg=ACCENT,
-                  fg="#0b1220").grid(row=0, column=1, sticky="e", padx=(0, 6))
+                  fg=FIELD).grid(row=0, column=1, sticky="e", padx=(0, 6))
         tk.Button(foot, text="Cancel", command=t.destroy, relief="flat",
-                  bg="#334155", fg=FG).grid(row=0, column=2, sticky="w", padx=(0, 12))
+                  bg=HOVER, fg=FG).grid(row=0, column=2, sticky="w", padx=(0, 12))
         self._place_over_lens(t)
 
     def _place_over_lens(self, win):
@@ -4036,7 +4184,7 @@ class Lens:
         picked = []
         for i, c in enumerate(choices):
             tk.Button(d, text=c, command=lambda c=c: (picked.append(c), d.destroy()), relief="flat",
-                      bg=ACCENT if i == 0 else "#334155", fg="#0b1220" if i == 0 else FG).grid(
+                      bg=ACCENT if i == 0 else HOVER, fg=FIELD if i == 0 else FG).grid(
                 row=1, column=i, sticky="w", padx=(14 if i == 0 else 6, 14 if i == len(choices) - 1 else 0),
                 pady=(0, 14))
         self._place_over_lens(d)

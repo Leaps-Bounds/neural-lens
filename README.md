@@ -239,7 +239,8 @@ every card.
 - **Global hotkeys** are off until you set them on the Hotkeys page of Settings. Each action
   can have a key combination that works from anywhere, whichever window has the keyboard, for
   a screenshot, a pass more or fewer, the A/B split, minimise and back, fullscreen and back,
-  the next profile, the ready switch, and detaching. Click a field and press the combination.
+  the next profile, the ready switch, hiding the title bar and showing it again, and detaching.
+  Click a field and press the combination.
   A combination set here is taken from every other program while the lens runs. Home, F5 and
   F6 on their own cannot be used, since ReShade reads Home and F5 and the add-on reads F6 from
   the keyboard, and taking them would silence the overlay, its screenshot and the Neural
@@ -258,10 +259,11 @@ every card.
   set to stay on top has left it underneath. The button's Close window closes the lens. A
   maximised or full screen window, which Windows puts above everything when it becomes the
   foreground, is handled on its own: the lens notices and comes back within a fifth of a second.
-- **Fold the title bar away** from the menu when the settings are where you want them and the
-  bar is in the way. The bar and frame fold into the small tab on the picture's top edge, the
-  picture stays exactly where it is, and nothing restarts. The tab drags the lens and opens the
-  menu, where Unfold is. Fullscreen, folding leaves only the tab.
+- **Hide the title bar** from the menu, or with a hotkey, when the settings are where you want
+  them and the bar is in the way. The bar and frame give way to the small tab on the picture's
+  top edge, the picture stays exactly where it is, and nothing restarts. The tab drags the lens
+  with the left button, slides along the edge with the right button, and opens the menu, where
+  Show is. Fullscreen, hiding leaves only the tab.
 - **Fullscreen** is the maximise button. The lens fills the whole of the monitor it is on, the
   taskbar's place included, with the title bar across the top and the picture below it, and
   cannot be dragged or resized. A fullscreen video behind it is covered to the bottom edge. Going fullscreen or back restarts the picture, like a resize, and the windowed

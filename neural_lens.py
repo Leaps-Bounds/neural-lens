@@ -815,6 +815,7 @@ HOTKEY_ACTIONS = (
     ("split", "Live A/B split, on or off"),
     ("minimize", "Minimise, or bring back"),
     ("fullscreen", "Fullscreen, and back"),
+    ("hide_bar", "Hide the title bar, and show it again"),
     ("profile", "Next profile"),
     ("ready", "Keep the picture ready, on or off"),
     ("detach", "Detach from the window"),
@@ -2108,7 +2109,7 @@ class Lens:
         self.make_tab()
         self.layout_chrome(x, y)
         self.raise_chrome()
-        print("title bar folded", flush=True)
+        print("title bar hidden", flush=True)
 
     def unfold(self):
         if not self.folded:
@@ -2123,7 +2124,7 @@ class Lens:
             self.tab = None
         self._chrome_passthrough(False)
         self.layout_chrome(x, y)
-        print("title bar unfolded", flush=True)
+        print("title bar shown", flush=True)
 
     def _chrome_passthrough(self, on):
         ex = u.GetWindowLongPtrW(self.chrome, GWL_EXSTYLE)
@@ -2213,6 +2214,11 @@ class Lens:
             wdg.bind("<ButtonPress-1>", self._tab_down)
             wdg.bind("<B1-Motion>", self._tab_move)
             wdg.bind("<ButtonRelease-1>", self._tab_up)
+            # the right button slides the tab along the edge, whatever the left
+            # one does, so a hidden title bar's tab can be moved out of the way
+            wdg.bind("<ButtonPress-3>", self._tab_slide_down)
+            wdg.bind("<B3-Motion>", self._tab_slide_move)
+            wdg.bind("<ButtonRelease-3>", self._tab_slide_up)
         x, y = self.inner()
         tab.geometry("%dx%d+%d+%d" % (TAB_W, TAB_H, x + self.tab_x, y))
         tab.update()
@@ -2229,6 +2235,20 @@ class Lens:
             u.SetWindowPos(th, 0, x + self.tab_x, y, TAB_W, TAB_H, SWP_NOZORDER | SWP_NOACTIVATE)
         except Exception:
             pass
+
+    def _tab_slide_down(self, e):
+        self.tab_slide = (e.x_root, self.tab_x)
+
+    def _tab_slide_move(self, e):
+        if getattr(self, "tab_slide", None) is None:
+            return
+        x0, tx0 = self.tab_slide
+        self.tab_x = tx0 + (e.x_root - x0)
+        x, y = self.inner()
+        self.place_tab(x, y, self.cw)
+
+    def _tab_slide_up(self, e):
+        self.tab_slide = None
 
     def _tab_down(self, e):
         self.tab_drag = (e.x_root, self.tab_x)
@@ -2449,6 +2469,9 @@ class Lens:
             if names:
                 i = names.index(self.profile) + 1 if self.profile in names else 0
                 self.apply_profile(names[i % len(names)])
+        elif action == "hide_bar":
+            if self.attach is None:
+                self.toggle_fold()
         elif action == "ready":
             self.ready = not self.ready
             _save_ini("ready", "1" if self.ready else None)
@@ -3198,7 +3221,7 @@ class Lens:
              lambda: self.pick_target(True), not self.fullscreen),
         ]) + [
             None,
-            (("Unfold the title bar" if self.folded else "Fold the title bar away   (only the tab stays)"),
+            (("Show the title bar" if self.folded else "Hide the title bar   (only the tab stays)"),
              self.toggle_fold, self.attach is None),
             ("Settings...", self.settings_dialog, True),
             None,

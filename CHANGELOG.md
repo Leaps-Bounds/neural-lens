@@ -10,10 +10,11 @@ settings, the state file format and behaviour may change between releases.
   it. A themes.json in the data folder adds themes of your own, one per name, with the same
   keys as the built-in ones. The picture is never touched. A theme takes effect at the next
   launch, so choosing one restarts the lens.
-- **Fold the title bar away.** From the menu, the title bar and frame fold into the small tab
-  on the picture's top edge, the one an attached lens has. The picture stays exactly where it
-  is and nothing restarts. The tab drags the lens and opens the menu, where Unfold is.
-  Fullscreen, folding leaves only the tab, so a fullscreen video behind the lens is covered to
+- **Hide the title bar.** From the menu, or with a hotkey, the title bar and frame give way
+  to the small tab on the picture's top edge, the one an attached lens has. The picture stays
+  exactly where it is and nothing restarts. The tab drags the lens with the left button,
+  slides along the edge with the right button, and opens the menu, where Show is.
+  Fullscreen, hiding leaves only the tab, so a fullscreen video behind the lens is covered to
   the top edge as well.
 
 ## 0.4.0, 2026-09-15

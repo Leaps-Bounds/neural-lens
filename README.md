@@ -1,6 +1,6 @@
 # DLSS 5 Neural Lens
 
-**Beta, version 0.5.0.** See [CHANGELOG.md](CHANGELOG.md). While the version starts with 0,
+**Beta, version 0.5.1.** See [CHANGELOG.md](CHANGELOG.md). While the version starts with 0,
 settings, the state file format and behaviour may change between releases.
 
 A floating see-through window for Windows. Drag it over anything on your desktop and the
@@ -30,7 +30,7 @@ applied with Set, and its picture runs about one refresh behind the screen.
   path uses Windows.Graphics.Capture. It has only ever been tested here on Windows 11 25H2.
 - An NVIDIA RTX card with a driver new enough for DLSS Neural Rendering. The setup reads the
   compute capability from `nvidia-smi` and stops below 7.5, which is the RTX 20 series and newer.
-  This release was tested with NVIDIA driver 616.56 on Windows 11 25H2, and the driver a
+  This release was tested with NVIDIA driver 617.14 on Windows 11 25H2, and the driver a
   release was tested with is named in its release notes.
 - Room on disk for about 400 MB once the stack is in place, of which about 150 MB is downloaded
   during installation.
@@ -161,13 +161,14 @@ there is nothing to choose and the setup does not ask. It checks only that an NV
 present, meaning compute capability 7.5 or higher, which is the RTX 20 series and newer, and says
 so plainly when there is not one.
 
-The build used is `310.8.SF-v2`. It was published for the RTX 40 series and its author states it
-also covers RTX 20 and 30 and runs identically on RTX 50. It was measured here creating and
-evaluating Neural Rendering on an RTX 5090, matching the stock model's effect on the image to
-within 0.01 at two pinned rates.
+The build used is `310.8.SF-v2`, which the RHI manifest has listed as `310.8.2 (20/30/40/50)`
+since 2026-09-24. It was published for the RTX 40 series and its author states it also covers
+RTX 20 and 30 and runs identically on RTX 50. It was measured here creating and evaluating
+Neural Rendering on an RTX 5090, matching the stock model's effect on the image to within 0.01
+at two pinned rates.
 
 All these builds carry the same `NVIDIA DLSSNR - DVS PRODUCTION` description, so identify them by
-hash rather than by version string. Three are known to run:
+hash rather than by version string. Four are known to run:
 
 ```
 310.8.SF-v2, what the setup fetches
@@ -175,13 +176,15 @@ hash rather than by version string. Three are known to run:
 NVIDIA's stock 310.8   E16BCF15E16E13F527491CDF7845B2FE6521A738D8F7C9C721866A8496E1FC8E   165,840,496 bytes, version 310.8.0.0
 an earlier community build
                        8270B350CD82DE5CE89806872CDD6B6A9249B80836B91BBEB3573470744CC206   165,840,496 bytes, version 310.8.0.0
+310.8.3, the Lecram build
+                       F95FEB54137EA11979F9B4EC4F00AFD84B5C98A5624D3388FBF6A87714A39FCC   165,840,496 bytes, version 310.8.3.0
 ```
 
 None is included or redistributed here. The setup fetches the `310.8.SF-v2` model from the RHI
 project's repository and refuses a download that matches neither of its two hashes, the first
-and the last above. A DLL you point the setup at is checked the same way, so NVIDIA's stock
-310.8 is listed here so you can identify it, and is not accepted: the SF-v2 build is what runs on
-every card.
+and the third above. A DLL you point the setup at is checked the same way. NVIDIA's stock 310.8
+and the Lecram build, which the RHI manifest lists for RTX 50 only, are here so you can identify
+them, and the setup does not accept them. The SF-v2 build is what runs on every card.
 
 ## Using it
 

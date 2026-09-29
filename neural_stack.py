@@ -80,7 +80,7 @@ import urllib.request
 import winreg
 import zipfile
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 FROZEN = getattr(sys, "frozen", False)
 # Everything lives in the lens's own folder, the one the installer put it in or
@@ -107,6 +107,7 @@ COST_SCALER_VERSION = "1.0.6"
 SOURCES = {
     "reshade": "https://reshade.me/downloads/ReShade_Setup_%s_Addon.exe" % RESHADE_VERSION,
     "manifest": "https://raw.githubusercontent.com/RankFTW/RHI/main/dlss_manifest.json",
+    "rhi_release": "https://github.com/RankFTW/rhi-repo/releases/download/%s/%s",
     "feeder_api": "https://api.github.com/repos/jlrouzies-fr/DLSS5-Feeder/releases/latest",
     "renodx": ("https://github.com/RankFTW/rhi-repo/releases/download/renodx-dlss5-%s/renodx-dlss5_%s.zip"
                % (RENODX_VERSION, RENODX_VERSION)),
@@ -581,13 +582,27 @@ class Install:
         self.say("NVIDIA: compute capability %s, Neural Rendering model %s" % (detail, model))
         manifest = {}
 
+        # The manifest's version names are labels its maintainer renames: on
+        # 2026-09-24 310.8.SF-v2 became "310.8.2 (20/30/40/50)" while the file
+        # stayed where it was. So an entry is found by the release tag in its
+        # link first and by its name second, and with neither, or no manifest
+        # at all, the release is fetched straight from the repository. The
+        # hash check below decides whether a download is installed.
         def url_for(key, version):
+            tag = "%s-%s" % (key, version)
             if not manifest:
-                manifest.update(fetch_json(SOURCES["manifest"]))
-            for entry in manifest.get(key, []):
+                try:
+                    manifest.update(fetch_json(SOURCES["manifest"]))
+                except Exception as exc:
+                    self.say("manifest unreachable (%s), fetching %s from its release" % (exc, tag))
+            entries = manifest.get(key, [])
+            for entry in entries:
+                if "/%s/" % tag in entry.get("url", ""):
+                    return entry["url"]
+            for entry in entries:
                 if entry.get("version") == version:
                     return entry["url"]
-            raise StackError("the manifest has no %s %s" % (key, version))
+            return SOURCES["rhi_release"] % (tag, "nvngx_%s_%s.zip" % (key, version))
 
         wanted = (("nvngx_dlss.dll", "nvngx_dlss.dll", HASHES["nvngx_dlss.dll"], "dlss", DLSS_VERSION),
                   ("nvngx_dlssnr.dll", "nvngx_dlssnr_real.dll", HASHES["nvngx_dlssnr.dll"][model],
@@ -828,7 +843,10 @@ def verify(target, log=None, seconds=9.0):
         return False, ("FAIL: ReShade wrote no log, so it did not attach to the presenter. Is the Vulkan "
                        "layer registered, and is %s on its Apps list?" % cmd[0])
     created = "feature=18" in text and "feature 18 created" in text
-    evaluated = len(re.findall(r"feature 18 evaluation succeeded", text))
+    # the add-on logs the 1st, 60th and 600th evaluation and so on, not each one,
+    # so the highest count it logged is how many there were at least
+    counts = [int(c) for c in re.findall(r"feature 18 evaluation succeeded \(count=(\d+)", text)]
+    evaluated = max(counts) if counts else len(re.findall(r"feature 18 evaluation succeeded", text))
     failed = re.search(r"feature 18 create failed with (0x[0-9a-fA-F]+)", text)
     addons = ("DLSS 5 Neural Rendering" in text, "DLSS 5 Feed" in text)
     lines = ["    ReShade attached: yes",
@@ -846,13 +864,26 @@ def verify(target, log=None, seconds=9.0):
     # says which provider it found; read that rather than trust the picture.
     try:
         feed = open(os.path.join(target, "dlss5-feed.log"), encoding="utf-8", errors="replace").read()
-        prov = [l for l in feed.splitlines() if "DLSS5_MV_PROVIDER" in l]
+        # the Feed's "effects:" line names the provider it found; its warnings
+        # mention the setting too, "use another provider (VORT:
+        # DLSS5_MV_PROVIDER=2)", so they are not the line to read
+        prov = [l for l in feed.splitlines() if "effects:" in l and "DLSS5_MV_PROVIDER=" in l]
         last = prov[-1].split("DLSS5_MV_PROVIDER=", 1)[-1] if prov else ""
         if not prov or "-> none" in last:
             lines.append("    motion vectors: NO PROVIDER, so anything that moves would smear. "
                          "The motion vector shader did not compile or was not found: %s" % (last[:90] or "no Feed log"))
             return False, "\n".join(lines)
-        lines.append("    motion vectors: %s" % last.split(",", 1)[0][:90])
+        name = re.search(r"->\s*([^(,]+)", last)
+        name = name.group(1).strip() if name else last.split(",", 1)[0][:60]
+        if "FAILED TO COMPILE" in last:
+            # measured in the lens: DRME's frame save pass fails on ReShade 6.8 and
+            # the Feed says it then writes nothing, yet the Feed's own motion vector
+            # probe reads real vectors whenever the picture moves
+            lines.append("    motion vectors: %s. The Feed's log reports one of its passes failing to "
+                         "compile on this ReShade, which is expected, and the rest still deliver "
+                         "vectors once something moves." % name)
+        else:
+            lines.append("    motion vectors: %s" % name)
     except OSError:
         lines.append("    motion vectors: the Feed wrote no log")
         return False, "\n".join(lines)
@@ -863,7 +894,7 @@ def verify(target, log=None, seconds=9.0):
                          "build in use is meant to cover RTX 20 through 50.")
         return False, "\n".join(lines)
     if created and evaluated:
-        lines.append("    Neural Rendering: running, %d evaluations" % evaluated)
+        lines.append("    Neural Rendering: running, at least %d evaluations" % evaluated)
         return True, "\n".join(lines)
     lines.append("    Neural Rendering: never started (no feature 18 in the log). Log: %s" % logfile)
     return False, "\n".join(lines)

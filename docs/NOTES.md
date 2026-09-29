@@ -853,6 +853,15 @@ Facts measured while building it:
   unpacks to a file of 165,830,144 bytes, version 310.8.SF.0, unsigned, hash
   6EB209E7...; the earlier community build is 165,840,496 bytes, version 310.8.0.0, signed by
   NVIDIA with a hash mismatch, hash 8270B350.... Both run Neural Rendering, so both are accepted.
+- **The manifest's version names are labels, and they change.** On 2026-09-24 the manifest
+  renamed `310.8.SF-v2` to `310.8.2 (20/30/40/50)` and added the Lecram build as
+  `310.8.3 (50xx)`, while the SF-v2 zip stayed at the same release,
+  `dlssnr-310.8.SF-v2`. The setup had looked the model up by name, so from that day every new
+  install stopped at the NVIDIA step with "the manifest has no dlssnr 310.8.SF-v2", and one
+  with the manifest unreachable failed outright. The setup now finds an entry by the release tag
+  in its link, then by name, and with neither, or no manifest, fetches the file from its release
+  directly. The hash decides what is installed. `_harnesses/manifest_lookup_test.py` checks the
+  lookup against the current names, the old ones, a manifest without the model and an outage.
 - **A per user Vulkan layer coexists with a machine wide ReShade only under a different name.**
   The loader loads one implicit layer per name, HKLM before HKCU, so a per user copy named
   `VK_LAYER_reshade` is skipped wherever a machine wide one exists. The layer is registered as
@@ -969,4 +978,13 @@ state is called folded. Verified with `_harnesses/fold_probe.py`.
 
 On 2026-09-21 the projects the stack draws on stood at ReShade 6.8.0, DLSSNR-Cost-Scaler 1.0.6, DLSS5-Feeder v1.16.0-beta.6 and RenoDX DLSS 5 6.5.3, and the RHI manifest still named 310.8.SF-v2 as the newest Neural Rendering model. The Feed at beta.6 is what the 0.4.0 installer fetched, since the stack takes the newest full release and checks the zip against the SHA-256 the maintainer prints, and the whole suite passed on it, 118 of 118. RenoDX 6.5.3, and 6.4.1 before it, carry no release notes; against 5.2.1 the add-on gains eighteen section keys, per pass colour, intensity and transfer among them, and loses NRAdaptiveExposure and NRDiffuseWhite, with the keys the lens reads unchanged. It also migrates the section from schema v2 to v6 in memory, backing the ini up beside itself. Run in the presenter, 6.5.3 loads, pre-loads the NR runtime, installs its queue completion tracker on the D3D12 command queue, and the process then dies with 0xC0000005 before any feature is created, in twenty seconds of the pattern source, where 5.2.1 in the same stack builds the feature and evaluates it. So the stack stays pinned to 5.2.1 by hash. Measured with `_harnesses/shot_probe.py` and a presenter run on its own. The crash leaves no Windows error event, but the Feed writes a minidump beside itself, dlss5-feed-crash.dmp, and it shows the fault: an access violation reading 0xEB9A4188, a 32 bit value where a pointer belongs, inside nvoglv64.dll, the NVIDIA Vulkan driver, on the presenter's main thread, with renodx-dlss5.addon64 and ReShade's Vulkan hooks above it on the stack. So 6.5.3 hands the driver a bad handle from inside ReShade's hook before the feature exists, and no ini setting is involved.
 
-ShortFuse's own renodx-dlss add-on, which is not on GitHub, hooks D3D11 and D3D12 only as of its 2026-09-17 build, so it does nothing on the Vulkan presenter and is not a swap for renodx-dlss5.
+ShortFuse's own renodx-dlss add-on, which the RHI repository also publishes as `renodx-dlss-SF` builds, hooks D3D11 and D3D12 only as of its 2026-09-17 build, so it does nothing on the Vulkan presenter and is not a swap for renodx-dlss5.
+
+On 2026-09-28 the stack's sources stood at ReShade 6.8.0, DLSSNR-Cost-Scaler 1.0.6, DLSS5-Feeder v1.17.0 and RenoDX DLSS 5 8.5.0-rc10, with NVIDIA's DLSS runtime at 310.9.1 and the manifest listing the Lecram model as `310.8.3 (50xx)`. Each was measured against the shipped part with `_harnesses/stack_trial.py`, which runs both the same way in a copy of the installed stack: the presenter on its test pattern, a before and after pair over the still, frames per second over the whole monitor, and the harnesses. That was on an RTX 5090 with driver 617.14, where two runs of the same stack give pictures 0.2 to 0.45 of 255 apart.
+
+- **DLSS5-Feeder 1.17.0**, which a new install now fetches: the feature is created and evaluated, the picture is 0.26 of 255 from beta.6's, and the harnesses pass 145 of 145.
+- **RenoDX DLSS 5 8.5.0-rc10** migrates the section's schema as 6.5.3 does but does not crash. It logs NOT_ENGAGED at each stage of warming up, then ENGAGED, and evaluates 600 times in 20 seconds, with a picture 0.21 of 255 from 5.2.1's. The pin stays at 5.2.1 until an 8.x release is final and the lens's profiles, which rewrite the section, are checked against the new schema.
+- **The Lecram model**, hash F95FEB54..., gives the same picture, 0.28 of 255, at 40.6 against 40.0 frames per second fullscreen at one pass, the same in both pairs of runs. It covers RTX 50 only, where SF-v2 covers RTX 20 through 50, so SF-v2 stays.
+- **NVIDIA's DLSS runtime 310.9.1** gives the same picture, 0.27 of 255, so 310.8.0 stays.
+
+A newer add-on reads NOT_ENGAGED in the presenter's log until its first evaluation, so its last verdict line is the one to judge by.

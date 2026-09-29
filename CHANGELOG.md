@@ -3,6 +3,24 @@
 Versions follow semantic versioning. While the major version is 0 the project is beta, and
 settings, the state file format and behaviour may change between releases.
 
+## 0.5.1, 2026-09-28
+
+- **The stack setup finds the Neural Rendering model again.** Since 2026-09-24 the RHI
+  manifest lists the 310.8.SF-v2 build as "310.8.2 (20/30/40/50)", and the setup looked the
+  model up by its old name, so a new install stopped at the NVIDIA step with "the manifest has
+  no dlssnr 310.8.SF-v2". The file itself never moved. The setup now finds each NVIDIA file by
+  the release it is published under, then by its name, and when the manifest names neither or
+  cannot be reached it fetches the file from that release directly. The hash check still
+  decides what is installed. Installs made before 2026-09-24 hold the file already and are not
+  affected.
+- **The self test's report reads right.** At the end of setup it printed "motion vectors: 2)."
+  where it meant the estimator in use, and counted the add-on's log lines as evaluations. It now
+  names the estimator, says that the compile failure the Feed logs for it on ReShade 6.8 is
+  expected, since it still delivers vectors once something moves, and gives the evaluation count
+  the add-on logged.
+- **New installs get DLSS5-Feeder 1.17.0**, which the setup fetches as the newest full release.
+  It was tested with the lens and changes nothing in the picture.
+
 ## 0.5.0, 2026-09-21
 
 - **Themes.** The Look page of Settings picks the colours of the title bar, the menus and the

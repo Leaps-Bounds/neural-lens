@@ -10,15 +10,15 @@ is not presented at all, so over content that is not changing nothing runs; a
 present every quarter second keeps ReShade's keys and the capture alive, and
 the overlay, a key, a screenshot or a probe get the display's rate. ReShade's
 Vulkan layer, the Feed and the Neural Rendering add-on attach to this
-swapchain: the process is lens-presenter.exe in the stack folder, which the
-layer's allow list names, and ReShade reads its configuration from the
+swapchain: the process is lens-presenter.exe in the stack folder, and ReShade
+starts in it because it finds its configuration, ReShade.ini, in the
 executable's own folder.
 
 Measured on an RTX 5090 with a 120 Hz display, from a change on screen to the
 change in this window, both read through the compositor: 8 ms, one refresh.
 
     lens-presenter.exe [lens_presenter.py] --source window:<hwnd> | monitor:<index> | pattern
-        --at X Y --size W H [--crop X Y] [--title T] [--exclude] [--fifo] [--ready]
+        --at X Y --size W H [--crop X Y] [--title T] [--exclude] [--fifo] [--ready] [--max-fps N]
 
 Installed, lens-presenter.exe is this script, frozen. From source it is a copy
 of the Python interpreter, and the script is its first argument.
@@ -28,6 +28,14 @@ setup's self test uses it.
 --crop is for monitor capture: where in the monitor the shown region starts.
 --exclude marks the window WDA_EXCLUDEFROMCAPTURE, so a monitor capture does
 not see the presenter itself where it lies over the captured region.
+--max-fps presents at most N new pictures a second, the newest when its turn
+comes, and asks the capture for fewer frames, in whole refreshes and never fewer
+than N a second, so fewer frames are copied and fewer neural passes run; 0, the
+default, is no limit.
+LENS_PRESENTER_PROFILE=1 adds to each stats line the milliseconds a frame spends
+in each step, averaged over that second: grab (copying the region out of the
+capture), same (comparing it with the last), stage (waiting for the GPU and
+copying into the staging buffer) and submit (recording, submitting, presenting).
 
 Lines on stdin:
     crop X Y        move the captured region (monitor capture)
@@ -44,6 +52,8 @@ Lines on stdin:
                     while the ReShade overlay is open, or stop that
     wake [SECONDS]  the same for a moment, one second unless given, so a key the
                     add-on reads on a present is seen
+    cap N           at most N new pictures a second from now on, 0 for no limit;
+                    the capture starts again with the new interval
     ready 1 | 0     keep presenting thirty times a second while nothing changes,
                     so the first frame after a pause is not late, or go back to
                     thirty for ten seconds after a new picture and four after;
@@ -80,11 +90,17 @@ import time
 import zlib
 
 import numpy as np
+
+# The lens's ReShade layer is switched on only in a process that sets this, which
+# the presenter does for itself before Vulkan loads, so no other program on the
+# computer gets the lens's ReShade. neural_stack.py writes the layer's manifest.
+os.environ["ENABLE_VK_LAYER_reshade_neural_lens"] = "1"
+
 import glfw
 import vulkan as vk
 from windows_capture import WindowsCapture
 
-__version__ = "0.5.1"        # named in the ready line, so a log says which presenter ran
+__version__ = "0.6.0"        # named in the ready line, so a log says which presenter ran
 
 
 def main():
@@ -97,6 +113,7 @@ def main():
     ap.add_argument("--exclude", action="store_true")
     ap.add_argument("--fifo", action="store_true")
     ap.add_argument("--ready", action="store_true")
+    ap.add_argument("--max-fps", type=float, default=0.0)
     args = ap.parse_args()
     X, Y = args.at
     W, H = args.size
@@ -183,9 +200,12 @@ def main():
     # With LENS_PRESENTER_10BIT=1 the swapchain is 10 bit instead, the frames converted on
     # the GPU by a blit through an intermediate image. Measured, it made no difference to
     # Neural Rendering's effect and cost frame rate, 91 against 118.
+    # Only standard range pairs are taken: a 10 bit format can also come as HDR10, where
+    # these sRGB values would be read as PQ and the picture would be far too bright.
     want_fmt = vk.VK_FORMAT_A2B10G10R10_UNORM_PACK32 if os.environ.get("LENS_PRESENTER_10BIT") else vk.VK_FORMAT_B8G8R8A8_UNORM
-    fmt = next((f for f in formats if f.format == want_fmt),
-               next((f for f in formats if f.format == vk.VK_FORMAT_B8G8R8A8_UNORM), formats[0]))
+    sdr = [f for f in formats if f.colorSpace == vk.VK_COLOR_SPACE_SRGB_NONLINEAR_KHR] or formats
+    fmt = next((f for f in sdr if f.format == want_fmt),
+               next((f for f in sdr if f.format == vk.VK_FORMAT_B8G8R8A8_UNORM), sdr[0]))
     direct = fmt.format == vk.VK_FORMAT_B8G8R8A8_UNORM
     mode = vk.VK_PRESENT_MODE_FIFO_KHR
     if not args.fifo and vk.VK_PRESENT_MODE_MAILBOX_KHR in modes:
@@ -315,6 +335,9 @@ def main():
             "ts": 0.0, "new": False, "dropped": 0, "arrived": 0, "skipped": 0, "got": False,
             "last": time.perf_counter(), "unfit": 0, "size": (0, 0), "closed": False}
     crop = {"x": args.crop[0], "y": args.crop[1]}
+    limit = {"fps": max(0.0, args.max_fps)}
+    prof = {"on": os.environ.get("LENS_PRESENTER_PROFILE") == "1",
+            "grab": 0.0, "same": 0.0, "n_cb": 0, "stage": 0.0, "submit": 0.0, "n_pr": 0}
     cv = threading.Condition()
     kind, _, ref = args.source.partition(":")
     if kind not in ("window", "monitor", "pattern"):
@@ -345,8 +368,14 @@ def main():
             # comes back as, since the window is excluded from capture; it counts
             # as arrived, so the capture is known to be alive, and goes no further
             spare = slot["spare"]
+            t0 = time.perf_counter()
             np.copyto(spare, frame.frame_buffer[cy:cy + H, cx:cx + W, :])
+            t1 = time.perf_counter()
             unchanged = slot["got"] and same(spare, slot["frame"])
+            if prof["on"]:
+                prof["grab"] += t1 - t0
+                prof["same"] += time.perf_counter() - t1
+                prof["n_cb"] += 1
             with cv:
                 slot["arrived"] += 1
                 slot["last"] = time.perf_counter()
@@ -364,6 +393,36 @@ def main():
             pass
 
 
+    def refresh_hz():
+        """The refresh rate of the monitor the presenter's middle is on, or 60."""
+        cx, cy = X + W // 2, Y + H // 2
+        best = None
+        for m in glfw.get_monitors() or []:
+            vm = glfw.get_video_mode(m)
+            if not vm:
+                continue
+            mx, my = glfw.get_monitor_pos(m)
+            if mx <= cx < mx + vm.size.width and my <= cy < my + vm.size.height:
+                best = vm.refresh_rate
+                break
+        if not best:
+            vm = glfw.get_video_mode(glfw.get_primary_monitor())
+            best = vm.refresh_rate if vm else 0
+        return float(best or 60)
+
+    def capture_interval():
+        """With a limit, the capture is asked for fewer frames too. Windows rounds the
+        interval up to whole refreshes, measured at 120 Hz: 11 ms gave 60 frames a
+        second and 23 ms gave 40. So the interval is half a refresh below the most
+        whole refreshes between frames that still deliver at least the limit, and the
+        loop's own pacing takes out any extra. Where one refresh is already that, as
+        60 on a 100 Hz screen, the capture is not slowed at all."""
+        if limit["fps"] <= 0:
+            return 0
+        hz = refresh_hz()
+        per = int(hz / limit["fps"] + 0.05)        # 119.88 Hz reports as 119 or 120
+        return int((per - 0.5) * 1000.0 / hz) if per >= 2 else 0
+
     def start_capture():
         """Capture the source, afresh after a pause. windows-capture takes its
         handlers by their names, so the close handler is made here, bound to
@@ -372,11 +431,12 @@ def main():
             return None, None
         gen["n"] += 1
         mine = gen["n"]
+        interval = capture_interval()
         if kind == "window":
-            c = WindowsCapture(cursor_capture=False, draw_border=False, minimum_update_interval=0,
+            c = WindowsCapture(cursor_capture=False, draw_border=False, minimum_update_interval=interval,
                                window_hwnd=int(ref))
         else:
-            c = WindowsCapture(cursor_capture=False, draw_border=False, minimum_update_interval=0,
+            c = WindowsCapture(cursor_capture=False, draw_border=False, minimum_update_interval=interval,
                                monitor_index=int(ref))
 
         def on_closed():
@@ -403,7 +463,7 @@ def main():
 
     # ---- commands on stdin
     wanted = {"quit": False, "shot": None, "probe": 0, "stop": False, "pause": False, "resume": False,
-              "live": False, "wake": 0.0, "ready": bool(args.ready), "clip": False}
+              "live": False, "wake": 0.0, "ready": bool(args.ready), "clip": False, "recapture": False}
     lost = {"said": False}
     probe = {"prev": None, "diffs": []}
 
@@ -436,6 +496,14 @@ def main():
                 wanted["ready"] = parts[1] not in ("0", "off", "no")
             elif parts[0] == "clip" and len(parts) == 2:
                 wanted["clip"] = parts[1] not in ("0", "off", "no")
+            elif parts[0] == "cap" and len(parts) == 2:
+                try:
+                    fps = max(0.0, float(parts[1]))
+                except ValueError:
+                    fps = limit["fps"]
+                if fps != limit["fps"]:
+                    limit["fps"] = fps
+                    wanted["recapture"] = True
             elif parts[0] == "wake":
                 try:
                     secs = float(parts[1]) if len(parts) > 1 else 1.0
@@ -541,6 +609,7 @@ def main():
     FAST = 1.0 / 30.0
     COOLDOWN = 10.0
     t_new = 0.0             # when a new picture was last presented
+    t_turn = 0.0            # when the frame rate limit last gave a new picture its turn
     # The add-on builds its neural feature on the first frames it is shown, and
     # the Feed settles over the first few hundred, so a fresh presenter presents
     # at the display's rate for its first seconds whatever arrives: measured over
@@ -577,6 +646,22 @@ def main():
                     lost["said"] = True
                 wanted["wake"] = time.perf_counter() + 3.0      # the add-on's history is stale
                 say("resumed")
+        if wanted["recapture"]:
+            # a new limit: the capture starts again asking for the new interval. The
+            # old one stops first, so the two never both deliver
+            wanted["recapture"] = False
+            if not paused and ctl is not None:
+                try:
+                    ctl.stop()
+                except Exception:
+                    pass
+                slot["closed"], slot["last"], slot["unfit"] = False, time.perf_counter(), 0
+                try:
+                    cap, ctl = start_capture()
+                except Exception as exc:
+                    cap = ctl = None
+                    say("capture lost could not start again: %s" % exc)
+                    lost["said"] = True
         if paused:
             glfw.wait_events_timeout(0.05)      # still answering the window's messages
             now = time.perf_counter()
@@ -595,14 +680,29 @@ def main():
             busy = (wanted["live"] or time.perf_counter() < wanted["wake"] or wanted["shot"]
                     or wanted["probe"] > 0)
             hb = FAST if wanted["ready"] or time.perf_counter() - t_new < COOLDOWN else HEARTBEAT
+            if limit["fps"] > 0:
+                hb = max(hb, 1.0 / limit["fps"])
             glfw.wait_events_timeout(refresh if busy else hb)
+        if limit["fps"] > 0 and slot["new"]:
+            # a new picture before its turn waits for it, and a newer one arriving
+            # meanwhile takes its place, so what is shown is the newest at its time.
+            # The turns keep a steady beat from one to the next rather than counting
+            # from the end of the last present, which would add the present's own
+            # time to every period and fall short of the limit
+            gap = t_turn + 1.0 / limit["fps"] - time.perf_counter()
+            if gap > 0.0005:
+                glfw.wait_events_timeout(gap)
+                continue
         with cv:
             fresh = slot["new"]
             if fresh:
                 frame, ts = slot["frame"], slot["ts"]
                 slot["new"] = False
+                t0 = time.perf_counter()
                 vk.vkWaitForFences(device, 1, [fence], vk.VK_TRUE, 10 ** 9)   # the last copy has read the staging buffer
                 np.copyto(staging, frame)
+                if prof["on"]:
+                    prof["stage"] += time.perf_counter() - t0
                 have = True
         if not have:
             continue
@@ -612,6 +712,10 @@ def main():
         # keeps ReShade's keys and the capture alive. Otherwise nothing runs at all,
         # which is the point: the neural pass rests over a still
         hb = FAST if wanted["ready"] or now - t_new < COOLDOWN else HEARTBEAT
+        if limit["fps"] > 0:
+            # a repeated present runs the neural pass as a new one does, so with a
+            # limit the heartbeat is never faster than it
+            hb = max(hb, 1.0 / limit["fps"])
         idle = not fresh and not (wanted["live"] or now < wanted["wake"] or wanted["shot"]
                                   or wanted["probe"] > 0 or now - t_present >= hb)
         if not idle:
@@ -620,6 +724,7 @@ def main():
             shot = wanted["shot"]
             if shot:
                 before = bgra_to_rgb(staging.copy())
+            t_sub = time.perf_counter()
             vk.vkResetFences(device, 1, [fence])
             idx = acquire(device, swapchain, 10 ** 9, sem_acquire, None)
             probing = wanted["probe"] > 0 and readback_ok
@@ -633,10 +738,23 @@ def main():
                                                pSwapchains=[swapchain], pImageIndices=[idx]))
             had_picture = presented[idx]
             presented[idx] = True
+            if prof["on"]:
+                prof["submit"] += time.perf_counter() - t_sub
+                prof["n_pr"] += 1
             if fresh:
                 lat.append((time.perf_counter() - ts) * 1000.0)
                 new += 1
                 t_new = time.perf_counter()
+                if limit["fps"] > 0:
+                    # the next turn is one period after this one, and at least half a
+                    # period after this picture, so a late one is not followed straight
+                    # away by the next; long after its turn, after a still, the beat
+                    # starts again from this picture
+                    period = 1.0 / limit["fps"]
+                    if t_sub - t_turn >= 2.0 * period:
+                        t_turn = t_sub
+                    else:
+                        t_turn = max(t_turn + period, t_sub - 0.5 * period)
             else:
                 again += 1
             if probing and had_picture:
@@ -681,8 +799,15 @@ def main():
         if now - t_report >= 1.0:
             h = sorted(lat)
             med = h[len(h) // 2] if h else float("nan")
-            say("stats new=%d arrived=%d repeated=%d dropped=%d skipped=%d meter=%.1f"
-                % (new, slot["arrived"], again, slot["dropped"], slot["skipped"], med))
+            extra = ""
+            if prof["on"]:
+                ncb, npr = max(1, prof["n_cb"]), max(1, prof["n_pr"])
+                extra = " grab=%.2f same=%.2f stage=%.2f submit=%.2f" % (
+                    prof["grab"] / ncb * 1e3, prof["same"] / ncb * 1e3, prof["stage"] / max(1, new) * 1e3,
+                    prof["submit"] / npr * 1e3)
+                prof.update(grab=0.0, same=0.0, n_cb=0, stage=0.0, submit=0.0, n_pr=0)
+            say("stats new=%d arrived=%d repeated=%d dropped=%d skipped=%d meter=%.1f%s"
+                % (new, slot["arrived"], again, slot["dropped"], slot["skipped"], med, extra))
             lat, new, again, t_report = [], 0, 0, now
             slot["arrived"] = 0
             slot["dropped"] = 0

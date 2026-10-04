@@ -1,0 +1,188 @@
+"""The fast engine's self test and its scoring in one go. run_selftest.cmd starts it.
+
+    python run_selftest.py [OUTDIR] [--image PNG] [--kept-against DIR] [ENGINE ARGUMENTS...]
+
+It runs  bin\\lens-fast.exe --stack test-stack --selftest docs\\images\\blender-before.png OUTDIR
+--data OUTDIR\\ngx-data --work-size 2560 1053  and then  tools\\score_selftest.py OUTDIR --check.
+OUTDIR defaults to a new folder under fast_engine\\build\\selftest named after the time.
+
+2560x1053 is the work size the reference pictures were made at, so that run is the one the
+scorer holds against them byte for byte. Any engine argument that chooses the work size takes
+the place of --work-size 2560 1053: --quality N, --work-size W H, --work-scale S or --work-max
+W H. Other engine arguments are added as they are (--passes 2, --switches 4,3,2,1,0,4, ...).
+
+--image PNG runs another picture in place of blender-before.png. No work size is added then,
+and the engine takes the default quality step for the picture's size, unless an argument says
+otherwise.
+--kept-against DIR is handed to the scorer. It is the folder of a run of the same picture at
+the reference size, against which the scorer measures how much of the network's change this
+run keeps.
+
+The self test runs the network on the GPU, so it keeps the project's rules for measuring:
+- the card must be under 25 percent busy, looked at again a minute later, given up after five
+  minutes: a game or another load would make the timings mean nothing
+- where the project's other measuring tools are, in a folder _harnesses beside fast_engine
+  that is not part of the repository, it shares their lock. It waits while
+  _harnesses\\measuring.lock or the trial tools' measuring.lock exists, looking every 10 s, and
+  gives up after 15 minutes: another measurement is running, and two at once would spoil both.
+  It then creates _harnesses\\measuring.lock with its name in it, runs the engine with no
+  window, and removes the lock straight after, whatever happened in between
+- without that folder there is nobody to share a lock with, and none is made
+
+The engine's own output goes to OUTDIR\\engine-stdout.txt and engine-stderr.txt, and only its
+last lines are printed. LENS_FAST_NR_READS=1 is set, so the runtime's reads are written and
+the scoring compares them with the probe's where it has the probe's list.
+
+Exit code: 0 the test ran and the scores are within the targets, 1 a score is not, 2 the engine
+failed, 3 the lock never went or could not be made, 4 the card stayed busy.
+"""
+import os
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+FAST = os.path.dirname(HERE)
+REPO = os.path.dirname(FAST)
+EXE = os.path.join(FAST, "bin", "lens-fast.exe")
+STACK = os.path.join(FAST, "test-stack")
+IMAGE = os.path.join(REPO, "docs", "images", "blender-before.png")
+SCORE = os.path.join(HERE, "score_selftest.py")
+LOCK = os.path.join(REPO, "_harnesses", "measuring.lock")
+# The stack trial and upstream check tools keep theirs here, and this one is only waited
+# for. Neither those tools nor the _harnesses folder are in the repository: where they are
+# missing no lock is waited for or made.
+OTHER_LOCKS = [os.path.join(os.environ.get("LOCALAPPDATA", ""), "NeuralLens-trial", "measuring.lock")]
+NO_WINDOW = 0x08000000
+TAIL = 12
+
+
+def gpu_busy():
+    out = subprocess.run(["nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"],
+                         capture_output=True, text=True, creationflags=NO_WINDOW).stdout
+    return int(out.strip().splitlines()[0])
+
+
+def take_lock():
+    """Waits for every lock to be gone and the card to be free, then takes the lock.
+    Returns how busy the card is and whether a lock was made: where the folder of the
+    project's measuring tools is missing there is no one to share a lock with."""
+    # FAST_RUN_LOCK_HELD=1: the caller holds the lock for a series of runs of which this is
+    # one, so none is waited for, made or removed here
+    shared = os.path.isdir(os.path.dirname(LOCK)) and os.environ.get("FAST_RUN_LOCK_HELD") != "1"
+    t0 = time.time()
+    busy_looks = 0
+    while True:
+        held = [p for p in [LOCK] + OTHER_LOCKS if os.path.exists(p)] if shared else []
+        if held:
+            if time.time() - t0 > 15 * 60:
+                print("run_selftest: %s still there after 15 minutes, no run" % held[0])
+                sys.exit(3)
+            time.sleep(10)
+            continue
+        busy = gpu_busy()
+        if busy >= 25:
+            busy_looks += 1
+            print("run_selftest: the card is %d percent busy (look %d of 5)" % (busy, busy_looks), flush=True)
+            if busy_looks >= 5:
+                print("run_selftest: the card stayed busy for five minutes, no run")
+                sys.exit(4)
+            time.sleep(60)
+            continue
+        if not shared:
+            return busy, False
+        try:
+            with open(LOCK, "x") as f:
+                f.write("selftest\n")
+            return busy, True
+        except FileExistsError:
+            continue
+        except OSError as e:
+            print("run_selftest: cannot create %s: %s" % (LOCK, e))
+            sys.exit(3)
+
+
+def tail(path, n):
+    with open(path, encoding="utf-8", errors="replace") as f:
+        return f.read().splitlines()[-n:]
+
+
+SIZE_OPTIONS = ("--quality", "--work-size", "--work-scale", "--work-max")
+REFERENCE_SIZE = ["--work-size", "2560", "1053"]
+
+
+def taken(args, name):
+    """Takes `name VALUE` out of args and returns VALUE, or None when it is not there."""
+    if name not in args:
+        return None
+    i = args.index(name)
+    if i + 1 >= len(args):
+        sys.exit("run_selftest: %s needs a value" % name)
+    value = args[i + 1]
+    del args[i:i + 2]
+    return value
+
+
+def main():
+    args = sys.argv[1:]
+    if args and not args[0].startswith("-"):
+        outdir = os.path.abspath(args.pop(0))
+    else:
+        outdir = os.path.join(FAST, "build", "selftest", time.strftime("%Y%m%d-%H%M%S"))
+    image = taken(args, "--image")
+    kept_against = taken(args, "--kept-against")
+    os.makedirs(outdir, exist_ok=True)
+    command = [EXE, "--stack", STACK, "--selftest", os.path.abspath(image) if image else IMAGE, outdir,
+               "--data", os.path.join(outdir, "ngx-data")]
+    if not image and not any(a in SIZE_OPTIONS for a in args):
+        command += REFERENCE_SIZE
+    command += args
+    env = dict(os.environ, LENS_FAST_NR_READS="1")
+    out_path = os.path.join(outdir, "engine-stdout.txt")
+    err_path = os.path.join(outdir, "engine-stderr.txt")
+
+    # outside the try: a run that never got the lock must not remove another run's
+    busy, locked = take_lock()
+    t0 = time.time()
+    code = None
+    try:
+        print("run_selftest: card %d percent busy, %s, running"
+              % (busy, "lock taken" if locked else "no lock to share"), flush=True)
+        with open(out_path, "wb") as out, open(err_path, "wb") as err:
+            code = subprocess.run(command, stdout=out, stderr=err, stdin=subprocess.DEVNULL, env=env,
+                                  creationflags=NO_WINDOW, timeout=600).returncode
+    except subprocess.TimeoutExpired:
+        print("run_selftest: the engine did not finish in 600 s and was ended")
+        code = None
+    finally:
+        if locked:
+            try:
+                os.remove(LOCK)
+            except OSError:
+                pass
+    print("run_selftest: engine exit code %s after %.1f s%s"
+          % (code, time.time() - t0, ", lock removed" if locked else ""))
+    for line in tail(out_path, TAIL):
+        print("  " + line)
+    if code != 0:
+        for line in tail(err_path, TAIL):
+            print("  stderr: " + line)
+        sys.exit(2)
+
+    # Captured and printed here: a console program started without a window and without
+    # handles of its own writes into nothing.
+    score = [sys.executable, SCORE, outdir, "--check"]
+    if image:
+        score += ["--original", os.path.abspath(image)]
+    if kept_against:
+        score += ["--kept-against", os.path.abspath(kept_against)]
+    scored = subprocess.run(score, capture_output=True, text=True, creationflags=NO_WINDOW)
+    for line in (scored.stdout + scored.stderr).splitlines():
+        print("  " + line)
+    print("run_selftest: %s, the pictures and scores.json are in %s" %
+          ("scores within the targets" if scored.returncode == 0 else "A SCORE IS OFF TARGET", outdir))
+    sys.exit(0 if scored.returncode == 0 else 1)
+
+
+if __name__ == "__main__":
+    main()

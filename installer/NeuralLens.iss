@@ -13,6 +13,11 @@
 ; because ReShade reads its configuration from the folder of the program it
 ; attaches to.
 ;
+; The fast engine, lens-fast.exe, the lens's own program for a fullscreen lens,
+; is part of the program and installed as fast\lens-fast.exe. The spec builds it
+; with fast_engine\build.cmd and puts it into the dist folder, and this script
+; refuses a dist folder without it.
+;
 ; Build, from the repository root:
 ;   python -m PyInstaller --noconfirm --clean --distpath build\dist --workpath build\work installer\NeuralLens.spec
 ;   "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" installer\NeuralLens.iss
@@ -28,9 +33,15 @@
 #ifndef AppGuid
   #define AppGuid "6B0B1D6E-4C7A-4D6E-9B7D-2A6C1E9F0A11"
 #endif
-#define AppVersion "0.5.1"
+#define AppVersion "0.6.0"
 #define AppExe "NeuralLens.exe"
 #define DownloadMB "150"
+
+; a dist folder from a spec without the fast engine would install a lens whose
+; fullscreen quietly falls back to the ReShade engine
+#if !FileExists(AddBackslash(SourcePath) + "..\build\dist\NeuralLens\fast\lens-fast.exe")
+  #error build\dist\NeuralLens\fast\lens-fast.exe is missing. Build with installer\NeuralLens.spec, which builds the fast engine and puts it there.
+#endif
 
 [Setup]
 AppId={{{#AppGuid}}
@@ -66,8 +77,19 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Shortcuts:"
 
+; From the dist folder only the four parts the spec builds go into the installer: NeuralLens.exe,
+; lens-presenter.exe, the _internal folder the two share, and fast\lens-fast.exe. A lens run from the dist
+; folder keeps its stack there beside the program, NVIDIA's runtimes included, with its settings, data and
+; logs. ReShade, the add-ons, the Cost Scaler and the fast engine write their own settings, logs,
+; screenshots and crash dumps there too. Naming the parts keeps all of that out of an installer that ISCC
+; builds on its own after such a run. The stack is fetched, never shipped. _internal holds only what the
+; spec collected, since a run writes nothing there, not even Python bytecode. A part the spec gains has to
+; be named here as well.
 [Files]
-Source: "..\build\dist\NeuralLens\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
+Source: "..\build\dist\NeuralLens\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\build\dist\NeuralLens\lens-presenter.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\build\dist\NeuralLens\_internal\*"; DestDir: "{app}\_internal"; Flags: recursesubdirs ignoreversion
+Source: "..\build\dist\NeuralLens\fast\lens-fast.exe"; DestDir: "{app}\fast"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\CHANGELOG.md"; DestDir: "{app}"; Flags: ignoreversion
@@ -77,6 +99,9 @@ Source: "..\licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion
 [InstallDelete]
 ; the program's libraries are replaced whole, so none from an earlier version is left beside the new ones
 Type: filesandordirs; Name: "{app}\_internal"
+; and so is the fast engine's folder, with the copy of the proxy's ini the engine wrote there,
+; which it writes again from the stack's at its next start
+Type: filesandordirs; Name: "{app}\fast"
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"
@@ -173,7 +198,10 @@ begin
 end;
 
 // Everything the lens has is inside {app}: the program, the stack it downloaded,
-// the ReShade layer and its data. The one thing outside is the registry value
+// the ReShade layer and its data. The fast engine's copy of the proxy's ini in
+// {app}\fast and the folder the lens gives it for the runtime's logs,
+// {app}\data\logs\fast, are inside too, and the exe's
+// own uninstall removes both first. The one thing outside is the registry value
 // that names the layer, which the exe's own uninstall removes; the folder itself
 // goes with [UninstallDelete]. A DLL the user pointed the setup at was copied in,
 // so nothing outside {app} is touched.

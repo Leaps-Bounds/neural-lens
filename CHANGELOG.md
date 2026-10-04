@@ -3,6 +3,262 @@
 Versions follow semantic versioning. While the major version is 0 the project is beta, and
 settings, the state file format and behaviour may change between releases.
 
+## 0.6.0, 2026-10-04
+
+A fast engine for a fullscreen lens, fullscreen as the picture alone with keys that work over a
+game, quality steps, a frame rate limit, Settings with short labels, logs with times, and a new
+licence.
+
+- **The licence is now the PolyForm Strict License 1.0.0.** Releases up to 0.5.1 remain under
+  GPL-3.0-or-later.
+- **A fast engine draws a fullscreen lens.** It is a program of the lens's own, `lens-fast.exe`,
+  which the lens starts in place of the presenter when it goes fullscreen. It captures the
+  monitor on the graphics card, runs the neural network on a copy of the picture by calling the
+  stack's runtime directly, and shows the original plus what the network changed, so the
+  original's own detail is kept. The copy is downscaled where the picture is larger than
+  2560x1440, and at the lower quality steps. The presenter with ReShade and the two add-ons still
+  draws every windowed lens, and the lens now calls it the ReShade engine. Measured on an RTX 5090
+  with a 6144x2560 display at 120 Hz and a second monitor connected, fullscreen at 6144x2558 with
+  one pass over a white square moving across noise, the fast engine at Balanced, the step it
+  starts at for that size, showed 115 new pictures a second on 218 W, and 60 a second on 131 W
+  with the frame rate limit at 60. The ReShade engine showed 62 a second on 330 W over the same
+  picture. The fast engine has no ReShade in it, so with it there is no Home menu, no ReShade
+  effect and no ReShade screenshot key, and F6, the add-on's key, does nothing. The lens's own
+  screenshots, the A/B split, the passes, Ready mode and minimise work as before, and F9 turns
+  Neural Rendering off and on, see below. The new Fullscreen page of Settings, or
+  `fullscreen_engine = stack` in the ini, puts fullscreen back on the ReShade engine. Where the
+  fast engine fails, the ReShade engine takes over until the lens is started again, and the lens
+  says so on screen. Where it is not installed, fullscreen runs on the ReShade engine and the
+  Fullscreen page says why. A fast engine that gets no picture from the screen is not counted as
+  failed. The ReShade engine stands in for it until the screen gives pictures again.
+- **Fullscreen is the picture alone.** A fullscreen lens covers its monitor from the top edge to
+  two rows of pixels above the bottom edge, 6144x2558 on a 6144x2560 monitor, with no title bar,
+  frame or tab, on either engine. The two rows keep Windows from treating the lens as a
+  fullscreen program. Measured with a window that covered the monitor exactly, Windows set its
+  notification state to busy and the taskbar lost its place on top of other windows. One row
+  short neither happened, and the lens keeps its sizes even, so it stops two rows short. What
+  the title bar would have said, such as a restart, a screenshot's result or a failure of the
+  fast engine, shows for a few seconds on a notice at the top of the monitor, which takes no
+  click and is out of the picture. Back in a window the title bar is as it was.
+- **Four keys for a fullscreen lens**, which has no title bar to click. F7 opens and closes the
+  lens menu, F8 the NR settings, F9 turns Neural Rendering off and on, and F10 shows or hides
+  the on-screen readout. The lens holds them only while it is fullscreen and in view, so from a
+  windowed or minimised lens they reach the program that has the keyboard. It also lets them go
+  while Settings or another dialog of its own is in front, and while a program in exclusive
+  fullscreen is in front on its monitor. They are single keys because Windows takes only the
+  last key of a combination away from the program in front, so a game still gets the Ctrl of a
+  combination such as Ctrl+Home, and many games use it. The Hotkeys page of Settings changes or
+  clears them, and the ini keeps them as `hotkey_lens_menu`, `hotkey_nr_panel`,
+  `hotkey_nr_toggle` and `hotkey_readout_toggle`. An action that already has one of these keys
+  in the ini, as 0.5.1 allowed, keeps it, and the new action then starts without a key, which
+  its row on the Hotkeys page says. Once Settings has given the other action another key, the
+  new action gets its own. Whenever the lens does not hold the menu's key, such as when it has
+  none, or another program or another of its actions has it, a click on the lens's taskbar
+  button opens the menu.
+- **A note as the lens goes fullscreen.** A small window over the middle of the screen says that
+  the lens itself is now invisible while it goes on applying DLSS 5. Under that it lists the keys
+  as they are set, one to a line with what each does. The lens menu comes first, then the NR
+  settings, Neural Rendering off and on, the on-screen readout, and last the arrow keys, Enter
+  and Escape, which work the menu and the NR settings panel while one is open. A line after the
+  list says what a right click on the taskbar button lists. With Neural Rendering off the first
+  line says so instead, and names the keys and the menu entry that bring it back. OK, Enter or
+  Escape closes it. Ticking its Don't show this again switches it off at once, a switch on the
+  Fullscreen page of Settings switches it on again, and the ini keeps it as `fullscreen_note`.
+  It comes up all the same when another program holds one of the keys, and then has no Don't
+  show this again if it was switched off. Like every window of the lens it is out of the
+  picture, and it never takes the keyboard, so a game under the lens keeps it.
+- **The menu of a fullscreen lens** opens at the pointer, or at the top left corner of the
+  lens's monitor when the pointer is on another one. Its second line is the readout the title
+  bar would show, and it has Leave fullscreen, Minimise to the taskbar and Profiles.
+- **Quit Neural Lens in place of Close.** The last entry of the lens menu, in a window and
+  fullscreen, was Close, which could be read as closing only the menu or a dialog. It is now
+  Quit Neural Lens. The offer to install a new version and the message when the picture cannot
+  be started now say that Neural Lens quits, where they said that the lens closes.
+- **NR settings on a panel of the lens's own.** With the fast engine, the menu's NR settings
+  entry and F8 open a panel with Neural Rendering on or off, the style, the intensity, local
+  tone, local structure, skin structure, the auto mask, the passes and the quality step. The
+  picture follows a value while it moves. The values are the add-on's own, kept in its section
+  of `ReShade.ini`, so the ReShade engine uses them too. A new pass count restarts the picture.
+  With the ReShade engine the entry and the key open ReShade's overlay.
+- **The menu and the NR settings panel work from the keyboard.** While either is open over a
+  fullscreen lens, the lens holds the arrow keys, Enter and Escape as well, and lets them go when
+  it closes. In the menu, Up and Down move through the entries, Enter chooses one and Escape
+  closes it. On the panel, Up and Down move between the settings, Left and Right change the one
+  that is lit, Enter switches a switch and Escape closes it. The note on going fullscreen closes
+  with Enter or Escape. The menu, the panel and the note never take the foreground from the
+  program in front, so a game under the lens keeps the keyboard.
+- **F6 does nothing on the fast engine.** F6 is the add-on's key, and the fast engine has no
+  add-on. A fullscreen lens on it turns Neural Rendering off and on with its NR key, F9 unless
+  the Hotkeys page of Settings gives it another, or with its menu, and F6 pressed for a game
+  under the lens leaves the lens as it is. The add-on of the ReShade engine, which draws every
+  windowed lens, reads F6 itself, so in a window F6 switches Neural Rendering as before. The
+  program in front gets F6 either way, since the add-on and the lens only read it.
+- **Neural Rendering on and off presses no key.** On the ReShade engine the menu's Turn NR off
+  and Turn NR back on pressed F6 for the add-on as a real keystroke, which other programs could
+  see as well, with the presenter given the keyboard for a moment. Now they and the new F9 write
+  the new state into `ReShade.ini`, where the add-on reads it as it starts, and restart the
+  picture, as a new pass count does. F6 pressed on the keyboard still switches at once, since
+  the add-on reads it itself. With the overlay open they end tweak mode first, as Done tweaking
+  does. While the overlay is open or has just closed, the restart waits a second and a half at
+  least, and until `ReShade.ini` has held still for a second, four seconds at most, since the
+  add-on writes a change made in the overlay to the file about a second later. Giving the
+  keyboard back after the lens's own F6 and after tweak mode attached the lens to the input of
+  the window that got it back. Now only tweak mode hands the keyboard back, and for that the lens
+  attaches only to the presenter's input, while the presenter or another window of the lens's own
+  is in front, so it never attaches to another program's input.
+- **An on-screen readout for a fullscreen lens.** The Fullscreen page of Settings can put a line
+  of figures in a corner of the screen while the lens is fullscreen, with a switch each for the
+  frame rate, the latency, the quality step, the passes and the style, all off to begin with,
+  and a choice of corner, the top right unless another is chosen. It lets every click through,
+  never takes the keyboard, is out of the picture and is updated once a second. The quality step
+  shows only on the fast engine. F10 hides the readout and shows it again. Hidden, by F10 or by
+  switching every figure off in Settings, it keeps the figures it showed, and F10 brings those
+  back, or the frame rate and the latency where none are kept. The ini keeps the choices as
+  `fs_readout` and `fs_readout_at`, and the figures F10 brings back as `fs_readout_last`. F10
+  writes `fs_readout` as Settings does, so the readout is as it was left at the next start.
+- **A fullscreen lens notices a program in exclusive fullscreen**, which nothing else is drawn
+  over, the lens included. While Windows reports one and the window in front is another
+  program's on the lens's monitor, the lens gives F7 to F10 back and closes its note, menu
+  and NR settings panel, so that program gets those keys and the arrow keys, Enter and Escape.
+  The notice at the top of the screen says that the lens cannot draw over that program and that
+  borderless windowed works, and the log has a line when it starts and when it ends.
+- **A warning when the lens falls behind.** A fullscreen lens on the fast engine looks at its
+  median delay every 10 s while no program is in exclusive fullscreen on its monitor. When the
+  median delay of each of two 10 s spans in a row is three refreshes of its monitor or more,
+  25 ms at 120 Hz with a small margin for rates such as 119.88 Hz, and one window of another
+  program was in front all that time, a warning at the top of the screen says about how far
+  behind the program in front the lens is, that this program most likely keeps the card fully
+  busy, and that a frame rate limit in that program, set a little below the rate it reaches, lets
+  the lens keep up. Its last sentence says where in Settings it can be switched off. The desktop
+  or the taskbar in front brings no warning. It goes after about 12 s and does not come back for
+  ten minutes, and `lens.log` has a line whenever it comes, or would come with the switch off.
+  The switch is Warn when the lens falls behind, on the Fullscreen page of Settings and on to
+  begin with, and the ini keeps it off as `fs_behind_warn = 0`. Switched on again, the warning
+  comes at the next two spans behind in a row, with no wait of ten minutes. On a test computer
+  with an RTX 5090 and one monitor at 120 Hz, a demanding game that kept the card fully busy while
+  it was in front held the lens 38.5 to 58.3 ms behind in most 10 s spans, up to 100 ms in a few,
+  with Neural Rendering and G-SYNC on or off, and 0 to 8.3 ms once the game's own frame rate limit
+  at 30 fps left the card room to spare. The README has the figures and what did not help.
+- **Five quality steps for the fast engine.** Quality, Balanced, Performance, Low power and
+  Lowest power are on the Power page of Settings and on the NR settings panel, and
+  `fast_quality` in the ini takes 4 down to 0. A lower step has the network work on a smaller
+  copy of the picture, which costs less power and loses some of the fine detail the network
+  adds. A picture larger than 2560x1440 starts at Balanced, where no loss was seen in the test
+  pictures, and a smaller one at Quality, where the network works at the picture's own size. A
+  change takes effect while the picture runs. Measured in the same setup with the engine by
+  itself at 6144x2526, over the same moving square at about 116 new pictures a second at every
+  step, the card drew 240 W at Quality, 220 W at Balanced, 202 W at Performance, 186 W at Low
+  power and 154 W at Lowest power. Two actions on the Hotkeys page raise and lower the step,
+  with no key set to begin with.
+- **A frame rate limit.** The new Power page of Settings, where Ready mode moved too, offers no
+  limit, 60 or 30 frames a second, and `max_fps` in the ini takes any rate from 10 to 240 frames
+  a second. The neural pass runs only for the pictures the limit lets through. On an RTX 5090
+  with a 1400x1000 lens over a moving picture at 120 Hz, the card drew 183 W with no limit,
+  129 W at 60 frames a second and 83 W at 30 frames a second. Fullscreen at 6144x2558 on the
+  fast engine, with a second monitor connected, it drew 218 W with no limit and 131 W with the
+  limit at 60. The ReShade engine runs fullscreen at about 63 frames a second with the card fully
+  busy, so there only a limit of 30 saves power, 327 W down to 202 W at 6144x2526. The ReShade
+  engine holds a picture until its turn comes, up to one period, so with it a limit adds delay.
+  The fast engine takes or leaves each frame as it arrives and does not hold one for its turn, so
+  with it a limit adds none. A limit applies straight away and is part of a profile.
+- **The latency a fullscreen lens shows on the fast engine is the engine's own measure**, from a
+  captured frame's timestamp to the refresh that showed its picture, never below zero. With a
+  second monitor at 60 Hz connected it read 0 ms over the moving square, the picture being on
+  screen one refresh before the one its frame was composed for. A fullscreen lens shows the
+  latency on the second line of its menu.
+- **A still screen under the fast engine.** Over a picture that does not change the fast engine
+  repeats its picture fifteen times a second without running the network, and thirty times with
+  Ready mode. A picture that has come to rest after a large change goes through the network up
+  to four more times, since the network's first run on a picture that has just stopped moving is
+  not yet its settled one. With the engine by itself at 6144x2526, those runs changed a picture
+  that had just stopped scrolling by 1.7 to 2.0 out of 255 on average, and it then stood still.
+- **The taskbar button's right-click list** has three entries of the lens's own, Open the lens
+  menu, Open or close the NR settings, and Enter or leave fullscreen. They work with a windowed,
+  a fullscreen and a minimised lens, which comes back first. Enter or leave fullscreen leaves a
+  lens attached to a window as it is and says why on the notice. `NeuralLens.exe --do menu`,
+  `--do nr` and `--do fullscreen` hand the same three commands to the lens that is running, for
+  a shortcut or a script, and with no lens running they start one, fullscreen for
+  `--do fullscreen`. The list is taken away when the last lens closes and when the lens is
+  uninstalled, and the entries of a list that a lens ended by force left behind start the lens.
+- **Settings shows each setting as one short label**, in a larger font. What a setting does comes
+  up in a small window beside the pointer once the pointer has rested on the setting for a
+  second and a half. F1 brings it up for the setting that has the keyboard, or for the one under
+  the pointer when no setting has it, and a line at the foot of the dialog says how. A click on a
+  switch, a choice, a button or the slider gives that setting the keyboard. There are nine pages,
+  Picture, Power, Fullscreen, Title bar, Profiles, Hotkeys, Screenshots, Look and Program. An
+  explanation says only what its setting does, in a few plain sentences, and the figures
+  measured for the settings are in the README and in `docs/NOTES.md`. The Profiles page has a
+  Name field with Rename, Delete and Save the current settings beside the list, and a switch that
+  another switch holds on says so beside it. The Hotkeys page refuses a combination that another
+  action already has, and names that action.
+- **The Cost Scaler works to about 4 megapixels over all the passes, down from 8.** It serves the
+  ReShade engine, since the fast engine scales the picture itself. With the ReShade engine
+  fullscreen at 6144x2526 and one pass that is a scale of 0.50 instead of 0.70, which on an RTX
+  5090 ran 63 frames a second on 343 W instead of 53 a second on 397 W, and the picture kept the
+  model's full change, where 0.70 made about half of it. A `cost_scaler_mpx` already in the ini
+  still applies.
+- **Motion detail.** The Picture page of Settings sets how finely the default motion estimator
+  works out movement between frames, on the full picture or on half or a quarter of it on each
+  side. Half and Quarter cost the card less, and text that moves fast then shows a faint double.
+  With the ReShade engine fullscreen at 6144x2526 on an RTX 5090, Half drew 42 W less than Full
+  and Quarter 51 W less, at the same frame rate, and a 1400x1000 lens saved 8 W and 11 W. Full
+  stays the default. A change restarts the picture, and the choice is part of a profile. The
+  fast engine does not use this setting.
+- **The lens's ReShade no longer starts in other programs.** Up to 0.5.1 its Vulkan layer was on
+  for every Vulkan program, and ReShade starts in any program that has a `ReShade.ini` in its own
+  folder, so in another program that has its own ReShade set up for Vulkan the lens's copy could
+  start in place of that program's own. The README said a list of allowed programs kept it out,
+  which ReShade does not read. The layer now switches on only in the lens's presenter, which sets
+  the variable that enables it for itself. The stack setup writes the new layer description each
+  time it runs, which the installer does unless its box is unticked. The lens checks the
+  registrations of its layer each time it starts. Where an update with the box unticked kept its
+  own old one, which Vulkan loads into every program that uses Vulkan, it says so and offers the
+  stack setup. Where the old one belongs to another copy of the lens, it names the file and
+  offers to remove that registration or to keep it, and does not ask again about one kept. The
+  setup's self test and `neural_stack.py --verify` say which registration is in place, and
+  `--verify` fails on the old one.
+- **The installer carries the fast engine**, as `fast\lens-fast.exe` in the program's folder,
+  with the licence texts of openNR and C++/WinRT in `licenses`. An update replaces that folder
+  whole, and uninstalling also removes the ini and the engine's log folder.
+- **From source the fast engine has to be built.** `fast_engine\build.cmd` builds it into
+  `fast_engine\bin`, where the lens finds it. That needs MSVC from Visual Studio 2022 or later,
+  or from its Build Tools, with the workload "Desktop development with C++", and Windows SDK
+  10.0.26100 or later. Without the engine a fullscreen lens runs on the ReShade engine, and the
+  stack setup's summary and `neural_stack.py --verify` say whether the engine is there. The
+  release build builds the engine first and stops when that fails.
+- **VORT's motion vector code is CC BY-NC 4.0, not MIT.** The README, the stack setup and its log
+  said MIT for all of VORT. Most of its files are MIT, but `vort_MotionVectors.fxh` builds on
+  ReshadeMotionEstimation and carries the same non-commercial licence, so choosing VORT does not
+  lift the setup's non-commercial limit.
+- **Logs with times, and a line for each action.** Each line of `lens.log` starts with the local
+  time to the millisecond, and so does each note the fast engine writes to
+  `presenter-stderr.log`. Each action taken through the lens's keys, its menu, the NR settings
+  panel, the title bar's buttons, the taskbar list or Settings has a line with the way it came.
+  Save in Settings names each setting it changed, and the Profiles page's Rename, Delete and Save
+  the current settings and the Program page's Check now have lines of their own. While a
+  fullscreen lens runs on the fast engine, a line every 10 s gives the engine's new and arrived
+  pictures a second, the repeated, dropped and skipped ones, its median delay, the quality step,
+  the passes, whether Neural Rendering is on and the frame rate limit. A restart, a new quality
+  step, pass count or frame rate limit, Neural Rendering or Ready mode switched, fullscreen and
+  back, a profile and minimising write that line at once, for the seconds before. While the lens
+  is fullscreen, a line names the class of each window that comes to the front, and never its
+  title. A lens relaunched by Settings for a new stack folder or theme writes on in the same
+  `lens.log`, where its output went to `restart.log` before. One relaunched for a new data folder
+  starts a `lens.log` in that folder's `logs`, and `restart.log` stays in the old folder's.
+- **Smaller changes.** A lens whose picture cannot be started again says so and quits. Going
+  fullscreen or back goes through when `neural-lens.ini` cannot be written. A fullscreen lens
+  whose monitors change says "the monitors changed, starting again ...". A screenshot that
+  failed says "screenshot failed" and the reason, once. While the ReShade overlay is open the
+  title bar says "Tweak mode is on. Press Home when done." Run from source, the lens now starts
+  again after the stack setup it offers, where before it did not come back. Tab and Shift+Tab now
+  move on through the hotkey fields in Settings, where before a field took Tab and could take
+  Shift+Tab as a hotkey. When ReShade does not start in the stack's self test, the setup now says
+  what to check, the layer's registration, its switch and `ReShade.ini` beside the presenter, and
+  says instead when the cause is that the setup runs as administrator. The bug report form asks
+  which engine drew the lens and at which quality step, and names the logs a fast engine writes.
+  The README's Limits now say that with Windows HDR on, the lens works from a capture clipped at
+  80 nits.
+
 ## 0.5.1, 2026-09-28
 
 - **The stack setup finds the Neural Rendering model again.** Since 2026-09-24 the RHI

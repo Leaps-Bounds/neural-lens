@@ -11,7 +11,8 @@ current user only, so no elevation is needed and nothing shared with other
 software is touched. Licences force this: NVIDIA's runtimes are NVIDIA's, the
 RenoDX add-on has no published licence, and a new install gets
 ReshadeMotionEstimation (CC BY-NC 4.0) for motion vectors, chosen by
-measurement, with VORT (MIT) as the alternative.
+measurement, with VORT (MIT, its motion vector code CC BY-NC 4.0) as the
+alternative.
 
 What ends up where. APP is the lens's own folder. TARGET, the stack folder, is
 APP itself for the installed program and APP\\stack when run from source:
@@ -27,6 +28,12 @@ APP itself for the installed program and APP\\stack when run from source:
     TARGET\\reshade-shaders\\Shaders\\...        DLSS5_Feed.fx, DRME, VORT, ReShade headers
     TARGET\\ReShade.ini, ReShadePreset.ini, dlss5-feed.cfg
     TARGET\\install-record.json                 everything above, for uninstall
+    TARGET\\fast\\lens-fast.exe                 the fast engine, installed with the program and
+                                               never written here. From source the lens runs the
+                                               one fast_engine\\build.cmd builds in fast_engine\\bin
+    TARGET\\fast\\nvngx_dlssnr.ini              the fast engine's own copy of the proxy's ini,
+                                               written beside its exe, in fast_engine\\bin from
+                                               source. --uninstall removes it and the engine's logs
     APP\\ReShade\\ReShade64.dll, ReShade64.json, ReShadeApps.ini
     APP\\downloads\\...                           while installing; removed once the self test passes
     HKCU\\SOFTWARE\\Khronos\\Vulkan\\ImplicitLayers\\<APP\\ReShade\\ReShade64.json> = 0
@@ -39,10 +46,14 @@ A DLL the user points at is hash checked and copied in; the record names the
 copy, so uninstalling never touches the original.
 
 The layer is registered under a name of its own, VK_LAYER_reshade_neural_lens,
-with its own allow list holding only the presenter. The Vulkan loader loads one
-layer per name, so a copy named like a machine wide ReShade would be skipped
-where one exists, and this way the two coexist and each hooks only what it
-lists.
+and switches on only in a process that sets ENABLE_VK_LAYER_reshade_neural_lens=1,
+which the presenter does for itself. The Vulkan loader loads one layer per name,
+so a copy named like a machine wide ReShade would be skipped where one exists,
+and this way the two coexist. ReShade itself starts in any program with a
+ReShade.ini in its own folder, whatever ReShadeApps.ini says, so without that
+switch the lens's copy could start in place of another program's own ReShade.
+Releases up to 0.5.1 had no such switch. The lens checks the switch as it
+starts, and --verify says whether it is there, see layer_ungated.
 
 The add-on's section of ReShade.ini starts with nothing but its ConfigVersion,
 so a new install runs the add-on's own defaults, apart from two that the lens
@@ -55,7 +66,8 @@ Command line, for testing and for people who prefer it:
     python neural_stack.py --target D:\\nr   install somewhere else, from source
     python neural_stack.py --dlssnr X --dlss Y   use NVIDIA DLLs you already have (hash checked)
     python neural_stack.py --provider vort  estimate motion vectors with VORT instead of DRME
-    python neural_stack.py --verify         only run the self test on an existing stack
+    python neural_stack.py --verify         only run the self test on an existing stack, and
+                                            check that the layer is limited to the lens
     python neural_stack.py --uninstall      remove what the record says was installed
 
 The installer runs this during setup. The lens offers it again if it starts
@@ -75,7 +87,7 @@ import urllib.request
 import winreg
 import zipfile
 
-__version__ = "0.5.1"
+__version__ = "0.6.0"
 
 FROZEN = getattr(sys, "frozen", False)
 # Everything lives in the lens's own folder, the one the installer put it in or
@@ -89,6 +101,7 @@ DEFAULT_TARGET = APP_DIR if FROZEN else os.path.join(APP_DIR, "stack")
 LAYER_DIR = os.path.join(APP_DIR, "ReShade")
 CACHE_DIR = os.path.join(APP_DIR, "downloads")
 LAYER_NAME = "VK_LAYER_reshade_neural_lens"
+LAYER_GATE = "ENABLE_VK_LAYER_reshade_neural_lens"     # the switch the layer waits for, see layer_ungated
 LAYER_KEY = r"SOFTWARE\Khronos\Vulkan\ImplicitLayers"
 
 # What the download comes to, for the installer's page, the wizard and the
@@ -120,8 +133,9 @@ DRME_FILES = ["MotionEstimation.fx", "MotionEstimation.fxh", "MotionEstimationUI
 # text as the partial ink fraction of the page, lower is crisper, at a slow,
 # a reading and a fast scroll: DRME 0.075, 0.096, 0.102; VORT 0.099, 0.109,
 # 0.106; no provider 0.114, 0.123. DRME is CC BY-NC 4.0, so it may be fetched
-# and used with credit in a free tool and is the default; VORT is MIT and stays
-# as the alternative.
+# and used with credit in a free tool and is the default. VORT is MIT apart
+# from its motion vector code, which builds on DRME and is CC BY-NC 4.0 too,
+# and stays as the alternative.
 PROVIDERS = {"drme": 0, "vort": 2}
 # vort_Motion.fx pulls in most of its Includes folder through nested includes
 # (Depth, ColorTex, BlueNoise, Tonemap and more, four of which a hand picked
@@ -396,6 +410,40 @@ def presenter_command(target):
     return [exe, os.path.join(APP_DIR, "lens_presenter.py")]
 
 
+def fast_engine_dirs(target):
+    """The folders a lens with this stack folder looks in for the fast engine,
+    lens-fast.exe, in the order neural_lens.py's _find_fast_exe looks: the
+    stack's fast folder, where an install has it, then from source the folder
+    fast_engine\\build.cmd builds it into. The engine writes its own copy of
+    the proxy's ini beside its exe."""
+    dirs = [os.path.join(target, "fast")]
+    if not FROZEN:
+        dirs.append(os.path.join(APP_DIR, "fast_engine", "bin"))
+    return dirs
+
+
+def fast_engine_line(target):
+    """One line for the setup's summary and its check that says whether the
+    fast engine is there. Without it a fullscreen lens runs on the presenter,
+    the ReShade engine, as a windowed lens does."""
+    for d in fast_engine_dirs(target):
+        exe = os.path.join(d, "lens-fast.exe")
+        if os.path.isfile(exe):
+            return "    fast engine: found, %s" % exe
+    if FROZEN:
+        line = ("    fast engine: not found in %s, so a fullscreen lens uses the ReShade engine."
+                % os.path.join(target, "fast"))
+        # the installer puts it in the program's folder only, so a reinstall mends
+        # only the stack that is that folder
+        if same_path(target, APP_DIR):
+            line += " Installing the lens again puts it back."
+        return line
+    return ("    fast engine: not built, so a fullscreen lens uses the ReShade engine, as a windowed "
+            "lens does. fast_engine\\build.cmd builds it. It needs Visual Studio 2022 or later, or "
+            "its Build Tools, with the workload \"Desktop development with C++\" and Windows SDK "
+            "10.0.26100 or later.")
+
+
 # ---------------------------------------------------------------- steps
 class Install:
     def __init__(self, target=DEFAULT_TARGET, dlssnr=None, dlss=None, log=None, provider="drme"):
@@ -437,6 +485,8 @@ class Install:
         self.say("Installed. Running the self test.")
         ok, detail = verify(self.target, log=self.log)
         self.say(detail)
+        self.say(layer_line(layer_ungated()))
+        self.say(fast_engine_line(self.target))
         if ok:
             # the downloads served their purpose; a failed run keeps them so a
             # retry can be looked into with them still there
@@ -491,7 +541,7 @@ class Install:
         if FROZEN:
             shutil.rmtree(old, ignore_errors=True)
 
-    # the presenter: what the layer's allow list names, in the stack folder
+    # the presenter, in the stack folder beside the ReShade.ini that ReShade looks for
     def step_presenter(self):
         """Installed, lens-presenter.exe is part of the program and already in
         its folder, which is the stack folder. From source it is a copy of the
@@ -555,12 +605,15 @@ class Install:
                 "device_extensions": [{"name": "VK_EXT_tooling_info", "spec_version": "1",
                                        "entrypoints": ["vkGetPhysicalDeviceToolPropertiesEXT"]}],
                 "disable_environment": {"DISABLE_VK_LAYER_reshade_neural_lens": "1"},
+                # on only where this is set, which the presenter does for itself, so no
+                # other program gets the lens's ReShade, see layer_ungated
+                "enable_environment": {LAYER_GATE: "1"},
             },
         }
         with open(os.path.join(LAYER_DIR, "ReShade64.json"), "w", encoding="utf-8") as f:
             json.dump(manifest, f, indent=1)
         self.add(os.path.join(LAYER_DIR, "ReShade64.json"))
-        # the allow list is this layer's own, so it holds exactly one program
+        # ReShade's own setup program keeps this list, and ReShade does not read it
         self.add(write_text(os.path.join(LAYER_DIR, "ReShadeApps.ini"),
                             "Apps=%s\n" % os.path.join(self.target, "lens-presenter.exe")))
 
@@ -715,8 +768,8 @@ class Install:
             self.add(fetch(SOURCES["vort"] + "Textures/" + name, os.path.join(textures, name), self.log, name))
         for name in HEADER_FILES:
             self.add(fetch(SOURCES["headers"] + name, os.path.join(base, name), self.log, name))
-        self.say("shaders: VORT (MIT) fetched as the alternative estimator, %d includes and its texture, "
-                 "and ReShade's headers" % len(includes))
+        self.say("shaders: VORT (MIT, its motion vector code CC BY-NC 4.0) fetched as the alternative "
+                 "estimator, %d includes and its texture, and ReShade's headers" % len(includes))
         for name in DRME_FILES:
             self.add(fetch(SOURCES["drme"] + name, os.path.join(base, name), self.log, name))
         self.say("shaders: ReshadeMotionEstimation by Jakob Wapenhensch (CC BY-NC 4.0)")
@@ -780,7 +833,139 @@ class Install:
         return dest
 
 
+# ---------------------------------------------------------------- the layer's limit
+def layer_ungated():
+    """The descriptions of the lens's layer, registered for this user, that
+    would switch it on in every program: the paths of those that name the
+    lens's layer and have no enable_environment for LAYER_GATE. Empty where
+    every one waits for the presenter to ask, or none is registered.
+
+    The layer is ReShade, and it belongs in the lens's own presenter alone. A
+    description without the switch, which 0.5.1 wrote and an update with the
+    stack setup left out keeps, has the Vulkan loader put ReShade into every
+    program that uses Vulkan, games included. step_reshade writes the switch.
+    The loader passes over a value that is not 0, and so does this. Only the
+    registry and the descriptions are read. The lens asks this as it starts,
+    and --verify says what it found."""
+    found = []
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, LAYER_KEY, 0, winreg.KEY_READ) as k:
+            i = 0
+            while True:
+                try:
+                    name, data, kind = winreg.EnumValue(k, i)
+                except OSError:
+                    break
+                i += 1
+                if kind != winreg.REG_DWORD or data != 0:
+                    continue
+                try:
+                    with open(name, encoding="utf-8-sig") as f:
+                        described = json.load(f)
+                    layers = described.get("layers") or [described.get("layer") or {}]
+                except (OSError, ValueError, AttributeError):
+                    continue
+                for layer in layers:
+                    if isinstance(layer, dict) and layer.get("name") == LAYER_NAME and LAYER_GATE not in (
+                            layer.get("enable_environment") or {}):
+                        found.append(name)
+                        break
+    except OSError:
+        pass
+    return found
+
+
+def layer_line(ungated):
+    """The self test's line on the layer's limit, for layer_ungated's answer.
+    The setup writes only this copy's own description, LAYER_DIR's, so a path
+    of another copy of the lens is said to be that copy's, which this setup
+    does not change, and where both are listed, the line names which one the
+    setup writes."""
+    if not ungated:
+        return "    Vulkan layer: on only where the lens's presenter asks for it"
+    own = os.path.normcase(os.path.abspath(os.path.join(LAYER_DIR, "ReShade64.json")))
+    mine = [p for p in ungated if os.path.normcase(os.path.abspath(p)) == own]
+    others = [p for p in ungated if p not in mine]
+    line = ("    Vulkan layer: NOT LIMITED TO THE LENS. %s %s no enable_environment, so Vulkan loads the lens's "
+            "ReShade into every program that uses Vulkan, games included."
+            % (" and ".join(ungated), "has" if len(ungated) == 1 else "have"))
+    if mine:
+        line += (" Running the stack setup again writes the limit%s."
+                 % (" into this copy's own description, %s" % mine[0] if others else ""))
+    if others:
+        line += (" %s %s to another copy of the lens, and the stack setup of this copy does not change %s."
+                 % (" and ".join(others), "belongs" if len(others) == 1 else "belong",
+                    "it" if len(others) == 1 else "them"))
+    return line
+
+
+def layer_unregister(path):
+    """Delete this user's registration of a description of the lens's layer,
+    the ImplicitLayers value named by its path, for one that another copy of
+    the lens registered, which the lens asks about as it starts. Only a value
+    whose description names LAYER_NAME is deleted, so nothing but the lens's
+    own layer is touched. Returns whether it went."""
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            described = json.load(f)
+        layers = described.get("layers") or [described.get("layer") or {}]
+    except (OSError, ValueError, AttributeError):
+        return False
+    if not any(isinstance(layer, dict) and layer.get("name") == LAYER_NAME for layer in layers):
+        return False
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, LAYER_KEY, 0, winreg.KEY_SET_VALUE) as k:
+            winreg.DeleteValue(k, path)
+        return True
+    except OSError:
+        return False
+
+
 # ---------------------------------------------------------------- verify
+def runs_elevated():
+    """Whether this process runs at high integrity or above, as a program run as
+    administrator does. The Vulkan loader makes the same test in the program it
+    loads into, and there it reads no layer registered under HKEY_CURRENT_USER,
+    the only place the setup registers the lens's, so a presenter this process
+    starts gets no ReShade. IsUserAnAdmin, which agrees for an administrator run
+    as administrator, answers when the token cannot be read."""
+    import ctypes
+    from ctypes import wintypes
+    try:
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        advapi32.OpenProcessToken.argtypes = (wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE))
+        advapi32.GetTokenInformation.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+                                                 ctypes.POINTER(wintypes.DWORD))
+        advapi32.GetSidSubAuthorityCount.argtypes = (ctypes.c_void_p,)
+        advapi32.GetSidSubAuthorityCount.restype = ctypes.POINTER(ctypes.c_ubyte)
+        advapi32.GetSidSubAuthority.argtypes = (ctypes.c_void_p, wintypes.DWORD)
+        advapi32.GetSidSubAuthority.restype = ctypes.POINTER(wintypes.DWORD)
+        token = wintypes.HANDLE()
+        if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), 0x0008, ctypes.byref(token)):  # TOKEN_QUERY
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            size = wintypes.DWORD()
+            advapi32.GetTokenInformation(token, 25, None, 0, ctypes.byref(size))  # TokenIntegrityLevel
+            label = ctypes.create_string_buffer(size.value)
+            if not advapi32.GetTokenInformation(token, 25, label, size, ctypes.byref(size)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            sid = ctypes.cast(label, ctypes.POINTER(ctypes.c_void_p))[0]  # TOKEN_MANDATORY_LABEL.Label.Sid
+            if not sid:
+                raise OSError("the token has no integrity label")
+            last = advapi32.GetSidSubAuthorityCount(sid)[0] - 1
+            return advapi32.GetSidSubAuthority(sid, last)[0] >= 0x3000  # SECURITY_MANDATORY_HIGH_RID
+        finally:
+            kernel32.CloseHandle(token)
+    except Exception:
+        try:
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except Exception:
+            return False
+
+
 def verify(target, log=None, seconds=9.0):
     """Run the presenter on a still and read what ReShade says.
 
@@ -835,11 +1020,27 @@ def verify(target, log=None, seconds=9.0):
     try:
         text = open(logfile, encoding="utf-8", errors="replace").read()
     except OSError:
-        return False, ("FAIL: ReShade wrote no log, so it did not attach to the presenter. Is the Vulkan "
-                       "layer registered, and is %s on its Apps list?" % cmd[0])
+        if runs_elevated():
+            # the presenter runs with this process's rights, so the layer this user has
+            # registered never loads in it, and the checks below would all hold
+            return False, ("FAIL: ReShade wrote no log at %s, so it did not start in the presenter. This setup "
+                           "runs as administrator, and in a program that runs as administrator Vulkan reads no "
+                           "layer registered for one user. Run the stack setup again without administrator "
+                           "rights. In an account where every program runs as administrator, as with User "
+                           "Account Control fully off, ReShade cannot start in the lens." % logfile)
+        # ReShade 6.8 never reads ReShadeApps.ini. The layer loads where the variable its
+        # description's enable_environment names is set, and ReShade then starts only
+        # beside a ReShade.ini, see layer_ungated
+        return False, ("FAIL: ReShade wrote no log at %s, so it did not start in the presenter. Check that the "
+                       "layer's description %s is registered for this user under HKEY_CURRENT_USER\\%s with the "
+                       "value 0 and carries enable_environment with %s, the switch the presenter sets for itself. "
+                       "Check too that ReShade.ini is beside %s, since ReShade starts only where it finds one."
+                       % (logfile, os.path.join(LAYER_DIR, "ReShade64.json"), LAYER_KEY, LAYER_GATE, cmd[0]))
     created = "feature=18" in text and "feature 18 created" in text
-    # the add-on logs the 1st, 60th and 600th evaluation and so on, not each one,
-    # so the highest count it logged is how many there were at least
+    # the add-on logs the 1st, 60th and 600th evaluation and none after them,
+    # counting its pre-SR and inline evaluations apart, so a session that went
+    # from pre-SR to inline can log up to six, and the highest count it logged is
+    # how many there were at least
     counts = [int(c) for c in re.findall(r"feature 18 evaluation succeeded \(count=(\d+)", text)]
     evaluated = max(counts) if counts else len(re.findall(r"feature 18 evaluation succeeded", text))
     failed = re.search(r"feature 18 create failed with (0x[0-9a-fA-F]+)", text)
@@ -928,7 +1129,8 @@ def _unregister_stray(log=None):
 
 def uninstall(target=DEFAULT_TARGET, log=None, keep=()):
     """Remove what the install record in target lists, the layer registration,
-    and what running the stack wrote. Paths in keep are left in place."""
+    and what running the stack and the fast engine wrote. Paths in keep are
+    left in place."""
     path = os.path.join(target, "install-record.json")
     try:
         record = json.load(open(path, encoding="utf-8"))
@@ -967,6 +1169,15 @@ def uninstall(target=DEFAULT_TARGET, log=None, keep=()):
             pass
     shutil.rmtree(os.path.join(target, "portable_config", "cache"), ignore_errors=True)
     shutil.rmtree(CACHE_DIR, ignore_errors=True)
+    # what the fast engine wrote: its copy of the proxy's ini beside lens-fast.exe,
+    # made from the stack's, and the runtime's logs in the lens's data folder. A
+    # data_dir moved out of the lens's folder is left alone, like the rest of it.
+    for d in fast_engine_dirs(target):
+        try:
+            os.remove(os.path.join(d, "nvngx_dlssnr.ini"))
+        except OSError:
+            pass
+    shutil.rmtree(os.path.join(APP_DIR, "data", "logs", "fast"), ignore_errors=True)
     for d in (target, record.get("layer_dir", LAYER_DIR)):
         for root, dirs, files in os.walk(d, topdown=False):
             for sub in dirs:
@@ -1124,7 +1335,8 @@ def main(argv=None):
     ap.add_argument("--dlss", help="an nvngx_dlss.dll you already have; its hash is checked")
     ap.add_argument("--provider", choices=sorted(PROVIDERS), default="drme",
                     help="which fetched shader estimates motion vectors (default drme)")
-    ap.add_argument("--verify", action="store_true", help="only run the self test")
+    ap.add_argument("--verify", action="store_true",
+                    help="only run the self test, and check that the layer is limited to the lens")
     ap.add_argument("--uninstall", action="store_true",
                     help="remove what the install record lists, and the layer registration")
     a = ap.parse_args(argv)
@@ -1135,7 +1347,10 @@ def main(argv=None):
         if a.verify:
             ok, detail = verify(a.target)
             print(detail)
-            return 0 if ok else 1
+            ungated = layer_ungated()
+            print(layer_line(ungated))
+            print(fast_engine_line(a.target))
+            return 0 if ok and not ungated else 1
         ok = Install(a.target, a.dlssnr, a.dlss, provider=a.provider).run()
         print("")
         if not ok:

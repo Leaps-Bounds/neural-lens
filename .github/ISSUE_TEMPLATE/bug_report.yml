@@ -7,8 +7,8 @@ body:
       value: |
         Thanks for reporting.
 
-        **Before you attach anything:** screenshots of the lens show whatever was behind
-        it, which is your desktop. Crop tightly, and check for window titles, notifications,
+        **A word on screenshots.** A screenshot of the lens shows whatever was behind it,
+        which is your desktop. Crop tightly, and check for window titles, notifications,
         file paths and account names before uploading. Logs are usually more useful than
         screenshots anyway.
 
@@ -36,8 +36,8 @@ body:
     id: version
     attributes:
       label: Neural Lens version
-      description: Shown at the top of the menu, at the top of Settings, and printed when the lens starts.
-      placeholder: 0.3.0
+      description: Shown at the top of the menu, at the foot of Settings beside Save, and in `lens.log` when the lens starts.
+      placeholder: 0.6.0
     validations:
       required: true
 
@@ -52,9 +52,35 @@ body:
   - type: dropdown
     id: mode
     attributes:
-      label: Windowed or fullscreen
-      description: Fullscreen switches the Cost Scaler on, so this decides where to look first.
-      options: ["Windowed", "Fullscreen"]
+      label: Windowed, attached or fullscreen, and the engine
+      description: |
+        A windowed or attached lens always runs on the ReShade engine. A fullscreen lens runs on
+        the fast engine unless the Fullscreen page of Settings says otherwise, and that page shows
+        which engine draws it. While the fast engine draws, `lens.log` gets a line about every
+        10 s with `fast engine, last` in it.
+      options:
+        - Windowed, on the ReShade engine
+        - Attached to a window, on the ReShade engine
+        - Fullscreen, on the fast engine
+        - Fullscreen, on the ReShade engine
+        - Fullscreen, not sure which engine
+    validations:
+      required: true
+
+  - type: dropdown
+    id: quality
+    attributes:
+      label: Quality step of the fast engine
+      description: |
+        Only for a fullscreen lens on the fast engine. The Power page of Settings shows it, and so
+        do the NR settings panel and the fast engine's lines in `lens.log`.
+      options:
+        - Quality
+        - Balanced
+        - Performance
+        - Low power
+        - Lowest power
+        - Not on the fast engine
     validations:
       required: true
 
@@ -62,8 +88,8 @@ body:
     id: behind
     attributes:
       label: What was behind the lens
-      description: The kind of window, for example a browser, a still image, a video, a remote desktop session.
-      placeholder: Firefox playing a video
+      description: The kind of window, for example a browser, a still image, a video, a game or a remote desktop session. For a game, say whether it ran borderless windowed or in exclusive fullscreen, and whether its own frame rate limit was on.
+      placeholder: A browser playing a video
     validations:
       required: true
 
@@ -71,7 +97,7 @@ body:
     id: size
     attributes:
       label: Lens size and display
-      description: The first line of lens-state.txt in the data folder beside the lens, plus your display resolution and refresh rate.
+      description: For a windowed lens, the first line of `lens-state.txt` in the `data` folder beside the lens. For a fullscreen lens, say so. Then your display resolution and refresh rate, and those of any other monitor connected.
       placeholder: 1400 1000 500 400 2, on a 3840x2160 display at 144 Hz
     validations:
       required: true
@@ -106,18 +132,27 @@ body:
     attributes:
       label: Logs from the failing run
       description: |
-        Every launch archives the previous session's logs to `data\logs` beside the lens, or
-        wherever `data_dir` points. So launch once more after the problem, then attach
-        the newest archived `ReShade.log`. The line that confirms Neural Rendering was
-        running is `feature=18 (DLSSNR`.
+        The logs are in `data\logs` in the lens folder, or in `logs` in the folder `data_dir`
+        points to. `lens.log` is the lens's own log, and `presenter-stderr.log` holds what the
+        presenter or the fast engine printed. Each launch keeps the previous session's copies of
+        both beside them, stamped with the date and time. It also copies the `ReShade.log`,
+        `dlss5-feed.log` and `nvngx_dlssnr_proxy.log` from the stack folder, which the Program page
+        of Settings shows, into the logs folder, stamped the same way. ReShade and the Feed write
+        theirs only on the ReShade engine, so after a session on the fast engine those two copies
+        come from an earlier run.
+        Drag the files into this box to attach them.
 
-        If the lens never opened, or its picture never appeared, attach
-        `presenter-stderr.log` from the same folder instead. That is what the presenter
-        itself printed, and it is the only place the reason survives.
+        Attach `lens.log` and `presenter-stderr.log` from the run that failed, which are the
+        newest stamped copies once the lens has started again. If the lens never opened, or its
+        picture never appeared, `presenter-stderr.log` is the only place the reason survives.
 
-        For anything about the picture, the frame rate or the Cost Scaler, attach `lens.log`
-        from that folder too, and the archived `nvngx_dlssnr_proxy.log` if there is one.
-      render: shell
+        On the ReShade engine, launch once more after the problem and attach the newest stamped
+        `ReShade.log` too. The line that confirms Neural Rendering was running is
+        `feature=18 (DLSSNR`. For the frame rate or the Cost Scaler there, add the stamped
+        `nvngx_dlssnr_proxy.log` if there is one. A fullscreen lens on the fast engine runs no
+        ReShade. What the engine printed is in `presenter-stderr.log`, and
+        `nvngx_dlssnr_proxy.log` is written on that engine too, so attach its newest stamped copy
+        as well.
 
   - type: checkboxes
     id: checks
@@ -125,7 +160,7 @@ body:
       label: Things worth checking first
       options:
         - label: The lens did not warn me at startup that Neural Rendering will probably not run.
-        - label: I tried the menu's Turn NR off and Turn NR back on (F6). With NR on the picture changes clearly.
-        - label: I checked the archived ReShade.log for `feature=18 (DLSSNR`.
+        - label: I tried the menu's Turn NR off and Turn NR back on (F6 in a window, F9 fullscreen). With NR on the picture changes clearly.
+        - label: On the ReShade engine, I checked the archived `ReShade.log` for `feature=18 (DLSSNR`.
         - label: I read the Limits section of the README, in case this is a known constraint.
         - label: My screenshots, if any, do not show anything I mind being public.

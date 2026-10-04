@@ -1,17 +1,19 @@
-# Copy this file to neural-lens.ini and edit, or do not: the Settings dialog in
-# the lens's menu has a control for most settings here and writes this file.
-# Every setting is optional. Where a command line flag or an environment
-# variable exists for a setting, it wins over this file: --stack-dir and
-# NEURAL_LENS_STACK for the stack folder, NEURAL_LENS_DATA for the data folder.
+# Copy this file to neural-lens.ini and edit it, or leave it be. The Settings
+# dialog in the lens's menu has a control for most settings here and writes
+# this file. Every setting is optional. Where a command line flag or an
+# environment variable exists for a setting, it wins over this file: --stack-dir
+# and NEURAL_LENS_STACK for the stack folder, NEURAL_LENS_DATA for the data
+# folder, and NEURAL_LENS_SHOTS for the screenshots.
 
 # The folder holding the Neural Rendering stack: ReShade.ini, the two add-ons,
 # NVIDIA's DLLs and lens-presenter.exe. The installed lens keeps its stack in
 # its own folder, and from source neural_stack.py writes a "stack" folder
-# beside the script; the lens finds both without this. mpv_dir, the name 0.1.0
-# used, is read too.
+# beside the script, and the lens finds both without this. mpv_dir, the name
+# 0.1.0 used, is read too.
 # stack_dir = D:\path\to\stack
 
-# Where the lens keeps its window position and its archived logs.
+# Where the lens keeps its window position, its profiles, its logs and, unless
+# the next setting says otherwise, its screenshots.
 # Defaults to the data folder beside the program
 # data_dir = D:\NeuralLens
 
@@ -19,40 +21,194 @@
 # Defaults to data\screenshots beside the program
 # screenshot_dir = D:\Screenshots\NeuralLens
 
-# The DLSSNR Cost Scaler, which the setup puts in front of NVIDIA's model.
-# fullscreen, the default, switches it on for a fullscreen lens and off for a
-# windowed one; always applies the same rule to any lens; off keeps it off;
-# manual leaves its ini alone. The scale is chosen so the model's work over all
-# the passes comes to about cost_scaler_mpx megapixels: 8 is 6144x2560 at 0.70
-# for one pass and 0.50 for two, 3840x2160 at native for one pass and 0.65 for
-# two, and 2560x1440 at native up to two passes. A slower card can want less.
-# The Settings dialog has fullscreen, always and off as two switches.
-# cost_scaler = fullscreen
-# cost_scaler_mpx = 8
+# Copy the side by side image to the clipboard each time a screenshot is saved.
+# Off unless this says 1. The Settings dialog has this too.
+# clipboard_shots = 0
 
-# What the title bar shows beside the size and the delay: size, the default,
-# nothing more; fps, the new pictures a second the content under the lens hands
-# it, which the lens never limits; or detail, the frames captured and the new
-# pictures shown, each per second. The Settings dialog has this too.
+# The DLSSNR Cost Scaler, which the setup puts in front of NVIDIA's model. It
+# serves the ReShade engine, which draws every windowed lens, and a fullscreen
+# one where fullscreen_engine below says stack or the fast engine cannot run.
+# The fast engine does its own scaling and takes no notice of these two.
+# fullscreen, the default, switches the Cost Scaler on for a fullscreen lens
+# and off for a windowed one. always applies the same rule to any lens, off
+# keeps it off, and manual leaves its ini alone. The scale is chosen so the
+# model's work over all the passes comes to about cost_scaler_mpx megapixels,
+# never below 0.35. With 4 that is 6144x2558 at 0.50 for one pass and 0.35
+# from two, 3840x2160 at 0.65 for one pass and 0.45 for two, and 2560x1440 at
+# native for one pass and 0.70 for two. The Settings dialog has fullscreen,
+# always and off as two switches.
+# cost_scaler = fullscreen
+# cost_scaler_mpx = 4
+
+# How finely the default motion estimator works out movement between frames:
+# full, the default, half or quarter. Half and quarter cost the card less, and
+# text that moves fast then shows a faint double. The fast engine uses no
+# motion estimator, so this is for the ReShade engine. The Settings dialog has
+# this too.
+# motion_detail = full
+
+# What the title bar shows beside the size and the latency. size, the default,
+# is nothing more. fps is the new pictures a second the content under the lens
+# hands it, up to the frame rate limit below, and the Settings dialog has it as
+# a switch. detail is the frames captured and the new pictures shown, each per
+# second, and both is fps and detail together. A fullscreen lens has no title
+# bar and shows the same on the second line of its menu. The figures a
+# fullscreen lens can show on the screen are fs_readout, further down.
 # readout = size
 
-# Show the delay from capture to display beside the size, on unless this says 0.
-# The Settings dialog has this too.
+# Show the latency beside the size, on unless this says 0. With the ReShade
+# engine it is measured from the capture to the present, with a refresh and a
+# half added for the display. With the fast engine it is measured up to the
+# refresh that shows the picture. The Settings dialog has this too.
 # latency = 1
+
+# Show the picture's size on the title bar, on unless this says 0, and the Home
+# menu's NR style and its overall intensity, each off unless this says 1. The
+# Settings dialog has all three.
+# title_size = 1
+# title_style = 0
+# title_intensity = 0
 
 # Keep presenting thirty times a second while nothing changes, so the first
 # frame after any pause is on time, at about 18 W more over a still on an
-# RTX 4070 SUPER. Off, the lens does that for ten seconds after any new
-# picture and then rests. The Settings dialog has this too.
+# RTX 4070 SUPER. Off, the lens rests over a still. The ReShade engine does
+# that from ten seconds after the last new picture, at four presents a second,
+# and the fast engine at fifteen. The Settings dialog has this too.
 # ready = 0
 
-# Fill the monitor the lens is on, apart from the taskbar, with the title bar
-# across the top. The title bar's maximise button writes it here, so the lens
-# opens the way it was left. The pass count for fullscreen is kept apart from
-# the windowed one.
+# At most this many new pictures a second, from 10 to 240, or 0 for no limit,
+# the default. The neural pass runs only for those, so the card draws less
+# power. The ReShade engine holds a new picture until its turn comes, which
+# adds delay. The fast engine takes or leaves each frame as it arrives, which
+# adds none. The Settings dialog offers no limit, 60 and 30.
+# max_fps = 0
+
+# Fill the monitor the lens is on, from its top edge down to two rows of pixels
+# above its bottom edge, with no title bar. The two rows keep Windows from
+# treating the lens as a fullscreen program. Going fullscreen and back writes
+# it here, so the lens opens the way it was left. The pass count for fullscreen
+# is kept apart from the windowed one.
 # fullscreen = 0
 
+# A note each time the lens goes fullscreen, saying that the lens itself is
+# invisible while it goes on applying DLSS 5, with its keys one to a line, each
+# with what it does, and the taskbar button's list. With Neural Rendering off
+# its first line says so instead, and names the keys and the menu entry that
+# bring it back. OK, Enter or Escape closes it.
+# Ticking its Don't show this again writes 0 here at once, and the Fullscreen
+# page of the Settings dialog switches it on again. It comes up all the same
+# when another program holds one of the keys of a fullscreen lens, and then
+# has no Don't show this again while this says 0.
+# fullscreen_note = 1
+
+# A warning at the top of the screen when a fullscreen lens on the fast engine
+# keeps running well behind the program in front, as it does while that
+# program keeps the graphics card fully busy. It comes when the median delay
+# of each of two 10 s spans in a row is three refreshes of the monitor or
+# more, 25 ms at 120 Hz with a small margin for rates such as 119.88 Hz, and
+# one window of another program, not the desktop or the taskbar, was in front
+# all that time. It says about how far behind the lens is, that the program in
+# front most likely keeps the card fully busy, and that a frame rate limit in
+# that program, a little below the rate it reaches, lets the lens keep up. Its
+# last sentence says where in Settings it can be switched off. It goes after
+# about 12 s and does not come again for ten minutes, or until the Settings
+# dialog switches it on again. On unless this says 0. The Fullscreen page of
+# the Settings dialog has this too.
+# fs_behind_warn = 1
+
+# A line of figures in a corner of the screen while the lens is fullscreen, in
+# a window of the lens's own that lets every click through, never takes the
+# keyboard and is out of the picture. fs_readout lists what it shows, separated
+# by commas, from fps, latency, step, passes and style. With none listed, which
+# is the default, no line shows. step is the fast engine's quality step and
+# shows only on that engine. fs_readout_at is the corner of the lens's monitor
+# it sits in, which is top right unless this says top left, bottom right or
+# bottom left. The Fullscreen page of the Settings dialog has both.
+# The readout's key, F10 unless hotkey_readout_toggle below says otherwise,
+# hides the line and shows it again. A line hidden, by the key or by switching
+# every figure off in the Settings dialog, leaves what it showed in
+# fs_readout_last, which the lens writes itself, and the key shows that again,
+# or fps and latency when fs_readout_last is not there.
+# fs_readout = fps,latency
+# fs_readout_at = top right
+# fs_readout_last = fps,latency
+
+# Global hotkeys, one combination for an action, which work whichever program
+# has the keyboard. A combination set here is taken from every other program
+# while the lens runs, so none is set until you set one, here or on the
+# Hotkeys page of the Settings dialog. It is written as in Ctrl+Alt+S and
+# needs Ctrl, Alt, Shift or Win, unless it is a function key. Home, F5 and F6
+# on their own cannot be used, since ReShade and the add-on read them. A
+# combination belongs to one action. The Hotkeys page refuses one that another
+# action has, and where this file gives two actions the same one, the first in
+# the order of that page gets it. The keys are hotkey_screenshot,
+# hotkey_add_pass, hotkey_drop_pass, hotkey_quality_up, hotkey_quality_down,
+# hotkey_split, hotkey_minimize, hotkey_fullscreen, hotkey_hide_bar,
+# hotkey_profile, hotkey_ready and hotkey_detach. hotkey_quality_up and
+# hotkey_quality_down move the fast engine's quality step one step up or down.
+# hotkey_screenshot = Ctrl+Alt+S
+# hotkey_split = Ctrl+Alt+B
+
+# The four keys of a fullscreen lens, which has no title bar to click: the lens
+# menu, the NR settings, Neural Rendering off and on, and the on-screen readout
+# shown or hidden. They are taken from other programs only while the lens is
+# fullscreen and in view, and given back while the Settings dialog or another
+# dialog of the lens's own is in front, or a program in exclusive fullscreen
+# is in front on the lens's monitor. They are single keys because Windows
+# takes only the last key of a combination away from the program in front, so
+# a game would still get the Ctrl of Ctrl+Home. While the menu or the NR
+# settings panel is open, the arrow keys, Enter and Escape work it, and the
+# lens takes those too until it closes. Any combination the Hotkeys page of
+# the Settings dialog accepts can stand here, and none leaves the action
+# without a key. A key that another action already has stays with that action,
+# and the action here then has none. Whenever the lens does not hold the
+# menu's key, such as when it has none, or another program or another action
+# has it, a click on the lens's taskbar button opens the menu. A right click
+# on that button lists the lens menu, the NR settings and fullscreen, with or
+# without keys. F6 is the add-on's own key, which the add-on of the ReShade
+# engine reads, and every windowed lens runs on that engine. Under the fast
+# engine F6 does nothing, and hotkey_nr_toggle switches Neural Rendering.
+# hotkey_lens_menu = F7
+# hotkey_nr_panel = F8
+# hotkey_nr_toggle = F9
+# hotkey_readout_toggle = F10
+
+# Which engine draws a fullscreen lens: fast, the default, or stack. fast is
+# the lens's own renderer for fullscreen. It captures the screen on the
+# graphics card and calls the neural model directly, which gives a higher frame
+# rate on much less power. It has no ReShade in it, so there is no Home menu,
+# no ReShade effects and no ReShade screenshot key, and its NR settings are a
+# panel of the lens's own. stack is the engine every windowed lens uses, with
+# ReShade. Where the fast engine is not installed, or fails, the lens uses
+# stack by itself and says so. The Settings dialog has this too.
+# fullscreen_engine = fast
+
+# The fast engine's quality step, from 0 to 4: 4 Quality, 3 Balanced,
+# 2 Performance, 1 Low power, 0 Lowest power. A lower step has the network work
+# on a smaller copy of the picture, which costs less power and loses some of
+# the fine detail the network adds. The original's own detail is always kept.
+# With no step set here, a fullscreen picture larger than 2560x1440 runs at
+# Balanced, where no loss was seen, and a smaller one at Quality. The Settings
+# dialog and the NR settings panel have this too.
+# fast_quality = 3
+
 # The colours of the title bar, the menus and the Settings dialog. Slate is the
-# lens as it always looked; Graphite, Paper and Industrial come with it, and a
+# lens as it always looked. Graphite, Paper and Industrial come with it, and a
 # themes.json in the data folder adds more. Takes effect at the next launch.
 # theme = Slate
+
+# Ask GitHub for the newest release when the lens starts, at most once a day,
+# and say so only when there is one newer than this. Off unless this says 1,
+# and with it off the lens contacts nothing by itself. With auto_update = 1 as
+# well, the lens offers to download that release's installer and run it over
+# this install, and does nothing without a yes. The Settings dialog has both.
+# check_updates = 0
+# auto_update = 0
+
+# The registrations of the lens's Vulkan layer by another copy of the lens,
+# such as an earlier install in another folder, that load its ReShade into
+# every program that uses Vulkan and that you chose to keep when the lens asked
+# at start. The paths of their descriptions stand here with | between them,
+# and the lens does not ask about these again. Take a path out and the lens
+# asks about it at its next start.
+# layer_stray_kept = D:\path\to\another\lens\ReShade\ReShade64.json

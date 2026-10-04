@@ -12,6 +12,10 @@ __pycache__/
 # PyInstaller and Inno Setup output
 build/
 
+# the fast engine's build output, and the copies of the stack its self test runs against
+fast_engine/bin/
+fast_engine/test-stack/
+
 # what the stack setup and the lens write beside the script when run from here
 stack/
 ReShade/

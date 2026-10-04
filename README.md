@@ -532,8 +532,10 @@ trademark, and the name here says what the lens applies, not who made it.
 
 ## License
 
-The lens itself, meaning everything in this repository, is free software under the GNU General
-Public License, version 3 or, at your option, any later version. See [LICENSE](LICENSE). The
-parts the setup fetches are not part of this repository and keep the licences above. Because
-the default motion vector estimator is licensed for non-commercial use only, the stack the
-setup assembles is for personal, non-commercial use.
+The lens itself, meaning everything in this repository apart from the third-party licence texts in
+`licenses`, is licensed under the PolyForm Strict License 1.0.0. See [LICENSE](LICENSE). The
+character model in the two screenshots at the top is Hawtor Studio's and stays under its CC BY 4.0
+licence. Releases up to 0.5.1 were published under the GNU General Public License, version 3 or
+later, and stay under it. The parts the setup fetches are not part of this repository and keep the
+licences above. Because the default motion vector estimator is licensed for non-commercial use
+only, the stack the setup assembles is for personal, non-commercial use.

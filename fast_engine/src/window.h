@@ -22,8 +22,12 @@
 // The window never changes size: for another size the lens starts another presenter.
 //
 // The swapchain: B8G8R8A8_UNORM, 2 buffers, DXGI_SWAP_EFFECT_FLIP_DISCARD, made on
-// gpu.queue. Two ways to make it, chosen by --present, because whether a layered window
-// takes a flip model swapchain directly is only known on screen:
+// gpu.queue. For a monitor with Windows HDR on it is R16G16B16A16_FLOAT in the scRGB colour
+// space instead (desc.hdr, and set_hdr() while it runs), linear with 1.0 at 80 nits, which
+// is how the desktop of such a monitor is composed: the picture is then shown in HDR as the
+// desktop is, and not at the SDR white level as a standard range picture would be. Two
+// ways to make it, chosen by --present, because whether a layered window takes a flip model
+// swapchain directly is only known on screen:
 //   Hwnd   CreateSwapChainForHwnd
 //   Dcomp  CreateSwapChainForComposition, shown through a DirectComposition visual on a
 //          target for the window
@@ -73,12 +77,16 @@ struct WindowDesc {
   std::wstring title;  // --title
   bool exclude = false;                  // --exclude: SetWindowDisplayAffinity(0x11)
   PresentPath path = PresentPath::Hwnd;  // --present
+  bool hdr = false;                      // the swapchain in 16-bit floats, scRGB, see kHdrFormat
 };
 
 class Window {
  public:
   static constexpr const wchar_t* kClassName = L"NeuralLensFast";
   static constexpr DXGI_FORMAT kFormat = DXGI_FORMAT_B8G8R8A8_UNORM;  // 87 in the ready line
+  // With Windows HDR on for the monitor: 10 in the ready line, and the colour space is
+  // DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709, scRGB.
+  static constexpr DXGI_FORMAT kHdrFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
   static constexpr UINT kBuffers = 2;                                 // "2 images"
 
   Window();
@@ -95,15 +103,33 @@ class Window {
   // nothing is left behind.
   // A capture exclusion that Windows refuses is such a failure too, not a note: seen by
   // its own capture, the engine would take its own output for a new frame for ever.
+  // With desc.hdr the swapchain is made in kHdrFormat and put in the scRGB colour space.
+  // A swapchain that does not take that colour space is not a failure: a note says so and
+  // the swapchain is made in kFormat, hdr() then says false.
   bool create(Gpu& gpu, const WindowDesc& desc, std::string& err);
 
   // The window, null before create() and after destroy().
   HWND hwnd() const;
 
+  // Whether the swapchain is in kHdrFormat and scRGB, and its format, kFormat or kHdrFormat.
+  bool hdr() const;
+  DXGI_FORMAT format() const;
+
+  // Makes the swapchain's buffers again in the other format, kHdrFormat and scRGB with on,
+  // kFormat without, in place: the window and the swapchain stay, the buffers and their
+  // views are new, and whatever the buffers held is gone, so the caller presents a picture
+  // next. The caller has waited for the GPU first (Gpu::flush), and holds no Target from
+  // back_buffer(). Nothing happens when the swapchain is in that format already. As with
+  // create(), a colour space the swapchain does not take leaves it in kFormat with a note.
+  // false with err when the buffers could not be made again: the swapchain is then not to
+  // be used, and the caller leaves as after a lost device.
+  bool set_hdr(bool on, std::string& err);
+
   // The buffer the next present() will show, as something to draw into: its texture, a
-  // render target view, and the size. The texture is in PRESENT and must be back in
-  // PRESENT before present(). With FLIP_DISCARD its old content is undefined: the pipeline
-  // writes every texel. The pointers are the window's and stay valid until destroy().
+  // render target view, the size and the format. The texture is in PRESENT and must be
+  // back in PRESENT before present(). With FLIP_DISCARD its old content is undefined: the
+  // pipeline writes every texel. The pointers are the window's and stay valid until
+  // destroy() or set_hdr().
   // false with err after destroy() or a lost device.
   bool back_buffer(Target& out, std::string& err);
 

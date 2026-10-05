@@ -37,7 +37,7 @@ body:
     attributes:
       label: Neural Lens version
       description: Shown at the top of the menu, at the foot of Settings beside Save, and in `lens.log` when the lens starts.
-      placeholder: 0.6.0
+      placeholder: 0.6.1
     validations:
       required: true
 

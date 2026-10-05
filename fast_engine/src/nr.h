@@ -32,8 +32,7 @@
 // (3.36 ms against 3.35) and on more memory (712 MiB against 690).
 constexpr DXGI_FORMAT kNrFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 
-// The most passes, and so features, one Nr holds.
-constexpr int kNrMaxPasses = 8;
+// The most passes, and so features, one Nr holds, is kNrMaxPasses in common.h.
 
 class Nr {
  public:
@@ -51,7 +50,8 @@ class Nr {
   //   passes     1 to kNrMaxPasses. Each pass has its own feature, so each keeps its own
   //              history, and the passes are chained by the caller: the output of one is
   //              the input of the next.
-  //   settings   used from the first evaluate on.
+  //   settings   each pass's own, used from the first evaluate on: pass p evaluates with
+  //              settings.pass[p].
   //
   // The private proxy ini: before the DLL is loaded, init makes sure that
   // <folder of this exe>\nvngx_dlssnr.ini exists and holds EnableProxy = 0 and
@@ -74,7 +74,7 @@ class Nr {
   // "Init_Ext failed 0xBAD00002 platform error", "CreateFeature raised an exception".
   // After a failure the object is as after shutdown().
   bool init(Gpu& gpu, const std::wstring& stack_dir, const std::wstring& data_dir, UINT work_w,
-            UINT work_h, int passes, const NrSettings& settings, std::string& err);
+            UINT work_h, int passes, const NrPasses& settings, std::string& err);
 
   // Whether init succeeded and shutdown has not been called.
   bool ready() const;
@@ -99,10 +99,10 @@ class Nr {
   bool evaluate(ID3D12GraphicsCommandList* list, int pass, ID3D12Resource* input,
                 ID3D12Resource* output, bool reset, std::string& err);
 
-  // New settings, used from the next evaluate on. Nothing is created again: the six
-  // settings are read by the runtime at every evaluate. It does not reset the history
-  // itself, the caller passes reset when it wants a clean start.
-  void set_settings(const NrSettings& settings);
+  // New settings, each pass's own, used from the next evaluate on. Nothing is created
+  // again: the six settings are read by the runtime at every evaluate. It does not reset
+  // the history itself, the caller passes reset when it wants a clean start.
+  void set_settings(const NrPasses& settings);
 
   // Another work size, in two steps, so that the features in use go on working until the
   // new ones are there.

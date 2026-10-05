@@ -136,6 +136,10 @@ struct Shot {
   std::vector<uint8_t> before;  // the captured frame, tight RGB8 (Pipeline::read_native)
   std::vector<uint8_t> after;   // what was presented (Pipeline::read_target), or empty
                                 // when there is none
+  std::vector<uint16_t> raw;    // for a test, the 16-bit frame as it came, tight
+                                // R16G16B16A16_FLOAT (Pipeline::read_raw), else empty
+  std::vector<uint16_t> out;    // for a test, the picture as drawn into a 16-bit target,
+                                // the same layout (Pipeline::read_target_raw), else empty
   bool clipboard = false;       // the state of "clip"
 };
 
@@ -144,9 +148,12 @@ struct Shot {
 //   BASE-after.png         the presented picture, when there is one
 //   BASE-side-by-side.png  before, a separator 8 pixels wide of grey 90, after
 //   and, with clipboard set, the side by side picture on the clipboard
-// The reply is "shot done before, after, side by side, clipboard", naming only what was
-// done, or "shot failed REASON" when a file could not be written. The caller passes it
-// to say().
+//   BASE-raw.npy           with raw given, the 16-bit frame as a NumPy array of float16,
+//                          height x width x 4, after the other files
+//   BASE-out.npy           with out given, the picture drawn, the same way
+// The reply is "shot done before, after, side by side, clipboard, raw, out", naming only
+// what was done, or "shot failed REASON" when a file could not be written. The caller
+// passes it to say().
 // Any thread, and it should not be the main one: encoding three PNGs of a fullscreen
 // picture (the side by side one is 12296x2526 for a 6144x2526 lens) takes long enough to
 // hold up the window's messages and to look like a hang to the watchdog. It touches no

@@ -725,6 +725,49 @@ void encode_beside(Encoding& job, const std::wstring& path, const uint8_t* rgb, 
   }
 }
 
+// Writes a NumPy array file, version 1.0 of the format: the magic string, the version, the
+// header's length in two bytes, the header as a Python dictionary padded with spaces to a
+// multiple of 64 bytes and ending in a newline, then the data as it lies in memory. Here
+// the array is height x width x 4 halves ('<f2', float16). A file that could not be
+// written whole is deleted, so no half file stays under the name.
+bool write_npy_f16(const std::wstring& path, const uint16_t* halves, int width, int height, std::string& err) {
+  std::string header = strf("{'descr': '<f2', 'fortran_order': False, 'shape': (%d, %d, 4), }", height, width);
+  const size_t preamble = 10;  // magic, version, header length
+  size_t padded = header.size() + 1;
+  if ((preamble + padded) % 64) padded += 64 - (preamble + padded) % 64;
+  header.resize(padded - 1, ' ');
+  header.push_back('\n');
+  std::string head = "\x93NUMPY";
+  head.push_back('\x01');
+  head.push_back('\x00');
+  head.push_back((char)(padded & 0xFF));
+  head.push_back((char)((padded >> 8) & 0xFF));
+  head += header;
+
+  HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) {
+    err = "cannot write " + narrow(path) + strf(" error %lu", GetLastError());
+    return false;
+  }
+  bool ok = true;
+  DWORD done = 0;
+  ok = WriteFile(h, head.data(), (DWORD)head.size(), &done, nullptr) && done == head.size();
+  const uint8_t* bytes = (const uint8_t*)halves;
+  size_t left = (size_t)width * (size_t)height * 8;
+  while (ok && left > 0) {
+    const DWORD ask = (DWORD)std::min<size_t>(left, 1u << 24);
+    ok = WriteFile(h, bytes, ask, &done, nullptr) && done == ask;
+    bytes += done;
+    left -= done;
+  }
+  CloseHandle(h);
+  if (!ok) {
+    DeleteFileW(path.c_str());
+    err = "cannot write " + narrow(path);
+  }
+  return ok;
+}
+
 std::string save_shot_files(const Shot& shot) {
   const int width = shot.width, height = shot.height;
   if (width < 1 || height < 1 || width > kLargestSide / 2 - kGap || height > kLargestSide) {
@@ -773,6 +816,20 @@ std::string save_shot_files(const Shot& shot) {
     if (!joined_ok) return "shot failed " + joined_err;
     done += ", side by side";
     if (shot.clipboard && clipboard_image(joined.data(), joined_width, height)) done += ", clipboard";
+  }
+  // the raw 16-bit frame and the picture drawn in 16-bit floats, for a test: last, so the
+  // pictures are there whatever becomes of them
+  if (!shot.raw.empty()) {
+    if (shot.raw.size() != (size_t)width * (size_t)height * 4) return "shot failed the raw frame has another size";
+    std::string raw_err;
+    if (!write_npy_f16(shot.base + L"-raw.npy", shot.raw.data(), width, height, raw_err)) return "shot failed " + raw_err;
+    done += ", raw";
+  }
+  if (!shot.out.empty()) {
+    if (shot.out.size() != (size_t)width * (size_t)height * 4) return "shot failed the drawn picture has another size";
+    std::string out_err;
+    if (!write_npy_f16(shot.base + L"-out.npy", shot.out.data(), width, height, out_err)) return "shot failed " + out_err;
+    done += ", out";
   }
   return done;
 }

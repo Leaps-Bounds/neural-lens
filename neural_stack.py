@@ -58,7 +58,8 @@ starts, and --verify says whether it is there, see layer_ungated.
 The add-on's section of ReShade.ini starts with nothing but its ConfigVersion,
 so a new install runs the add-on's own defaults, apart from two that the lens
 sets before its presenter starts, where the section holds no value for them:
-chained temporal history on, and the Classic codec. A repair keeps that section.
+chained temporal history on, and the Classic codec. A repair keeps that section,
+and the lens's own section byte for byte, see step_config.
 
 Command line, for testing and for people who prefer it:
 
@@ -87,7 +88,7 @@ import urllib.request
 import winreg
 import zipfile
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 
 FROZEN = getattr(sys, "frozen", False)
 # Everything lives in the lens's own folder, the one the installer put it in or
@@ -224,6 +225,12 @@ FileFormat=1
 # defaults, wrote back EnableHooks=2, NeuralUplift=1 and NREnableUpscaling=0,
 # and feature 18 created and evaluated.
 ADDON_SECTION = "[RenoDX.DLSS5]"
+# The lens's own section, which the add-on never reads. It holds the values a
+# pass from the second on has of its own, and which of passes 2 to 4 are ticked
+# Same as pass 1. The name is PASS_SECTION in neural_lens.py and kPassSection in
+# the fast engine. The template has no such section, and a new install starts
+# without one.
+LENS_SECTION = "[NeuralLens.Passes]"
 RESHADE_PRESET = """Techniques=vort_MotionEffects@vort_Motion.fx,DLSS5_Feed@DLSS5_Feed.fx
 TechniqueSorting=vort_MotionEffects@vort_Motion.fx,DLSS5_Feed@DLSS5_Feed.fx
 """
@@ -393,6 +400,13 @@ def write_text(path, text):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8", newline="\r\n") as f:
         f.write(text)
+    return path
+
+
+def write_bytes(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(data)
     return path
 
 
@@ -788,7 +802,15 @@ class Install:
             ini = ini.replace(ADDON_SECTION + "\nConfigVersion=2\n",
                               ADDON_SECTION + "\n" + "\n".join(kept) + "\n")
             self.say("config: the Neural Rendering add-on's settings in the existing ReShade.ini are kept")
-        self.add(write_text(path, ini))
+        # the template goes in as write_text writes it, and the lens's own
+        # section of the existing file after it, byte for byte, see _lens_section
+        data = ini.replace("\n", "\r\n").encode("utf-8")
+        own = self._lens_section(path)
+        if own:
+            data += b"\r\n" + own
+            self.say("The lens's own section of the existing ReShade.ini, with the values the passes from the "
+                     "second on have of their own, is kept as it was")
+        self.add(write_bytes(path, data))
         self.add(write_text(os.path.join(self.target, "ReShadePreset.ini"), preset))
         self.add(write_text(os.path.join(self.target, "dlss5-feed.cfg"), FEED_CFG))
         self.say("config: ReShade, the preset and the feed written")
@@ -812,6 +834,43 @@ class Install:
             if inside and bare:
                 out.append(bare)
         return out or None
+
+    @staticmethod
+    def _lens_section(path):
+        """The lens's own section in an existing ReShade.ini as the file has it,
+        or b"" where the file has none or cannot be read. That is each line from
+        the line with the section's name to its last line that is not blank,
+        with the line's own ending, so the values come back byte for byte. A
+        line that starts with a bracket names a section, by what follows the
+        bracket up to the first closing one, or to the line's end where there is
+        none, without the spaces around it and whatever its case. Windows reads
+        the name that way for the fast engine, and the lens finds the section
+        that way when it writes to it, so a name line written by hand with a
+        space or a comment in it is kept as well, and after a repair the engine
+        and the lens read what they read before. A file that has the section
+        more than once gives each, in the file's order, with a blank line
+        between them."""
+        try:
+            with open(path, "rb") as f:
+                lines = f.read().splitlines(True)
+        except OSError:
+            return b""
+        name = LENS_SECTION.strip("[]").lower().encode("ascii")
+        found, inside = [], None
+        for line in lines:
+            bare = line.strip()
+            if bare.startswith(b"["):
+                end = bare.find(b"]")
+                title = bare[1:] if end < 0 else bare[1:end]
+                inside = [line] if title.strip().lower() == name else None
+                if inside is not None:
+                    found.append(inside)
+            elif inside is not None:
+                inside.append(line)
+        for section in found:
+            while len(section) > 1 and not section[-1].strip():
+                section.pop()       # the blank lines before the next section
+        return b"\r\n".join(b"".join(section) for section in found)
 
     def step_layer(self):
         manifest = os.path.join(LAYER_DIR, "ReShade64.json")

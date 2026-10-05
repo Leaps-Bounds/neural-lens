@@ -3,6 +3,154 @@
 Versions follow semantic versioning. While the major version is 0 the project is beta, and
 settings, the state file format and behaviour may change between releases.
 
+## 0.6.1, 2026-10-05
+
+HDR for a fullscreen lens on the fast engine and a warning on the ReShade engine, each pass with
+values of its own, profiles on the NR settings panel that can load by themselves for the program
+in front, finer steps for its sliders, and a fast engine that takes the newest frame.
+
+- **At two passes or more the fast engine's picture can differ from 0.6.0.** Passes 2 to 4 now run
+  at the intensities the add-on keeps for them, `NRPass2Intensity`, `NRPass3Intensity` and
+  `NRPass4Intensity` in its section of `ReShade.ini`, wherever the file holds them. The fast
+  engine of 0.6.0 ran every pass at the first pass's intensity, so its picture at two passes or
+  more changes wherever those keys hold another intensity than the first pass's. On the test
+  computer they held 0.94, 0.6 and 0.36. A new install's section holds none of them, and there
+  every pass still runs at the first pass's values, as in 0.6.0. The NR settings panel shows such
+  an intensity as the pass's own, and ticking Same as pass 1 for it on that pass's tab, see below,
+  runs the pass at the first pass's intensity again, as 0.6.0 did. The panel writes the intensity
+  of passes 2 to 4 into those same keys, so the add-on of the ReShade engine gets them too.
+- **A fullscreen lens on the fast engine shows an HDR monitor in HDR.** When Windows HDR is on for
+  the lens's monitor, the fast engine captures the screen in 16-bit floating point, gives the
+  network the picture scaled to the SDR white level set in Windows, as Windows shows standard
+  range content, and draws its own picture in HDR. So the lens shows standard range content as
+  Windows shows it on that monitor, where 0.6.0 showed it washed out, and brighter parts in HDR.
+  The network sees nothing brighter than SDR white, so above it the network's change fades out and
+  is gone at twice SDR white, and parts at twice SDR white or brighter are left as they are. There
+  is nothing to set. The engine reads the monitor's HDR state once a second while it captures, and
+  where Windows HDR went on or off it starts its capture again, since Windows went on sending
+  8-bit frames when HDR was switched on while the engine captured. Screenshots of such a lens are
+  standard range pictures at the SDR white level, so anything brighter is white in them. Measured
+  on an RTX 5090 with the engine by itself fullscreen on a monitor at 3840x1200 and 144 Hz,
+  Windows HDR on and SDR white at 240 nits, with Neural Rendering off the picture on screen
+  equalled the captured one texel for texel, up to the 1000 nits of a test pattern. A test switch
+  in `docs/NOTES.md` picks one of two other ways above SDR white, for measurements.
+- **A warning when Windows HDR is on while the ReShade engine draws the picture.** That engine
+  still captures 8-bit frames, which Windows clips at 80 nits while HDR is on, so its picture
+  comes out washed out. A fullscreen lens on the ReShade engine, a lens attached to a window and
+  one with its title bar hidden say at the top of the screen that the picture comes out washed
+  out, and to switch HDR off for the monitor, or to use fullscreen on the fast engine where the
+  lens can offer it. A windowed lens says on its title bar that HDR is on and points to the
+  Picture page of Settings, in the longest of three short sentences that fits there, and the bar's
+  title gives way while none of them fits beside it. A narrower lens cuts the shortest one short,
+  down to none of it at the narrowest a windowed lens can be. The warning shows for about 12 s
+  once it applies, and again when the lens goes fullscreen or back to a window, and it goes when
+  HDR is switched off. It does not come while the ReShade engine only stands in for the fast
+  engine, which comes back once the screen gives pictures again, as after the screen was locked.
+  The Picture page of Settings shows the warning when it applies as Settings opens. Its switch
+  there, Warn when Windows HDR is on, starts ticked, and its explanation says where the warning
+  shows. The ini keeps the switch unticked as `hdr_warn = 0`. `lens.log` has a line when the
+  warning applies, also with the switch unticked. Auto Colour Management alone does not count as
+  HDR.
+- **Each pass can have values of its own on the fast engine.** The NR settings panel has a tab for
+  each pass that runs. The first pass's tab holds the values every pass starts from. On the tab of
+  a pass from the second on, each value has a tick, Same as pass 1. Ticked, the pass runs at the
+  first pass's value, which its control shows greyed. Unticked, the value is the pass's own, and
+  the control moves it alone. Every value starts ticked, apart from an intensity of passes 2 to 4
+  that the add-on's section holds, see above. The values of the passes from the second on are kept
+  in a section of the lens's own in `ReShade.ini`, `[NeuralLens.Passes]`, apart from those
+  intensities. The add-on does not read that section, so on the ReShade engine every pass still
+  runs at the first pass's values but for the intensity of passes 2 to 4. A pass taken away keeps
+  its own values for when it comes back. The stack setup keeps that section as it was, so a repair
+  from the Start Menu, and an update with the stack box ticked, keep the passes' own values and
+  which of them are ticked Same as pass 1.
+- **Profiles on the NR settings panel.** A Profile row at the top of the panel names the profile
+  in use, amber with a star once the lens differs from it, as the title bar does. Its list loads a
+  profile, saves the current settings as a new profile or into the one in use, ties the one in use
+  to the program in front or unties it, see the next point, and opens Settings. On a fullscreen
+  lens on the fast engine, a fullscreen profile at the same pass count now loads in place, with no
+  restart of the picture, from the panel, the lens menu's Profiles, the Next profile hotkey or the
+  program in front alike. Any other profile restarts the picture as before. A profile now also
+  holds each pass's own values and the quality step. The star now also shows once a value on the
+  panel, of any pass, or the quality step differs from the profile, and the Profiles page of
+  Settings lists a profile's quality step, the passes' own values and the program it is tied to. A
+  profile saved before 0.6.1 holds neither values per pass nor a quality step. Loaded, its passes
+  from the second on run at its first pass's values, apart from the intensity of passes 2 to 4,
+  which comes from the add-on's keys saved in it where it has them, and the quality step stays as
+  it is. A profile goes into `ReShade.ini` in one write, and where the file cannot be written the
+  profile is not loaded and the lens says so.
+- **A profile can load by itself for the program in front.** A profile can be tied to a program,
+  with Tie to the program in front in the panel's list, or with Tie to the program last in front
+  on the Profiles page of Settings, which names that program under the button. Untie takes the tie
+  off, and the panel names the program beside a profile tied to it, by its window's title, or by
+  its class where the title is empty. The switch Load the profile tied to the program in front,
+  on the panel and on the Profiles page, is off to begin with, and the ini
+  keeps it on as `auto_profile = 1`. With it on, each time a program with a profile tied to it
+  comes to the front from another program, the lens loads that profile, unless it is in use
+  already, and says so. It does so too when the window in front takes a title a profile is tied
+  to, as a game's window can a moment after it comes up. A window that shows one tied title after
+  another, as an emulator or a launcher can for each game it starts, loads each one's profile as
+  its title comes, and a title that goes back and forth with untied ones loads nothing again. A
+  program is known by its window's title and class, which have to match exactly, so a program
+  whose title changes with what it shows matches only while it shows the title it was tied with. A
+  program has one profile, so tying another to it unties the first. A window whose class cannot be
+  read counts as no program, and a tie without a class, which no window can match, is taken off as
+  `profiles.json` loads, with a line in `lens.log`. Coming back to the same program from a window
+  of the lens's own, the desktop, the taskbar or the task switcher loads nothing, so a profile
+  chosen meanwhile stays. The lens reads the title and the class of the window in front five times
+  a second while it is not minimised, also with the switch off, so that the tie entries can name
+  the program, and the id of its process to tell the lens's own windows apart. It reads them with
+  the plain window calls, which send that window nothing, and opens no handle to its process.
+  `profiles.json` keeps the title and class of a tied program, and `lens.log` gives a title only
+  in its lines about ties and the profiles loaded for them.
+- **Finer steps on the panel's sliders, and a reset for each.** Left and Right move a slider by
+  0.01 a press, where they moved it by 0.05, and presses in quick succession move it 0.01 each. A
+  key held down moves it further the longer it is held, 0.01 a repeat for the first 0.6 s of the
+  hold, 0.02 up to 1.5 s and 0.05 after that. At Windows' default repeat delay and rate, a slider
+  held from 0 reached 2 about 2.9 s after the press. A button to the right of each slider's number
+  puts the slider at 1.00. It is greyed while its slider is, on a value ticked Same as pass 1 and
+  on skin structure left to the model. The panel's own text says that a held key moves a slider
+  faster and what the button does. Up and Down now also reach the profile, the switch that loads a
+  profile for the program in front, the tabs and each Same as pass 1. On the profile, Left and
+  Right load the profile before or after by name, and Enter opens its list. On the tabs they show
+  the pass before or after, and on a Same as pass 1 Enter ticks or unticks it.
+- **The fast engine takes the newest frame.** The engine now waits until it has finished drawing
+  its last picture before it takes a frame from the capture, so the frame it takes is the newest
+  one. In 0.6.0 it could take a frame while a picture was still being drawn, and that frame then
+  waited behind the drawing. There is no switch. Measured on an RTX 5090 with the engine by itself
+  at 6144x2526 on a 6144x2560 display at 120 Hz, at Balanced with one pass, over a picture that
+  scrolled 8 pixels a step at 120 steps a second with nothing else keeping the card busy, the
+  median delay fell from 16.95 ms to 10.45 ms, at about 120 new pictures a second either way. A
+  second monitor at 3840x1200 and 144 Hz was connected, and in these runs the compositor timed the
+  120 Hz display by that monitor's 144 Hz refreshes, which adds to the delay, see Measurement
+  pitfalls in `docs/NOTES.md`. A game that keeps the card fully busy showed no gain, since there
+  the wait is for the game's own work on the card. On a test computer with an RTX 5090 and that
+  display alone at 120 Hz, a demanding game in borderless fullscreen and in front kept the card
+  fully busy at about 16 frames a second, under a fullscreen lens on the fast engine at the
+  Quality step with one pass and Neural Rendering on. In five separate sessions of about three
+  minutes, the median of the lens's 10 s summaries that had the game in front for all of their
+  10 s read 38.0 ms and 38.8 ms in the two sessions with this change and neither test switch, and
+  36.5 ms in the session without the change, where the four sessions with it read 36.5 to 38.8 ms.
+  These sessions ran at another place in the game than the figures of 0.6.0, so the two do not
+  compare.
+- **Two switches for tests of the delay under a game**, off unless set, are described under
+  Switches for tests in `docs/NOTES.md`. Over a demanding game that kept the card fully busy
+  neither brought a gain beyond the spread between sessions, so both stay off.
+- **A windowed lens is never narrower than the controls on its title bar**, which on a test
+  computer with Windows 11 came to 322 px at 100 percent scaling, 366 px at 125 percent and 414 px
+  at 150 percent, where a drag could make any lens 240 px wide. A drag on its frame stops at that
+  width, and a narrower size from a profile, from the way back from fullscreen or from the last
+  time the lens ran is widened to it. The title bar now gives its buttons their room first, so a
+  narrow lens cuts its title, readout and profile selector short, and never a button.
+- **Smaller changes.** On the ReShade engine, after a profile with Neural Rendering in the other
+  state, the title bar and the menu now show the state the profile set, where they went on showing
+  the one from before. `profiles.json` is now written in one step, so a write cut short leaves the
+  old file whole, and one that cannot be read is kept as `profiles.json.bad`, where the next save
+  wrote over it. The fast engine's notes in `presenter-stderr.log` give the video memory budget
+  beside the memory in use, and whether Windows HDR is on for its monitor and at which SDR white
+  level. From source, the fast engine's self test at two passes or more also checks that each pass
+  runs at values of its own, and with an intensity of 0 in `ReShade.ini` it judges only what that
+  intensity can show.
+
 ## 0.6.0, 2026-10-04
 
 A fast engine for a fullscreen lens, fullscreen as the picture alone with keys that work over a

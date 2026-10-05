@@ -1,6 +1,6 @@
 # DLSS 5 Neural Lens
 
-**Beta, version 0.6.0.** See [CHANGELOG.md](CHANGELOG.md). While the version starts with 0,
+**Beta, version 0.6.1.** See [CHANGELOG.md](CHANGELOG.md). While the version starts with 0,
 settings, the state file format and behaviour may change between releases.
 
 A floating see-through window for Windows. Drag it over anything on your desktop and the
@@ -79,10 +79,10 @@ left alone.
 NVIDIA's two runtimes and ReShade's DLL are moved across when they check out, so they are not
 downloaded again. The window position and pass count are kept.
 
-**Installing over an earlier version with the box unticked** keeps the stack, and with it the old
+**Installing over 0.5.1 or earlier with the box unticked** keeps the stack, and with it the old
 registration of the lens's ReShade, which Vulkan loads into every program that uses Vulkan. The
 lens finds that when it starts, says so and offers the stack setup, which registers it for the
-lens's presenter alone.
+lens's presenter alone. Over 0.6.0 the stack needs nothing new, so the box may be ticked or not.
 
 What it fetches, and from where:
 
@@ -106,7 +106,11 @@ starts, the lens switches the add-on's chained temporal history on, since withou
 and up pulse, and sets its codec to Classic, as the add-on's developer asks. It sets each only
 while the section holds no value for it. Change anything from the menu's Tweak NR settings, in
 the ReShade overlay, or on the NR settings panel of a fullscreen lens on the fast engine, which
-writes the same section. What you set stays, and a repair from the Start Menu keeps it.
+writes the same section. The panel keeps the values a pass from the second on has of its own in a
+section of the lens's own in the same file, apart from the intensity of passes 2 to 4, which goes
+into the add-on's section, see [Multiple passes](#multiple-passes). What you set stays, and a
+repair from the Start Menu, or an update with the stack box ticked, keeps what both sections
+hold.
 
 If you already have NVIDIA's two DLLs, the Start Menu's stack setup entry has a field for each,
 and `neural_stack.py` takes `--dlssnr` and `--dlss` on the command line. The installer's own page
@@ -267,7 +271,11 @@ them, and the setup does not accept them. The SF-v2 build is what runs on every 
 - **Resize it** by dragging its edges. The frame around the picture can be dragged by its sides
   and bottom corners, the way any window is resized, and the title bar shows the size as you go.
   Let go and the picture restarts at the new size, which takes a second or two. See
-  [Limits](#limits) for why.
+  [Limits](#limits) for why. A lens in a window is never narrower than the controls on its title
+  bar, which on a test computer came to 322 pixels at 100 percent display scaling, 366 pixels at
+  125 percent and 414 pixels at 150 percent. So a narrow lens cuts the title, the figures and the
+  profile selector on its bar short, and never one of the controls. A size saved narrower than
+  that, by an earlier version or in a profile, is widened to it.
 - **Settings** in the menu is nine pages, Picture, Power, Fullscreen, Title bar, Profiles,
   Hotkeys, Screenshots, Look and Program. Each setting is one short label. Rest the pointer on a
   setting for a second and a half, and a small window beside the pointer says what the setting
@@ -281,13 +289,38 @@ them, and the setup does not accept them. The SF-v2 build is what runs on every 
   so nothing needs editing by hand.
 - **Profiles** keep everything that makes the picture under a name. That is the window's place
   and size, fullscreen, the pass count, the Cost Scaler rule, the motion detail, Ready mode,
-  the frame rate limit, what the title bar shows, and every setting in the Home menu.
-  The selector on the title bar, marked Profile until one is in use, saves the current
-  settings as a new profile and switches between them, and a fullscreen lens has it as
-  Profiles in its menu. Applying one restarts the picture, since the add-on reads its settings
-  only when it starts. The name turns amber with a star once the lens no longer matches the
-  profile in what the bar and Settings hold. Settings renames and deletes them. They live in
+  the frame rate limit, what the title bar shows, every setting in the Home menu, the values
+  each pass has of its own and the quality step. The selector on the title bar, marked Profile
+  until one is in use, saves the current settings as a new profile and switches between them,
+  a fullscreen lens has it as Profiles in its menu, and on the fast engine the NR settings
+  panel has it at its top. Applying one restarts the picture, since the add-on reads its
+  settings only when it starts. The exception is a fullscreen profile at the lens's own pass
+  count, which a fullscreen lens on the fast engine takes as it runs. A profile saved before
+  0.6.1 has neither a pass's own values nor a quality step. Loading one gives the passes from
+  the second on the first pass's values, apart from the intensity of passes 2 to 4, see
+  [Multiple passes](#multiple-passes), and leaves the quality step as it is. The name turns
+  amber with a star once the lens no longer matches the profile in what the bar and Settings
+  hold or in a value of a pass. Settings renames and deletes them. They live in
   `profiles.json` in the data folder.
+- **A profile can be tied to a program**, so that it loads when that program comes to the
+  front. An entry in the profile list on the NR settings panel ties the profile in use to the
+  program in front, and the Profiles page of Settings ties the profile chosen in its list to the
+  program that was in front last. Both name the program by its window's title, or by its class
+  where the title is empty. A program is known by its window's title and class, exactly as they
+  were when it was tied, and has one profile, so tying another to it unties the first. The
+  switch Load the profile tied to the program in front, on the panel and on the Profiles page,
+  is off to begin with. With it on, each time a program with a profile tied
+  to it comes to the front, the lens loads that profile, unless it is the one in use, and says
+  so. A window that stays in front and takes a title that a profile is tied to, as a game's
+  window can a moment after it comes up, loads that profile when the title comes. One that
+  shows one such title after another, as an emulator or a launcher can for each game it starts,
+  loads each one's profile in turn. While the window stays in front, such a title that comes
+  back after titles with no profile tied to them loads nothing again. A program that comes back
+  from a window of the lens's own, the desktop, the taskbar or the task switcher has not come to
+  the front anew, so a profile chosen meanwhile stays. `auto_profile = 1` in the ini is the
+  switch on, and `profiles.json` keeps the title and class a profile is tied to. What the lens
+  reads of the window in front is under
+  [What the lens does and does not do](#what-the-lens-does-and-does-not-do).
 - **Global hotkeys** are off until you set them on the Hotkeys page of Settings. Each action
   can have a key combination that works from anywhere, whichever window has the keyboard, for
   a screenshot, a pass more or fewer, the fast engine's quality step up or down, the A/B split,
@@ -376,11 +409,15 @@ them, and the setup does not accept them. The SF-v2 build is what runs on every 
   keyboard while the game keeps the foreground. In the menu, Up and Down move through the
   entries, Enter chooses one and Escape closes it. On the panel, Up and Down move between the
   settings, Left and Right change the one that is lit, Enter switches a switch and Escape closes
-  the panel. The lens lets those keys go when the menu or the panel closes. The menu, the panel
-  and the note never take the foreground from the program in front. The Hotkeys page of
-  Settings changes or clears the four keys. Whenever the lens does not hold the menu's key, such
-  as when it has none, or another program or another of its actions has it, a click on the
-  lens's taskbar button opens the menu.
+  the panel. Left and Right move a slider by 0.01 a press, and a key held down moves it further
+  with each repeat the longer it is held, from one end of the slider to the other in about 2.9 s
+  at Windows' default key repeat. On the profile at the panel's top they load the profile before
+  or after the one in use, by name, and Enter opens the profile list. On the pass tabs they show
+  the pass before or after. The lens lets those keys go when the menu or the panel closes. The
+  menu, the panel and the note never take the foreground from the program in front. The Hotkeys
+  page of Settings changes or clears the four keys. Whenever the lens does not hold the menu's
+  key, such as when it has none, or another program or another of its actions has it, a click on
+  the lens's taskbar button opens the menu.
 - **An on-screen readout** can show figures in a corner of the screen while the lens is
   fullscreen. The Fullscreen page of Settings has a switch each for the frame rate, the latency,
   the quality step, the passes and the style, all off to begin with, and a choice of corner, the
@@ -399,14 +436,20 @@ them, and the setup does not accept them. The SF-v2 build is what runs on every 
   [The fast engine](#the-fast-engine). It has no ReShade in it, so there is no Home menu, no
   ReShade effect and no ReShade screenshot key, and the menu's Save the result only, which is
   ReShade's own screenshot, is greyed and says why. F6, the add-on's key, does nothing there,
-  and F9 turns Neural Rendering off and on. Its NR settings are a panel of the lens's own, with
-  Neural Rendering on or off, the style, the intensity, local tone, local structure, skin
-  structure, the auto mask, the passes and the quality step. A value shows in the picture while
-  it moves and is kept, and a new pass count restarts the picture. With the ReShade engine
-  chosen for fullscreen, the NR settings key and menu entry open the ReShade overlay as in a
-  window. Where the fast engine is not there, or fails, the lens draws fullscreen with the
-  ReShade engine by itself. After a failure it says so on the notice, and the Fullscreen page of
-  Settings gives the reason until the lens is started again.
+  and F9 turns Neural Rendering off and on. Its NR settings are a panel of the lens's own. At its
+  top are the profile in use, with the list that loads, saves and ties profiles, and the switch
+  that loads a profile for the program in front, see Profiles above. Then come Neural Rendering
+  on or off, a tab for each pass that runs, the pass's style, intensity, local tone, local
+  structure, skin structure and auto mask, the passes and the quality step. On the tab of a pass
+  from the second on, each value has a tick, Same as pass 1. Ticked, the pass runs at the first
+  pass's value and the control is greyed, and unticked, the value is the pass's own, see
+  [Multiple passes](#multiple-passes). A button to the right of each slider's number puts the
+  slider at 1.00, and is greyed with the slider. A value shows in the picture while it moves and
+  is kept, and a new pass count restarts the picture. With the ReShade engine chosen for
+  fullscreen, the NR settings key and menu entry open the ReShade overlay as in a window. Where
+  the fast engine is not there, or fails, the lens draws fullscreen with the ReShade engine by
+  itself. After a failure it says so on the notice, and the Fullscreen page of Settings gives the
+  reason until the lens is started again.
 
 ## What the lens does and does not do
 
@@ -422,6 +465,13 @@ included, is left alone:
   Neural Rendering on the ReShade engine through `ReShade.ini` and a restart of the picture.
 - No handle to its process is opened, nothing in its memory is read, and the lens never
   attaches to its keyboard input.
+- To know which program is in front, for a profile tied to a program, the lens reads the title
+  and the class of the window in front five times a second while it is not minimised. It also
+  reads the id of the process the window belongs to, to tell its own windows from those of other
+  programs. Windows keeps these for every window, so reading them sends that window nothing and
+  opens nothing of its program's process. The lens reads them with the switch that loads such a
+  profile off as well, so that the panel and the Profiles page of Settings can name the program.
+  The log names a window's title only in its lines about ties and the profiles loaded for them.
 - The lens's menu, its NR settings panel, the note and the notice of a fullscreen lens, and the
   on-screen readout never take the foreground from it. Settings and the ReShade overlay take the
   keyboard when you open them, since they need it. For the overlay the lens attaches to the
@@ -505,8 +555,8 @@ the original at full size, plus what the model changed, is drawn straight into t
 
 Its window is click-through, always on top and out of the capture, like the presenter's. No
 ReShade and no add-on run in it. The model gets the picture with no depth and no motion vectors,
-and its settings are the add-on's own values from `ReShade.ini`, which the lens's NR settings
-panel writes.
+and its settings are the add-on's own values in `ReShade.ini`, with the values each pass has of
+its own, see [Multiple passes](#multiple-passes). The lens's NR settings panel writes both.
 
 Measured on an RTX 5090 with a 6144x2560 display at 120 Hz and a second monitor at 1920x1080 and
 60 Hz connected, fullscreen at 6144x2558 with one pass over a white square moving across noise.
@@ -564,6 +614,25 @@ A picture that has come to rest after a large change goes through the network up
 times, since the network carries its own history and its first run on a picture that has just
 stopped moving is not yet its settled one.
 
+**Windows HDR.** With Windows HDR on for its monitor, the fast engine captures the screen in
+16 bit floating point and draws its picture in HDR. The network works on a standard range copy,
+scaled to the SDR white level, the brightness Windows gives standard content. What it changed is
+added to the original's own values in linear light, so up to the SDR white level it changes the
+picture as it does in standard range, and with Neural Rendering off the picture is the screen
+as it was captured. Where the original is brighter than the SDR white level the network saw only
+white, so there its change fades out, from all of it at the SDR white level to none at twice
+that level, and what is brighter still is left as it was. When HDR is switched on or off for the
+monitor while the lens runs, the engine reads the new state within a second and starts its
+capture again in the new format. Its screenshots over such a monitor are standard range pictures
+at the SDR white level, so what is brighter comes out white in them.
+
+Measured on a test computer with an RTX 5090, with the engine at the Balanced step on a second
+monitor at 3840x1200 and 144 Hz, HDR on and the SDR white level at 240 nits, the network's change
+up to that level came within 0.04 nits on average of the change it makes to the same picture in
+standard range, over a test scene. With a frame rate limit of 60 fps over a picture scrolling at
+120 steps a second, the card drew 1.6 to 2.5 W more for the engine than with HDR off, where one
+such measurement is good to about 2.5 W.
+
 ### Multiple passes
 
 The RenoDX DLSS 5 add-on runs the passes itself, inside the presenter, and takes the count from
@@ -595,6 +664,27 @@ quality step. A fullscreen lens changes the count from its menu or on the NR set
 Fullscreen at 6144x2558 at the Balanced step, in the runs described under
 [The fast engine](#the-fast-engine), two passes showed 103 to 110 frames a second on 315 to
 326 W over six runs, where one pass showed 115 a second on 218 W.
+
+On the fast engine each pass can have values of its own. The NR settings panel has a tab for
+each pass that runs, and on the tab of a pass from the second on, each value is either ticked
+Same as pass 1, so that the pass runs at the first pass's value, or the pass's own. Those values
+are kept in a section of the lens's own in `ReShade.ini`, `[NeuralLens.Passes]`, which the
+add-on does not read, so on the ReShade engine every pass runs at the first pass's style, local
+tone, local structure, skin structure and auto mask. The intensity of passes 2 to 4 is the
+exception. The add-on keeps keys of its own for it in its section, `NRPass2Intensity` to
+`NRPass4Intensity`, and the panel writes a pass's intensity there, so that the add-on runs the
+pass at it too. That the add-on runs those passes at these keys is taken from their names in its
+own file, and the ReShade engine's picture at two passes or more was not compared with the fast
+engine's.
+
+**At two passes and up the fast engine's picture can differ from 0.6.0's.** In 0.6.0 the fast
+engine ran every pass at the first pass's intensity. From 0.6.1 it runs passes 2 to 4 at the
+intensities the add-on's keys give them, wherever the add-on's section holds those keys. In the
+stack the tests ran on, that section held 0.94, 0.6 and 0.36 for them, with the first pass at
+0.97. Where the section holds none, as on a new install, the fast engine runs those passes at the
+first pass's intensity as before. The panel shows an intensity from the add-on's keys as the
+pass's own, and ticking Same as pass 1 beside it puts the pass back at the first pass's
+intensity and writes that value into the add-on's key for the pass.
 
 ### Frame rate and delay
 
@@ -705,8 +795,8 @@ the drawing of the picture. While a game is the program in front, the one that h
 and keeps the card fully busy, each of those jobs waits for a gap in the game's work. The lens's
 picture then falls several refreshes behind the game.
 
-Measured on a test computer with an RTX 5090 and one monitor at 6144x2560 and 120 Hz, on
-Windows 11 with hardware-accelerated GPU scheduling on. A demanding game ran in borderless
+Measured with 0.6.0 on a test computer with an RTX 5090 and one monitor at 6144x2560 and 120 Hz,
+on Windows 11 with hardware-accelerated GPU scheduling on. A demanding game ran in borderless
 fullscreen under a fullscreen lens on the fast engine, at the Quality step with one pass. The
 delay is the lens's latency figure, the median of each 10 s:
 
@@ -737,6 +827,22 @@ the same. None of these brought the delay down with the game in front and the ca
 
 It was not measured with hardware-accelerated GPU scheduling off. [docs/NOTES.md](docs/NOTES.md)
 has the engine's timings for these runs.
+
+Measured again with 0.6.1 over the same game at another place in it, on the same computer with
+that monitor alone, in five sessions of about three minutes, each with the lens started afresh
+and the engine writing its timings to its log. The lens was fullscreen on the fast engine at the
+Quality step with one pass and Neural Rendering on. The game ran in borderless fullscreen and in
+front at about 16 fps, with the player standing still and turning the view, and kept the card
+fully busy. Each figure is the median of a session's 10 s medians of the lens's latency figure,
+over the spans in which the game was in front for the whole 10 s. The engine has two other ways
+of handing its jobs to the card, as switches for tests that are off as it ships, see
+[docs/NOTES.md](docs/NOTES.md). With both off the delay read 38.0 ms in one session and 38.8 ms
+in another. With the check and the network sent to the card as one job it read 38.0 ms, and with
+the copy made on the card's copy engine, 36.5 ms. The fast engine of 0.6.0, with only a note on
+video memory added to its log, read 36.5 ms in a fifth session, so the difference from the table
+above is not 0.6.1's. Single 10 s spans read 33.2 to 42.8 ms across the five sessions, a wider
+spread than the 36.5 to 38.8 ms between the sessions' figures, so neither switch stood out. A
+frame rate limit in the game was not tried again with 0.6.1.
 
 **A warning when the lens falls behind.** A fullscreen lens on the fast engine looks at its
 median delay every 10 s. When the median delay of each of two 10 s spans in a row is three
@@ -836,17 +942,36 @@ off windowed, where the neural pass is rarely what limits the frame rate.
 - **An attached lens shows whatever is on screen in its region.** It captures the monitor, not
   the window, so while another window covers part of the target that part of the lens shows the
   covering window, until the target is brought forward again.
-- **With Windows HDR on, the lens works from a clipped picture.** Both engines capture 8 bit
-  frames and present them in an 8 bit window in the standard colour space. With HDR on for the
+- **With Windows HDR on, the ReShade engine works from a clipped picture.** It captures 8 bit
+  frames and presents them in an 8 bit window in the standard colour space. With HDR on for the
   monitor, Windows clips that capture at 80 nits, the brightness of standard content at the
   lowest setting of its slider. With standard content set to 240 nits, everything from 80 nits
-  up came out as the same white. Keep HDR off for the monitor the lens is on. The presenter's 10
-  bit swapchain behind `LENS_PRESENTER_10BIT` does not change the capture.
+  up came out as the same white, so the picture comes out washed out. The ReShade engine draws
+  every windowed lens and every lens attached to a window, so keep HDR off for the monitor such
+  a lens is on. The presenter's 10 bit swapchain behind `LENS_PRESENTER_10BIT` does not change
+  the capture. A fullscreen lens on the fast engine shows a monitor with HDR on in HDR, with
+  the network's change fading out above the SDR white level, the brightness Windows gives
+  standard content, see [The fast engine](#the-fast-engine). While HDR is on for its monitor
+  and the ReShade engine draws the picture, the lens warns that the picture comes out washed
+  out, for 12 s when that begins and again when the lens goes fullscreen or back to a window.
+  No warning comes while the ReShade engine stands in for the fast engine, which it does when
+  the fast engine gets no picture from the screen, as after the screen was locked, until the
+  screen gives pictures again. The warning says to switch HDR off for the monitor, or to use
+  fullscreen on the fast engine where the lens can offer it. A fullscreen lens, a lens attached
+  to a window and one with its title bar hidden show it at the top of the screen. A lens in a
+  window says in a short sentence on its title bar that HDR is on and points to the Picture page
+  of Settings, which shows the whole warning when it applies as Settings opens. The bar carries
+  the longest of three such sentences that fits beside everything else on it. Where none does,
+  the bar's title gives way to the shortest while it shows, and a lens narrower still cuts that
+  one short at its end, down to none of it at the narrowest a lens in a window can be. The Picture
+  page has a switch for the warning, Warn when Windows HDR is on, which starts ticked. Unticked,
+  it turns the warning off, and the ini keeps that as `hdr_warn = 0`.
 - **The fast engine draws a fullscreen lens only.** A windowed lens, and a lens attached to a
   window, run on the ReShade engine.
 - **The fast engine's figures come from one computer**, an RTX 5090 with a 6144x2560 display at
-  120 Hz, most of them with a second monitor connected. Displays at 60 Hz and 240 Hz and HDR have
-  not been measured with it, and of games only one, see
+  120 Hz, most of them with a second monitor connected. HDR was measured only on a second
+  monitor at 3840x1200 and 144 Hz, over test pictures. Displays at 60 Hz and 240 Hz have not
+  been measured with it, and of games only one, see
   [A game in front that keeps the card busy](#a-game-in-front-that-keeps-the-card-busy).
 
 ## Troubleshooting
@@ -861,12 +986,12 @@ of them. None of it is included or redistributed here.
 Its Vulkan layer is still registered the way 0.5.1 and earlier registered it, which an update
 with the stack box unticked leaves in place. Say yes to the offer, or run the stack setup from
 the Start Menu, and the layer is registered for the lens's presenter alone. What you set in the
-add-on stays, as with any repair. Say no and the lens starts as before, and asks again at the
-next start. Where the message is about another copy of the lens, such as an earlier install in
-another folder or a copy run from source, this copy's stack setup cannot change that
-registration, so the lens offers to remove it or to keep it. Removed, Vulkan no longer loads the
-ReShade in that copy's folder, until that copy's own stack setup registers it again. Kept, it
-stays as it is, and the lens does not ask about it again.
+add-on and on the NR settings panel stays, as with any repair. Say no and the lens starts as
+before, and asks again at the next start. Where the message is about another copy of the lens,
+such as an earlier install in another folder or a copy run from source, this copy's stack setup
+cannot change that registration, so the lens offers to remove it or to keep it. Removed, Vulkan
+no longer loads the ReShade in that copy's folder, until that copy's own stack setup registers it
+again. Kept, it stays as it is, and the lens does not ask about it again.
 
 **Neural Rendering looks like it is doing nothing.** If the startup check above said nothing,
 the install is fine and this is almost certainly the content. Its strength depends heavily on the
@@ -885,6 +1010,13 @@ builds it. The Cost Scaler's files may be missing from the stack folder, and the
 puts them back. Or the engine failed in this run of the lens. The page then quotes what the
 engine said, and fullscreen stays on the ReShade engine until the lens is started again. The
 engine's own notes are in `presenter-stderr.log` in `data\logs`.
+
+**The picture looks washed out.** Windows HDR is on for the lens's monitor while the ReShade
+engine draws the picture, and that engine works from a capture that Windows clips at 80 nits,
+see [Limits](#limits). The lens warns about it, unless the Picture page of Settings has the
+warning off. Switch HDR off for that monitor, or make the lens fullscreen on the fast engine,
+which shows such a monitor in HDR. Where fullscreen runs on the ReShade engine instead, the
+Fullscreen page of Settings says why, see the entry above.
 
 **The lens disappeared after you changed a folder in Settings.** The stack and data folders
 take effect at the next launch, so changing one relaunches the lens, and a relaunch that fails

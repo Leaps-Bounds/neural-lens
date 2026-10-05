@@ -458,7 +458,7 @@ struct Nr::Impl {
   bool initialised = false;  // Init_Ext succeeded, so Shutdown1 is owed
   bool ready = false;
   int passes = 0;
-  NrSettings settings;
+  NrPasses settings;              // each pass's own, pass p evaluates with settings.pass[p]
   Features now;                   // what evaluate() uses
   Features next;                  // what prepare() made, until use_prepared() takes it
   ComPtr<ID3D12Resource> motion;  // R16G16_FLOAT, one texel, zero
@@ -564,7 +564,7 @@ Nr::Nr() {}
 Nr::~Nr() { shutdown(); }
 
 bool Nr::init(Gpu& gpu, const std::wstring& stack_dir, const std::wstring& data_dir, UINT work_w,
-              UINT work_h, int passes, const NrSettings& settings, std::string& err) {
+              UINT work_h, int passes, const NrPasses& settings, std::string& err) {
   shutdown();
   err.clear();
   if (g_started_once) {
@@ -712,10 +712,15 @@ bool Nr::init(Gpu& gpu, const std::wstring& stack_dir, const std::wstring& data_
   m.create_ms = m.now.create_ms;
 
   m.ready = true;
+  const NrSettings& base = settings.base();
   note("nr: %ux%u, %d pass%s, created in %.0f ms on the CPU, style %u intensity %.2f tone %.2f structure %.2f "
        "skin %.2f mask %d",
-       work_w, work_h, passes, passes == 1 ? "" : "es", m.create_ms, settings.style, settings.intensity,
-       settings.local_tone, settings.local_structure, settings.skin_structure, settings.auto_mask);
+       work_w, work_h, passes, passes == 1 ? "" : "es", m.create_ms, base.style, base.intensity, base.local_tone,
+       base.local_structure, base.skin_structure, base.auto_mask);
+  for (int p = 1; p < passes; ++p) {
+    const std::string own = own_values_text(base, settings.pass[p]);
+    if (!own.empty()) note("nr: pass %d has its own %s", p + 1, own.c_str());
+  }
   return true;
 }
 
@@ -766,7 +771,7 @@ bool Nr::evaluate(ID3D12GraphicsCommandList* list, int pass, ID3D12Resource* inp
     return false;
   }
   eval_params(m.now.params[pass], input, output, m.motion.Get(), m.depth.Get(), m.now.w, m.now.h, reset,
-              m.settings);
+              m.settings.pass[pass]);
   const ngx::Result r = call_evaluate(m.evaluate, list, m.now.feature[pass], m.now.params[pass]);
   if (!good(r)) {
     err = outcome("EvaluateFeature", r);
@@ -775,7 +780,7 @@ bool Nr::evaluate(ID3D12GraphicsCommandList* list, int pass, ID3D12Resource* inp
   return true;
 }
 
-void Nr::set_settings(const NrSettings& settings) {
+void Nr::set_settings(const NrPasses& settings) {
   if (impl_) impl_->settings = settings;
 }
 

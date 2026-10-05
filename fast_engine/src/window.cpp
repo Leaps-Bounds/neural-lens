@@ -117,6 +117,7 @@ struct Window::Impl {
 
   PresentPath path = PresentPath::Hwnd;  // the one in use, not always the one asked for
   bool sequential = false;               // flip sequential had to stand in for flip discard
+  DXGI_FORMAT format = Window::kFormat;  // the buffers' format: kFormat, or kHdrFormat in scRGB
   ComPtr<IDXGISwapChain3> swapchain;
   ComPtr<ID3D12Resource> buffers[Window::kBuffers];
   ComPtr<ID3D12DescriptorHeap> rtv_heap;
@@ -130,7 +131,15 @@ struct Window::Impl {
   bool chain_for_hwnd(std::string& err);
   bool chain_for_composition(std::string& err);
   bool make_views(std::string& err);
+  bool set_colour_space(bool hdr, std::string& err);
+  static const char* format_words(DXGI_FORMAT format);
 };
+
+// The colour spaces the two formats go with: the desktop's standard range for 8 bits, and
+// scRGB, linear with 1.0 at 80 nits, for 16-bit floats, which is what a monitor with
+// Windows HDR on is composed in.
+constexpr DXGI_COLOR_SPACE_TYPE kSdrColourSpace = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+constexpr DXGI_COLOR_SPACE_TYPE kHdrColourSpace = DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709;
 
 // ---------------------------------------------------------------- the window procedure
 
@@ -228,11 +237,15 @@ LRESULT CALLBACK Window::Impl::proc(HWND hwnd, UINT message, WPARAM wparam, LPAR
 
 // ---------------------------------------------------------------- the swapchain
 
+const char* Window::Impl::format_words(DXGI_FORMAT format) {
+  return format == Window::kHdrFormat ? "16-bit floats in scRGB" : "8 bits a channel";
+}
+
 DXGI_SWAP_CHAIN_DESC1 Window::Impl::describe(DXGI_SCALING scaling) const {
   DXGI_SWAP_CHAIN_DESC1 d = {};
   d.Width = (UINT)width;
   d.Height = (UINT)height;
-  d.Format = Window::kFormat;
+  d.Format = format;
   d.Stereo = FALSE;
   d.SampleDesc.Count = 1;  // the flip model takes no multisampling
   d.SampleDesc.Quality = 0;
@@ -342,7 +355,9 @@ bool Window::Impl::chain_for_composition(std::string& err) {
   return true;
 }
 
-// The buffers and one render target view for each, the same for either path.
+// The buffers and one render target view for each, the same for either path and either
+// format. The heap for the views is made once and the views are written again after
+// set_hdr() made new buffers.
 bool Window::Impl::make_views(std::string& err) {
   DXGI_SWAP_CHAIN_DESC1 got = {};
   HRESULT hr = swapchain->GetDesc1(&got);
@@ -350,23 +365,25 @@ bool Window::Impl::make_views(std::string& err) {
     err = "the swapchain's description cannot be read " + hr_text(hr);
     return false;
   }
-  if (got.Width != (UINT)width || got.Height != (UINT)height || got.Format != Window::kFormat ||
+  if (got.Width != (UINT)width || got.Height != (UINT)height || got.Format != format ||
       got.BufferCount != Window::kBuffers) {
     err = strf("the swapchain came as %ux%u, format %d, %u buffers, not as asked", got.Width,
                got.Height, (int)got.Format, got.BufferCount);
     return false;
   }
 
-  D3D12_DESCRIPTOR_HEAP_DESC heap = {};
-  heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-  heap.NumDescriptors = Window::kBuffers;
-  heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-  hr = gpu->device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&rtv_heap));
-  if (FAILED(hr)) {
-    err = "the heap for the back buffers' views failed " + hr_text(hr);
-    return false;
+  if (!rtv_heap) {
+    D3D12_DESCRIPTOR_HEAP_DESC heap = {};
+    heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    heap.NumDescriptors = Window::kBuffers;
+    heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    hr = gpu->device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&rtv_heap));
+    if (FAILED(hr)) {
+      err = "the heap for the back buffers' views failed " + hr_text(hr);
+      return false;
+    }
+    rtv_heap->SetName(L"window: back buffer views");
   }
-  rtv_heap->SetName(L"window: back buffer views");
   const UINT step = gpu->device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
   D3D12_CPU_DESCRIPTOR_HANDLE at = rtv_heap->GetCPUDescriptorHandleForHeapStart();
   for (UINT i = 0; i < Window::kBuffers; ++i) {
@@ -380,6 +397,29 @@ bool Window::Impl::make_views(std::string& err) {
     gpu->device->CreateRenderTargetView(buffers[i].Get(), nullptr, at);
     rtv[i] = at;
     at.ptr += step;
+  }
+  return true;
+}
+
+// The colour space that goes with the format, set on the swapchain: scRGB for 16-bit
+// floats, the standard range for 8 bits. The swapchain is asked first whether it takes it.
+// false with err when it does not, or the call fails: the caller then falls back to 8 bits.
+bool Window::Impl::set_colour_space(bool hdr, std::string& err) {
+  const DXGI_COLOR_SPACE_TYPE space = hdr ? kHdrColourSpace : kSdrColourSpace;
+  UINT support = 0;
+  HRESULT hr = swapchain->CheckColorSpaceSupport(space, &support);
+  if (FAILED(hr)) {
+    err = strf("CheckColorSpaceSupport failed for colour space %d ", (int)space) + hr_text(hr);
+    return false;
+  }
+  if (!(support & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT)) {
+    err = strf("the swapchain does not take colour space %d", (int)space);
+    return false;
+  }
+  hr = swapchain->SetColorSpace1(space);
+  if (FAILED(hr)) {
+    err = strf("SetColorSpace1 failed for colour space %d ", (int)space) + hr_text(hr);
+    return false;
   }
   return true;
 }
@@ -468,6 +508,7 @@ bool Window::create(Gpu& gpu, const WindowDesc& desc, std::string& err) {
 
   std::string why;
   bool made = false;
+  w.format = desc.hdr ? kHdrFormat : kFormat;
   if (desc.path == PresentPath::Hwnd) {
     made = w.chain_for_hwnd(why);
     if (!made) {
@@ -484,16 +525,73 @@ bool Window::create(Gpu& gpu, const WindowDesc& desc, std::string& err) {
     made = w.chain_for_composition(why);
   }
   if (!made) return give_up(why);
+  // The colour space goes with the format. A swapchain that does not take scRGB is made
+  // again in 8 bits, nothing having been drawn yet: the picture is then shown in standard
+  // range, which Windows puts at the SDR white level.
+  if (desc.hdr && !w.set_colour_space(true, why)) {
+    note("window: %s, so the swapchain stays in 8 bits a channel", why.c_str());
+    w.format = kFormat;
+    const HRESULT hr = w.swapchain->ResizeBuffers(kBuffers, (UINT)w.width, (UINT)w.height, kFormat, 0);
+    if (FAILED(hr)) return give_up("ResizeBuffers to 8 bits failed " + hr_text(hr));
+  }
+  if (w.format == kFormat && !w.set_colour_space(false, why)) {
+    // the default of an 8-bit swapchain anyway, so a refusal is nothing but a note
+    note("window: %s", why.c_str());
+  }
   if (!w.make_views(why)) return give_up(why);
 
-  note("window: %dx%d at (%d,%d), swapchain made for %s, %u buffers, flip %s%s", desc.width,
+  note("window: %dx%d at (%d,%d), swapchain made for %s, %u buffers, flip %s, %s%s", desc.width,
        desc.height, desc.x, desc.y,
        w.path == PresentPath::Hwnd ? "the window" : "DirectComposition", kBuffers,
-       w.sequential ? "sequential" : "discard", desc.exclude ? ", excluded from capture" : "");
+       w.sequential ? "sequential" : "discard", Impl::format_words(w.format),
+       desc.exclude ? ", excluded from capture" : "");
   return true;
 }
 
 HWND Window::hwnd() const { return impl_ ? impl_->hwnd : nullptr; }
+
+bool Window::hdr() const { return impl_ && impl_->format == kHdrFormat; }
+
+DXGI_FORMAT Window::format() const { return impl_ ? impl_->format : kFormat; }
+
+bool Window::set_hdr(bool on, std::string& err) {
+  if (!impl_ || !impl_->swapchain) {
+    err = "the window has no swapchain";
+    return false;
+  }
+  Impl& w = *impl_;
+  const DXGI_FORMAT want = on ? kHdrFormat : kFormat;
+  if (w.format == want) return true;
+  // The buffers are made again in the new format. Every reference to the old ones has to
+  // go first, the views included, or ResizeBuffers refuses: the caller holds none, and
+  // the GPU has finished with them (the caller flushed).
+  for (ComPtr<ID3D12Resource>& buffer : w.buffers) buffer.Reset();
+  HRESULT hr = w.swapchain->ResizeBuffers(kBuffers, (UINT)w.width, (UINT)w.height, want, 0);
+  if (FAILED(hr)) {
+    if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == kDeviceRemovedByDriver) {
+      err = "device removed " + hr_text(w.gpu->device->GetDeviceRemovedReason());
+    } else {
+      err = strf("ResizeBuffers to %s failed ", Impl::format_words(want)) + hr_text(hr);
+    }
+    return false;
+  }
+  w.format = want;
+  std::string why;
+  if (on && !w.set_colour_space(true, why)) {
+    note("window: %s, so the swapchain goes back to 8 bits a channel", why.c_str());
+    w.format = kFormat;
+    hr = w.swapchain->ResizeBuffers(kBuffers, (UINT)w.width, (UINT)w.height, kFormat, 0);
+    if (FAILED(hr)) {
+      err = "ResizeBuffers to 8 bits failed " + hr_text(hr);
+      return false;
+    }
+  }
+  if (w.format == kFormat && !w.set_colour_space(false, why)) note("window: %s", why.c_str());
+  if (!w.make_views(err)) return false;
+  note("window: the swapchain changes to %s, %u buffers of %dx%d", Impl::format_words(w.format), kBuffers,
+       w.width, w.height);
+  return true;
+}
 
 bool Window::back_buffer(Target& out, std::string& err) {
   out = Target();
@@ -517,6 +615,7 @@ bool Window::back_buffer(Target& out, std::string& err) {
   out.rtv = w.rtv[index];
   out.width = (UINT)w.width;
   out.height = (UINT)w.height;
+  out.format = w.format;
   return true;
 }
 

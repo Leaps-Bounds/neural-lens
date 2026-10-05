@@ -82,6 +82,12 @@ struct Gpu {
   // GetDeviceRemovedReason) once it does not.
   bool alive(std::string& err) const;
 
+  // One moment on both clocks, from the queue's clock calibration: the card's timestamp
+  // counter (the ticks of the timestamp queries, timestamp_hz a second) and now_s()'s clock.
+  // A timestamp tick t is then cpu_s + (t - gpu_tick) / timestamp_hz. For the trace. false
+  // when the queue cannot say.
+  bool clock_pair(UINT64& gpu_tick, double& cpu_s) const;
+
   // A committed 2D texture with one mip in a default heap, named for debugging. state is
   // the state it is created in and the one the creator then keeps track of: D3D12 does not
   // remember states for the caller. clear, when not null, is the optimised clear value for
@@ -102,6 +108,11 @@ struct Gpu {
   // Bytes of this process's video memory in use on the adapter (the local segment), 0 when
   // it cannot be read. The probe counted 690 MiB with the network loaded at 2560x1053.
   UINT64 vram_bytes() const;
+
+  // Bytes of video memory the system lets this process use on the adapter (the local
+  // segment's Budget, which it shares out between the processes and may lower while they
+  // run), 0 when it cannot be read. For the memory note beside vram_bytes().
+  UINT64 vram_budget_bytes() const;
 };
 
 // Records one transition barrier for the whole resource. Nothing is recorded when the two

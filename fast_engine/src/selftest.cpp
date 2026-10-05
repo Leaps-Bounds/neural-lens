@@ -18,6 +18,10 @@
 //             the four further runs of the network the loop's settle gives it
 //   strength  at a strength of 0 the network gives its input back, so leaving it out there,
 //             as the pipeline does, changes no byte
+//   per pass  with --passes 2 or more, the second pass at values of its own gives another
+//             picture than every pass at the base's values, the base's values again give
+//             the first picture back byte for byte, and the first pass at half the strength
+//             gives another picture than the second at half, so each pass takes its own slot's
 //   switches  with --switches, one quality step after another in one run, each with the
 //             time the switch took, the network's time at the new size, the video memory
 //             in use and a picture. While a new network is being made, frames are drawn as
@@ -320,8 +324,12 @@ int run_selftest(const Options& o) {
     original[i * 3 + 2] = picture.bgra[i * 4];
   }
 
-  NrSettings settings;
-  if (!read_nr_settings(o.stack_dir, settings, err)) note("selftest: %s, the runtime's defaults are used", err.c_str());
+  // the base and each pass's own values, as the loop reads them, see NrPasses
+  NrPasses pass_settings;
+  if (!read_nr_passes(o.stack_dir, pass_settings, err, o.passes)) {
+    note("selftest: %s, the runtime's defaults are used", err.c_str());
+  }
+  const NrSettings settings = pass_settings.base();
 
   // ---- the device and the textures
   Gpu gpu;
@@ -373,10 +381,11 @@ int run_selftest(const Options& o) {
   desc.passes = o.passes;
   desc.stack_dir = o.stack_dir;
   desc.data_dir = o.data_dir;
-  desc.settings = settings;
+  desc.settings = pass_settings;
   Pipeline pipeline;
   const double t_init = now_s();
   if (!pipeline.init(gpu, desc, err)) return failed(err);
+  pipeline.keep_times(true);
   const double init_ms = (now_s() - t_init) * 1000.0;
   const double create_ms = pipeline.network_create_ms();
   say("selftest network created in %.0f ms on the CPU, pipeline ready in %.0f ms", create_ms, init_ms);
@@ -542,10 +551,74 @@ int run_selftest(const Options& o) {
     if (!pipeline.read_target(shown, err)) return failed(err);
     zero_off_exact = shown == original && !pipeline.network_runs();
     zero_off_ms = pipeline.times().nr_ms;
-    pipeline.set_settings(settings);
+    pipeline.set_settings(pass_settings);
     say("selftest strength 0: the network run at it gives the original: %s, in %.3f ms. Left out, as the "
         "pipeline does at that strength, the picture is the original: %s, in %.3f ms",
         zero_ran_exact ? "yes" : "NO", zero_ran_ms, zero_off_exact ? "yes" : "NO", zero_off_ms);
+  }
+
+  // ---- each pass's own values, with two passes or more: the same picture drawn with every
+  // pass at the base's values, then with the second pass at half the strength, then at the
+  // base's values again, then with the second pass at another style, and last with the first
+  // pass at half the strength and the second at the base's. The history is dropped before
+  // each, so each is the network's first picture of this frame. Each with a pass at values of
+  // its own must differ from the first, the third must be the first byte for byte, and the
+  // last must differ from the one with the second pass at half, so each pass takes the values
+  // of its own slot. An engine that gave every pass the second pass's values, or each pass
+  // the next one's, draws the last as the first. A swap of the two passes' values is not
+  // caught, since telling it apart needs a picture of one pass to compare with. With one pass
+  // there is nothing to show, and the check counts as held. Where the file has a strength of
+  // 0, a pass at the base's values gives its input back. The second pass at another style
+  // then draws the equal picture, and the first pass at half draws what the second at half
+  // draws, so those two are not judged, and the line says so.
+  bool per_pass_ok = true;
+  // mean abs from the equal picture, out of 255, and the last's from the one with the second at half
+  double per_pass_half = -1.0, per_pass_style = -1.0, per_pass_first = -1.0, per_pass_first_half = -1.0;
+  bool per_pass_again = false, per_pass_at_zero = false;
+  if (o.passes >= 2) {
+    const NrSettings base = settings;
+    per_pass_at_zero = !(base.intensity > 0.0f);
+    const float halved = base.intensity > 0.0f ? base.intensity * 0.5f : 0.5f;
+    NrPasses equal(base);
+    NrPasses half(base);
+    half.pass[1].intensity = halved;
+    NrPasses styled(base);
+    styled.pass[1].style = (base.style + 1) % 3;
+    NrPasses first(base);
+    first.pass[0].intensity = halved;
+    std::vector<uint8_t> pic_equal, pic_half, pic_again, pic_styled, pic_first;
+    auto draw = [&](const NrPasses& with, std::vector<uint8_t>& pic) {
+      pipeline.set_settings(with);
+      if (!pipeline.ingest(a.Get(), nullptr, nullptr, 0, changed, err)) return false;
+      if (!pipeline.render(a.Get(), back, true, true, err)) return false;
+      return pipeline.read_target(pic, err);
+    };
+    if (!draw(equal, pic_equal) || !draw(half, pic_half) || !draw(equal, pic_again) || !draw(styled, pic_styled) ||
+        !draw(first, pic_first))
+      return failed(err);
+    pipeline.set_settings(pass_settings);
+    per_pass_half = mean_abs(pic_half, pic_equal);
+    per_pass_style = mean_abs(pic_styled, pic_equal);
+    per_pass_again = pic_again == pic_equal;
+    per_pass_first = mean_abs(pic_first, pic_equal);
+    per_pass_first_half = mean_abs(pic_first, pic_half);
+    per_pass_ok = per_pass_half > 0.0 && per_pass_again && per_pass_first > 0.0 &&
+                  (per_pass_at_zero || (per_pass_style > 0.0 && pic_first != pic_half));
+    if (per_pass_at_zero) {
+      say("selftest per pass: the base's strength is 0, at which a pass at the base's values gives its input back. "
+          "With the second pass at half the strength the picture is %.3f of 255 from the one with every pass at the "
+          "base's values, and at the base's values again it is the same picture: %s. With the first pass at half "
+          "the strength it is %.3f from the equal one. Not judged at a strength of 0: the second pass at another "
+          "style, which then draws the equal picture, and the first pass at half against the second at half, which "
+          "then draw the same picture",
+          per_pass_half, per_pass_again ? "yes" : "NO", per_pass_first);
+    } else {
+      say("selftest per pass: with the second pass at half the strength the picture is %.3f of 255 from the one "
+          "with every pass at the base's values, at another style %.3f, and at the base's values again it is the "
+          "same picture: %s. With the first pass at half the strength it is %.3f from the equal one and %.3f from "
+          "the one with the second at half",
+          per_pass_half, per_pass_style, per_pass_again ? "yes" : "NO", per_pass_first, per_pass_first_half);
+    }
   }
 
   // ---- the network off gives the original
@@ -603,6 +676,116 @@ int run_selftest(const Options& o) {
         "settled one on average, after 1 to %d more runs of the network %.3f %.3f %.3f %.3f",
         kScrollFrames, kScrollStep, settle_from[0], kSettleRuns, settle_from[1], settle_from[2], settle_from[3],
         settle_from[4]);
+  }
+
+  // ---- the joined list: the ingest and the render in one list, see Pipeline::render_joined.
+  // Its picture must be the one the two calls make. With the network off that is the
+  // original. With the network on, the two are held against each other from the same
+  // start: a render with the network's history dropped, and a joined draw with it dropped
+  // again, both of the same frame. Then the answer that comes back: unchanged for the same
+  // picture in another texture, one tile for one changed texel, and the times of the draw
+  // with its own ingest.
+  bool joined_off_exact = false, joined_on_same = false, joined_unchanged = false, joined_tiled = false,
+       joined_timed = false, times_bounded = false;
+  {
+    std::vector<uint8_t> shown, careful;
+    uint8_t tiles[Pipeline::kTiles] = {};
+    bool flag = true;
+    // the frames: a holds the picture, b and c scrolled pictures from the settle's proof, so
+    // c is given the picture again, as the capture gives the same picture in another slot
+    if (!loader.fill(picture.bgra, c.Get(), err)) return failed(err);
+    pipeline.set_nr(false);
+    if (!pipeline.render_joined(a.Get(), b.Get(), nullptr, 0, back, false, true, err)) return failed(err);
+    if (!pipeline.read_target(shown, err)) return failed(err);
+    joined_off_exact = shown == original;
+    pipeline.set_nr(true);
+    // every draw so far has been waited for: their times go, so that the joined draw's are alone
+    StageTimes t;
+    while (pipeline.take_times(t)) {
+    }
+    while (pipeline.take_flag(flag, tiles)) {
+    }
+    if (!pipeline.ingest(a.Get(), b.Get(), nullptr, 0, changed, err)) return failed(err);
+    if (!pipeline.render(a.Get(), back, true, true, err)) return failed(err);
+    if (!pipeline.read_target(careful, err)) return failed(err);
+    if (!pipeline.render_joined(a.Get(), b.Get(), nullptr, 0, back, true, true, err)) return failed(err);
+    if (!pipeline.read_target(shown, err)) return failed(err);
+    joined_on_same = shown == careful;
+    // the answer: the frame differed from b, the scrolled picture, in tiles
+    flag = false;
+    const bool answered = pipeline.take_flag(flag, tiles);
+    int set = 0;
+    for (const uint8_t tile : tiles) set += tile;
+    const bool changed_right = answered && flag && set >= 1;
+    // the times: the careful render's, then the joined draw's with its own ingest
+    int timed = 0;
+    bool joined_seen = false;
+    while (pipeline.take_times(t)) {
+      ++timed;
+      if (t.joined && t.ingest_ms > 0.0 && t.nr_ms > 0.0 && t.composite_ms > 0.0 && t.ran_network) joined_seen = true;
+    }
+    joined_timed = timed == 2 && joined_seen;
+    // the same picture in another texture: drawn, and found unchanged afterwards
+    for (uint8_t& tile : tiles) tile = 0;
+    if (!pipeline.render_joined(c.Get(), a.Get(), nullptr, 0, back, false, false, err)) return failed(err);
+    if (!gpu.flush(kWaitMs, err)) return failed(err);
+    flag = true;
+    set = 0;
+    joined_unchanged = pipeline.take_flag(flag, tiles) && !flag;
+    for (const uint8_t tile : tiles) set += tile;
+    joined_unchanged = joined_unchanged && set == 0;
+    // one texel changed: found, in its tile alone
+    {
+      const UINT x = W / 3, y = H / 4;
+      const uint8_t* was = &picture.bgra[((size_t)y * W + x) * 4];
+      uint8_t now[4] = {was[0], was[1], was[2], was[3]};
+      now[1] = (uint8_t)(now[1] == 255 ? 254 : now[1] + 1);
+      if (!loader.poke(c.Get(), x, y, now, err)) return failed(err);
+      for (uint8_t& tile : tiles) tile = 0;
+      if (!pipeline.render_joined(c.Get(), a.Get(), nullptr, 0, back, false, false, err)) return failed(err);
+      if (!gpu.flush(kWaitMs, err)) return failed(err);
+      flag = false;
+      set = 0;
+      const bool got = pipeline.take_flag(flag, tiles);
+      for (const uint8_t tile : tiles) set += tile;
+      const UINT across = (UINT)((UINT64)x * (UINT)work_w / W) * Pipeline::kTilesAcross / (UINT)work_w;
+      const UINT down = (UINT)((UINT64)y * (UINT)work_h / H) * Pipeline::kTilesAcross / (UINT)work_h;
+      joined_tiled = got && flag && set == 1 && tiles[down * Pipeline::kTilesAcross + across];
+      if (!loader.poke(c.Get(), x, y, was, err)) return failed(err);
+    }
+    // and nothing is left waiting
+    while (pipeline.take_times(t)) {
+    }
+    joined_unchanged = joined_unchanged && !pipeline.take_flag(flag, tiles);
+    // the times queue is bounded: twice kTimesKept repaints without a take hand out at most
+    // kTimesKept times and at least one, and with keep_times off none at all
+    int times_on = 0, times_off = 0;
+    for (int i = 0; i < 2 * Pipeline::kTimesKept; ++i) {
+      if (!pipeline.repaint(back, false, err)) return failed(err);
+    }
+    if (!gpu.flush(kWaitMs, err)) return failed(err);
+    while (pipeline.take_times(t)) ++times_on;
+    pipeline.keep_times(false);
+    for (int i = 0; i < 2 * Pipeline::kTimesKept; ++i) {
+      if (!pipeline.repaint(back, false, err)) return failed(err);
+    }
+    if (!gpu.flush(kWaitMs, err)) return failed(err);
+    while (pipeline.take_times(t)) ++times_off;
+    pipeline.keep_times(true);
+    times_bounded = times_on >= 1 && times_on <= Pipeline::kTimesKept && times_off == 0;
+    say("selftest times queue: %d repaints without a take hand out %d times (at most %d), with keep_times off %d",
+        2 * Pipeline::kTimesKept, times_on, Pipeline::kTimesKept, times_off);
+    // the frame on screen is the picture again, through the two calls, as the loop draws it
+    if (!pipeline.ingest(a.Get(), c.Get(), nullptr, 0, changed, err)) return failed(err);
+    if (!pipeline.render(a.Get(), back, false, false, err)) return failed(err);
+    if (!gpu.flush(kWaitMs, err)) return failed(err);
+    say("selftest joined list: with the network off the picture is the original: %s, with it on and the history "
+        "dropped it is the render's: %s, its answer says changed, in tiles: %s, the same picture in another "
+        "texture reads unchanged: %s, one changed texel is found in its own tile alone: %s, its times come with "
+        "its own ingest: %s",
+        joined_off_exact ? "yes" : "NO", joined_on_same ? "yes" : "NO", changed_right ? "yes" : "NO",
+        joined_unchanged ? "yes" : "NO", joined_tiled ? "yes" : "NO", joined_timed ? "yes" : "NO");
+    joined_on_same = joined_on_same && changed_right;
   }
 
   // ---- what is written
@@ -825,9 +1008,10 @@ int run_selftest(const Options& o) {
     }
   }
 
+  const bool joined_ok = joined_off_exact && joined_on_same && joined_unchanged && joined_tiled && joined_timed;
   const bool checks_ok = same_unchanged && restored_unchanged && found == (int)spots.size() && repaint_same &&
                          sparse_same && native_exact && all_unchanged && off_exact && zero_ran_exact &&
-                         zero_off_exact && switches_ok;
+                         zero_off_exact && switches_ok && joined_ok && times_bounded && per_pass_ok;
   {
     FILE* f = _wfopen(path_join(out, L"timings.json").c_str(), L"w");
     if (!f) return failed("cannot write timings.json in " + narrow(out));
@@ -851,6 +1035,21 @@ int run_selftest(const Options& o) {
                "\"skin_structure\": %.2f, \"auto_mask\": %d},\n",
             settings.style, settings.intensity, settings.local_tone, settings.local_structure,
             settings.skin_structure, settings.auto_mask);
+    // each pass's own values as the file gave them, and what the per pass check found
+    fprintf(f, " \"pass_own\": {");
+    for (int p = 1; p < o.passes && p < kNrMaxPasses; ++p) {
+      fprintf(f, "%s\"%d\": \"%s\"", p > 1 ? ", " : "", p + 1,
+              json_text(own_values_text(settings, pass_settings.pass[p])).c_str());
+    }
+    fprintf(f, "},\n");
+    if (o.passes >= 2) {
+      // at a strength of 0 in the file the two comparisons named are not judged, see the per pass check
+      fprintf(f,
+              " \"per_pass\": {\"half_from_equal\": %.4f, \"style_from_equal\": %.4f, \"equal_again_same\": %s, "
+              "\"first_from_equal\": %.4f, \"first_from_half\": %.4f%s},\n",
+              per_pass_half, per_pass_style, per_pass_again ? "true" : "false", per_pass_first, per_pass_first_half,
+              per_pass_at_zero ? ", \"not_judged_at_strength_0\": [\"style_from_equal\", \"first_from_half\"]" : "");
+    }
     fprintf(f, " \"frames\": {\"warm\": %d, \"timed\": %d},\n", kWarmFrames, kTimedFrames);
     fprintf(f, " \"gpu_ms\": {\n  \"ingest\": %s,\n  \"nr\": %s,\n  \"composite\": %s,\n  \"frame\": %s\n },\n",
             json(s_ingest).c_str(), json(s_nr).c_str(), json(s_composite).c_str(), json(s_frame).c_str());
@@ -897,11 +1096,12 @@ int run_selftest(const Options& o) {
     fprintf(f, " \"checks\": {\"same_picture_unchanged\": %s, \"single_texel_found\": %d, \"single_texel_tried\": %d, "
                "\"put_back_unchanged\": %s, \"repaint_same\": %s, \"sparse_same\": %s, \"native_copy_exact\": %s, "
                "\"unchanged_frames_unchanged\": %s, \"nr_off_exact\": %s, \"zero_strength_exact\": %s, "
-               "\"switches_same\": %s},\n",
+               "\"switches_same\": %s, \"joined_list\": %s, \"times_bounded\": %s, \"per_pass_values\": %s},\n",
             same_unchanged ? "true" : "false", found, (int)spots.size(), restored_unchanged ? "true" : "false",
             repaint_same ? "true" : "false", sparse_same ? "true" : "false", native_exact ? "true" : "false",
             all_unchanged ? "true" : "false", off_exact ? "true" : "false",
-            zero_ran_exact && zero_off_exact ? "true" : "false", switches_ok ? "true" : "false");
+            zero_ran_exact && zero_off_exact ? "true" : "false", switches_ok ? "true" : "false",
+            joined_ok ? "true" : "false", times_bounded ? "true" : "false", per_pass_ok ? "true" : "false");
     fprintf(f, " \"ok\": %s\n}\n", checks_ok ? "true" : "false");
     fclose(f);
   }

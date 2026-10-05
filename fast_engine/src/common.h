@@ -45,7 +45,7 @@
 #include <vector>
 
 // Named in the ready line, so a log says which presenter ran.
-#define LENS_FAST_VERSION "0.6.0-fast"
+#define LENS_FAST_VERSION "0.6.1-fast"
 
 // What the process returns. The lens only looks at whether it is still running, the numbers
 // are for a person reading a log.
@@ -107,6 +107,9 @@ double now_s();
 
 // ---------------------------------------------------------------- Neural Rendering's settings
 
+// The most passes an engine runs, and so the most sets of settings and features it holds.
+constexpr int kNrMaxPasses = 8;
+
 // The six settings the engine takes from the lens. They live in <stack>\ReShade.ini, section
 // [RenoDX.DLSS5], where the lens and the add-on's overlay write them. The defaults are the
 // runtime's own, used for any key that is missing. NRGlobalTone is not here on purpose: the
@@ -120,14 +123,60 @@ struct NrSettings {
   int auto_mask = 0;             // NRAutoMask, 0 or 1
 };
 
-// Reads the six settings from <stack_dir>\ReShade.ini. Any thread. The file is read afresh
-// on every call, which is what the "reload" command is for. Returns false with err when
-// the file is not there, leaving out at its defaults: the engine can still run. A missing
-// key keeps its default and is not an error.
+// Reads the six settings of the first pass from <stack_dir>\ReShade.ini. Any thread. The
+// file is read afresh on every call, which is what the "reload" command is for. Returns
+// false with err when the file is not there, leaving out at its defaults: the engine can
+// still run. A missing key keeps its default and is not an error.
 bool read_nr_settings(const std::wstring& stack_dir, NrSettings& out, std::string& err);
 
 // Whether two sets are the same, value for value.
 bool same_settings(const NrSettings& a, const NrSettings& b);
+
+// The passes whose intensity the add-on keeps a key of its own for, NRPass2Intensity to
+// NRPass4Intensity, from the second on.
+constexpr int kAddonPassIntensities = 4;
+
+// The settings of every pass. pass[0] is the base, the six keys above. Each pass after it
+// starts from the base and takes its own values where the file holds them:
+//   - the lens's own section [NeuralLens.Passes], keys Pass<n>Style, Pass<n>LocalTone,
+//     Pass<n>LocalStructure, Pass<n>SkinStructure and Pass<n>AutoMask, n from 2, which the
+//     add-on never reads, so it never sees keys it does not know
+//   - the intensity of passes 2 to 4 from the add-on's own NRPass2Intensity, NRPass3Intensity
+//     and NRPass4Intensity in [RenoDX.DLSS5], which the lens writes for those passes and this
+//     engine runs them at. Their names suggest that the add-on runs those passes at them too,
+//     and that its overlay can change them, which was not measured, see docs\NOTES.md, What
+//     is not measured. Where the lens's section holds Pass<n>IntensityTied, the pass is
+//     ticked Same as pass 1 and runs at the base's intensity, whatever the add-on's key says.
+//     The lens keeps that key at the base for such a pass, for the add-on, and the value of
+//     Pass<n>IntensityTied is the one it last wrote there, so it can tell a value given to
+//     the pass as its own from a base the overlay moved
+//   - the intensity of a pass from the fifth on, which the add-on has no key for, and of a
+//     pass 2 to 4 where the add-on's key is missing, from the lens's Pass<n>Intensity
+// A pass with no key of its own for a value runs at the base's. NRPass4Color, which the
+// add-on also keeps in its section, is left alone: the lens never set it, and it belongs to
+// the add-on's own colour stage, which this engine does not have.
+struct NrPasses {
+  NrSettings pass[kNrMaxPasses];
+  NrPasses() = default;
+  // every pass at the same values, which is how one set of settings was used before
+  explicit NrPasses(const NrSettings& all) {
+    for (NrSettings& p : pass) p = all;
+  }
+  const NrSettings& base() const { return pass[0]; }
+};
+
+// Reads the base and the own values of the first count passes, see NrPasses. Every pass
+// beyond count is the base, and at one pass the lens's section is not read at all. Any
+// thread, the file read afresh each time, each section in one call. Returns false with err
+// when the file is not there, out at the defaults.
+bool read_nr_passes(const std::wstring& stack_dir, NrPasses& out, std::string& err, int count = kNrMaxPasses);
+
+// Whether the first count passes of two sets are the same, value for value.
+bool same_passes(const NrPasses& a, const NrPasses& b, int count);
+
+// Which of a pass's six values differ from the base, as words for a note: "intensity 0.94,
+// style 2", or an empty string where none does.
+std::string own_values_text(const NrSettings& base, const NrSettings& pass);
 
 // ---------------------------------------------------------------- the command line
 
@@ -318,6 +367,22 @@ void set_dpi_aware();
 // This is the monitor the engine captures, picks its adapter by and reads its refresh rate
 // from. Call set_dpi_aware() first.
 HMONITOR monitor_under(int x, int y, int w, int h);
+
+// How Windows composes for a monitor: in standard range, or with Windows HDR on for it.
+// With HDR on the desktop is composed in scRGB and shown at the SDR white level, and an
+// 8-bit capture of it comes out clipped at 80 nits, 1.0 in scRGB, and sRGB-encoded.
+struct MonitorColour {
+  bool known = false;           // the monitor was found among the active display paths
+  bool hdr = false;             // Windows HDR is on for it
+  double sdr_white_nits = 0.0;  // the SDR white level Windows uses for it, 0 when unknown
+  int bits = 0;                 // bits per colour channel on the link, 0 when unknown
+};
+
+// Reads a monitor's colour state from DisplayConfig: the active path whose source device
+// is the monitor's, its advanced colour information (GET_ADVANCED_COLOR_INFO_2 from Windows
+// 11 24H2 on, which tells HDR from Auto Colour Management, and GET_ADVANCED_COLOR_INFO before
+// that) and its SDR white level. A few hundred microseconds. Main thread.
+MonitorColour monitor_colour(HMONITOR monitor);
 
 // ---------------------------------------------------------------- small helpers
 

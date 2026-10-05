@@ -19,7 +19,9 @@
 //     (ID3D12CommandQueue::Wait(fence(), value), which Pipeline::ingest does).
 //   - Slots are created by the first start() and live until destroy(). stop() and a later
 //     start() leave them alone: what was handed out before a pause is still valid and
-//     unchanged after it, and the loop repaints from it on resume.
+//     unchanged after it, and the loop repaints from it on resume. The one exception is a
+//     start() with the other format (fp16): it makes new slots, and the frames handed out
+//     before it are gone, see start().
 //
 // The frame rate limit is kept here, because it acts at the moment a frame arrives, in the
 // capture's own thread, see set_limit(). A frame is taken or left out there and then, and
@@ -38,9 +40,11 @@
 
 // One captured frame, as the D3D12 device sees it.
 struct CaptureFrame {
-  ID3D12Resource* texture = nullptr;  // B8G8R8A8_UNORM, W x H: the crop under the lens. In
-                                      // COMMON whenever the engine is not using it, and to
-                                      // be left in COMMON. Owned by the capture: no Release
+  ID3D12Resource* texture = nullptr;  // W x H, the crop under the lens: B8G8R8A8_UNORM, or
+                                      // R16G16B16A16_FLOAT in scRGB when the capture was
+                                      // started with fp16, see start(). In COMMON whenever the
+                                      // engine is not using it, and to be left in COMMON.
+                                      // Owned by the capture: no Release
   UINT64 fence_value = 0;             // the copy is done when the shared fence reaches this
   double timestamp_s = 0.0;           // the frame's SystemRelativeTime in seconds, which is
                                       // on now_s()'s clock: the composition it belongs to
@@ -172,6 +176,15 @@ class Capture {
   //                     after: the device and W, H must be the same on every call.
   //   monitor           the monitor to capture, from monitor_under().
   //   W, H              the lens: the size of the crop and of every slot.
+  //   fp16              the frames' format. false: B8G8R8A8_UNORM, the desktop in 8 bits a
+  //                     channel. true: R16G16B16A16_FLOAT, the desktop as Windows composes it
+  //                     for a monitor with Windows HDR on, scRGB with 1.0 at 80 nits, where
+  //                     an 8-bit capture would be clipped at 1.0, 80 nits. Twice the bytes a
+  //                     slot. A call with the other format than the slots have releases
+  //                     them and makes new ones, with a new fence and D3D11 device: before
+  //                     such a call the caller has waited for the GPU (Gpu::flush) and no
+  //                     longer uses any frame it was handed, and none of those frames
+  //                     comes back. slots_fp16() says which format the slots have.
   //   crop_x, crop_y    where in the monitor's picture the crop starts. As in the Vulkan
   //                     presenter it is pushed back inside when it would reach over the
   //                     frame's edge, and only a frame smaller than W x H is unfit.
@@ -189,8 +202,13 @@ class Capture {
   // false with err: "Windows Graphics Capture is not available", "no D3D11 device on the
   // adapter 0x...", "the monitor cannot be captured 0x...", "sharing the slots failed
   // 0x...". After a failure the capture is stopped, and start may be tried again.
-  bool start(ID3D12Device* device, LUID adapter, HMONITOR monitor, int W, int H, int crop_x,
-             int crop_y, int min_interval_ms, HANDLE frame_event, std::string& err);
+  bool start(ID3D12Device* device, LUID adapter, HMONITOR monitor, int W, int H, bool fp16,
+             int crop_x, int crop_y, int min_interval_ms, HANDLE frame_event, std::string& err);
+
+  // Whether slots exist (a start() has made them, and destroy() has not released them),
+  // and whether they are R16G16B16A16_FLOAT. Both false before the first start().
+  bool slots_made() const;
+  bool slots_fp16() const;
 
   // Moves the crop, from the next frame the system delivers. Cheap, call it on every "crop"
   // command.
@@ -238,7 +256,10 @@ class Capture {
 
   // The frame handed out showed nothing new, Pipeline::ingest found it equal to the one
   // before. The turn it took is given back, so a picture that repeats does not cost the
-  // next new one its turn. Nothing happens when a later frame has taken a turn since.
+  // next new one its turn. When one later frame has taken a turn since, which the echo of a
+  // joined draw's present does before its answer is in, the period this frame's turn moved
+  // the beat on by is taken out from under that later turn, unless that turn started the
+  // beat afresh. Nothing happens when two or more later frames have taken a turn.
   void turn_back(const CaptureFrame& frame);
 
   // The newest complete frame not handed out yet. false when there is none, and out is
@@ -258,6 +279,18 @@ class Capture {
   // The shared fence as the D3D12 device sees it, for ID3D12CommandQueue::Wait. Valid
   // from the first successful start() until destroy(). Null before.
   ID3D12Fence* fence() const;
+
+  // The slots' guard. The reader hands a slot back at the acquire() after the next, by the
+  // rule above, and a command list that reads the slot may still be on the queue then when
+  // the reader does not wait for its lists (Pipeline::render_joined). So the reader names
+  // its queue's fence here, once, and after each submission says with note_read() which
+  // frame's slot the list reads and the value that fence reaches once the list is done. A
+  // slot is not written again before its value is reached, whatever its state: the copy
+  // takes another free slot, or the place of the frame that waits unread when there is no
+  // other, and that frame counts as dropped. With the fence left null nothing is guarded.
+  // note_read() is cheap, a lock and a compare, and a frame it does not know is ignored.
+  void set_reader_fence(ID3D12Fence* fence);
+  void note_read(const CaptureFrame& frame, UINT64 value);
 
   // The counts since the last call, which sets them back to nothing. Once a second.
   CaptureCounters take_counters();

@@ -116,6 +116,26 @@
 # the Settings dialog has this too.
 # fs_behind_warn = 1
 
+# A warning when Windows HDR is on for the monitor the lens is on while the
+# ReShade engine draws the picture, which then comes out washed out. That
+# engine draws every lens in a window, a lens attached to a window and a
+# fullscreen lens where fullscreen_engine below says stack or the fast engine
+# cannot run. No warning comes while it stands in for a fast engine that got
+# no picture from the screen, as after an unlock, since the fast engine comes
+# back by itself. A lens in a window says so on its bar, in the longest of
+# three short sentences that fits there, each pointing to the Picture page of
+# the Settings dialog. The bar's title gives way where none fits beside it,
+# and a narrower lens cuts the shortest short, down to none of it at its
+# narrowest. The Picture page shows the whole warning when it applies as the
+# dialog opens. A fullscreen lens, a lens attached to a window and one with
+# its title bar hidden show the whole warning at the top of the screen. It
+# comes for about 12 s each time it begins to apply, and once more when the
+# lens goes fullscreen or back to a window. It says to switch HDR off for the
+# monitor or, where the lens can, to use fullscreen on the fast engine, which
+# draws in HDR and gets no warning. On unless this says 0. The Picture page of
+# the Settings dialog has this too.
+# hdr_warn = 1
+
 # A line of figures in a corner of the screen while the lens is fullscreen, in
 # a window of the lens's own that lets every click through, never takes the
 # keyboard and is out of the picture. fs_readout lists what it shows, separated
@@ -176,11 +196,12 @@
 # Which engine draws a fullscreen lens: fast, the default, or stack. fast is
 # the lens's own renderer for fullscreen. It captures the screen on the
 # graphics card and calls the neural model directly, which gives a higher frame
-# rate on much less power. It has no ReShade in it, so there is no Home menu,
-# no ReShade effects and no ReShade screenshot key, and its NR settings are a
-# panel of the lens's own. stack is the engine every windowed lens uses, with
-# ReShade. Where the fast engine is not installed, or fails, the lens uses
-# stack by itself and says so. The Settings dialog has this too.
+# rate on much less power, and on a monitor with Windows HDR on it draws in
+# HDR, where stack comes out washed out. It has no ReShade in it, so there is
+# no Home menu, no ReShade effects and no ReShade screenshot key, and its NR
+# settings are a panel of the lens's own. stack is the engine every windowed
+# lens uses, with ReShade. Where the fast engine is not installed, or fails,
+# the lens uses stack by itself and says so. The Settings dialog has this too.
 # fullscreen_engine = fast
 
 # The fast engine's quality step, from 0 to 4: 4 Quality, 3 Balanced,
@@ -188,9 +209,28 @@
 # on a smaller copy of the picture, which costs less power and loses some of
 # the fine detail the network adds. The original's own detail is always kept.
 # With no step set here, a fullscreen picture larger than 2560x1440 runs at
-# Balanced, where no loss was seen, and a smaller one at Quality. The Settings
+# Balanced, where no loss was seen, and a smaller one at Quality. A profile
+# keeps the step it was saved with and sets it when it is loaded, and one
+# saved before 0.6.1, which has none, leaves the step as it is. The Settings
 # dialog and the NR settings panel have this too.
 # fast_quality = 3
+
+# Load a profile by itself when the program it is tied to comes to the front.
+# A profile is tied to a program on the NR settings panel, or on the Profiles
+# page of the Settings dialog, by the title and the class of the program's
+# window, which must both match exactly. With this on, each time such a
+# program comes to the front from another program, the lens loads its profile,
+# unless it is the one in use, and says so. A window that takes a tied title
+# while it stays in front, as a game's window can a moment after it comes up,
+# loads that profile then, and one that shows several tied titles in turn
+# loads each one's profile as its title comes. A program that comes back from
+# a window of the lens's own, the desktop, the taskbar or the task switcher
+# has not come to the front anew. A program has one profile, so tying a second
+# profile to it unties the first. To know which program to tie, the lens reads
+# the title and the class of the window in front five times a second, also
+# with this off, and sends that window nothing. Off unless this says 1. The
+# Settings dialog and the panel have this too.
+# auto_profile = 0
 
 # The colours of the title bar, the menus and the Settings dialog. Slate is the
 # lens as it always looked. Graphite, Paper and Industrial come with it, and a

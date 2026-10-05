@@ -34,6 +34,13 @@
 // picture is cut into 16 by 16 tiles, and g_flag[1 + row * 16 + column] says that tile holds
 // a difference. So the loop can tell how much of the picture a frame changed, a caret in one
 // tile or a page across all of them.
+//
+// A frame captured in 16-bit floats, with Windows HDR on for the monitor, comes here as its
+// 8-bit conversion, which is clipped at the SDR white level. The comparison then runs on the
+// 16-bit frames themselves (g_raw_compare), bit for bit, so that a change above that white,
+// in a highlight the conversion clips, is seen too. The downscale still reads the conversion.
+// Bit for bit, since a float comparison would call a NaN different from itself at every
+// frame, and the same bits are the same picture.
 
 cbuffer Constants : register(b0) {
   uint g_src_w;      // the frame, W x H
@@ -45,13 +52,16 @@ cbuffer Constants : register(b0) {
   uint g_downscale;  // 0: there is no network, nothing is written
   uint g_taps_x;     // weights kept for each work texel across, the widest footprint
   uint g_taps_y;     // and down
+  uint g_raw_compare;  // 1: the comparison reads g_cur16 and g_prev16, not g_cur and g_prev
 };
 
-Texture2D<float4> g_cur : register(t0);            // B8G8R8A8_UNORM
-Texture2D<float4> g_prev : register(t1);           // B8G8R8A8_UNORM
+Texture2D<float4> g_cur : register(t0);            // B8G8R8A8_UNORM, or the R8G8B8A8_UNORM conversion
+Texture2D<float4> g_prev : register(t1);           // the same
 // w * g_taps_x weights across, then h * g_taps_y weights down. The weight of the n-th
 // texel of work texel i's footprint is at i * taps + n.
 Buffer<float> g_weights : register(t2);
+Texture2D<float4> g_cur16 : register(t3);          // R16G16B16A16_FLOAT, with g_raw_compare
+Texture2D<float4> g_prev16 : register(t4);
 RWTexture2D<unorm float4> g_work : register(u0);   // R8G8B8A8_UNORM, the network's input
 RWBuffer<uint> g_flag : register(u1);
 
@@ -83,8 +93,14 @@ void main(uint3 id : SV_DispatchThreadID) {
       precise float3 tap = g_weights[across + x] * level;
       row = row + tap;
       if (g_compare != 0 && x >= own_x && y >= own_y) {
-        const float4 p = g_prev.Load(int3(x, y, 0));
-        if (any(c != p)) differs = true;
+        if (g_raw_compare != 0) {
+          const float4 c16 = g_cur16.Load(int3(x, y, 0));
+          const float4 p16 = g_prev16.Load(int3(x, y, 0));
+          if (any(asuint(c16) != asuint(p16))) differs = true;
+        } else {
+          const float4 p = g_prev.Load(int3(x, y, 0));
+          if (any(c != p)) differs = true;
+        }
       }
     }
     precise float3 part = g_weights[down + y] * row;

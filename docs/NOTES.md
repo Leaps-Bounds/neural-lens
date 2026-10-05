@@ -251,11 +251,11 @@ No ReShade and no add-on run in it. It loads the stack's `nvngx_dlssnr.dll`, whi
 Scaler's proxy, by its full path, and through it NVIDIA's model, and creates and evaluates NGX
 feature 18 on its own D3D12 device with a parameter object of its own. The call order and the
 parameter names follow openNR's native adapter, whose MIT notice `nr.cpp` carries. No NVIDIA
-header is included, and the runtime's functions are found with `GetProcAddress`. The six settings
-it gives the model, the style, the intensity, local tone, local structure, skin structure and the
-auto mask, are read from the add-on's section of `ReShade.ini` at the start and again on `reload`.
-The model's motion vector and depth inputs are 1x1 textures of zeros. With full-size textures of
-zeros the output was the same byte for byte, on 21 MiB more video memory.
+header is included, and the runtime's functions are found with `GetProcAddress`. The six settings it
+gives the model, the style, the intensity, local tone, local structure, skin structure and the auto
+mask, are read from `ReShade.ini` at the start and again on `reload`, for each pass, see Each pass's
+values. The model's motion vector and depth inputs are 1x1 textures of zeros. With full-size
+textures of zeros the output was the same byte for byte, on 21 MiB more video memory.
 
 One frame goes through five stages:
 
@@ -264,7 +264,7 @@ capture     the region under the lens is copied on the card, in the capture's ow
             into a texture that the D3D12 device shares
 ingest      one compute pass downscales the region to the work size by area and compares
             every texel with the frame before
-network     the model runs on the downscaled copy, once for each pass
+network     the model runs on the downscaled copy, once for each pass, each at its own values
 composite   one triangle drawn straight into the back buffer:
             original + (bilinear(network output) - bilinear(network input))
 present     a flip model swapchain in a click-through window that is out of the capture
@@ -288,12 +288,12 @@ the whole frame                              3.54 ms
 a frame equal to the last                    0.07 ms
 ```
 
-Two passes took 6.69 ms in the network. Creating the network took 255 to 270 ms in the self
-tests, and 393 ms for two passes. The engine held 910 MiB of video memory. With the network's
-strength at 0 the engine leaves the network out. A run through it at that strength gave the
-original byte for byte in 3.34 ms. On screen at the same picture size, the capture's callback
-took 0.08 to 0.13 ms of processor time a frame and the present call 0.13 to 0.18 ms, and the
-engine used 0.06 to 0.11 of a core.
+Two passes took 6.69 ms in the network. Creating the network took 255 to 270 ms in the self tests,
+and 393 ms for two passes. The engine held 910 MiB of video memory. With the network's strength at 0
+on every pass the engine leaves the network out. A run through it at that strength gave the original
+byte for byte in 3.34 ms. On screen at the same picture size, the capture's callback took 0.08 to
+0.13 ms of processor time a frame and the present call 0.13 to 0.18 ms, and the engine used 0.06 to
+0.11 of a core.
 
 The downscale's weights and the composite's sample positions are computed on the CPU and handed
 to the shaders. A division in the shader came out one unit in the last place off the rounded
@@ -334,6 +334,10 @@ put a prompt on screen.
   reads. The first frame read back through D3D12 equalled GDI's copy of the same screen rectangle
   exactly, a mean difference of 0.000 of 255. A crop at 6144x2526 is 62 MB, and the two devices
   with the four textures hold 287 MiB of video memory.
+- **With Windows HDR on, the frames are 16-bit floats.** For a monitor with HDR on, the frame pool
+  and the four textures are `R16G16B16A16_FLOAT`, 8 bytes a texel, so at 3840x1198 the four take
+  140 MiB where they take 70 MiB in 8 bits. A capture that starts with the other format makes the
+  textures again, once the frames on hand have been let go. See HDR.
 - **The capture item is kept across sessions.** Each `CreateForMonitor` left two handles in the
   process that releasing the item did not close, 83 handles over 40 restarts. With the item kept, a
   later start takes 5 to 7 ms, where it took about 40 ms with a new item each time.
@@ -472,7 +476,7 @@ size. Even four rows of resampling, 1600x900 to 1600x896, took half of it. So th
 the picture's size. It is Balanced for a picture larger than 2560x1440 in width or in height,
 where every step is a downscale and Balanced showed no loss, and Quality for a picture within it,
 where Quality is the picture's own size. The engine applies the rule when it is given no
-`--quality`, and names the step at the end of its ready line.
+`--quality`, and names the step in its ready line, before the HDR state that ends the line.
 
 `quality N` changes the step while the engine runs. The network for the new size is made beside
 the one in use, on a second thread, in 116 to 198 ms, while the loop goes on drawing new pictures
@@ -532,6 +536,74 @@ and with the limit at 60 it drew 130 to 132 W, the median 131 W. At Performance 
 326 W. The ReShade engine, with the Cost Scaler at 0.50, showed 60.9 to 62.4 a second on 326 to
 332 W over eleven runs, the medians 62 a second and 330 W.
 
+### Each pass's values
+
+The engine runs the network once for each pass, and since 0.6.1 each pass at values of its own. The
+first pass runs at the six values of the add-on's section, `[RenoDX.DLSS5]`. Every pass from the
+second on starts from them and takes a value of its own where `ReShade.ini` holds one:
+
+- **The style, local tone, local structure, skin structure and the auto mask** of a pass from the
+  second on come from a section of the lens's own, `[NeuralLens.Passes]`, as `Pass<n>Style`,
+  `Pass<n>LocalTone`, `Pass<n>LocalStructure`, `Pass<n>SkinStructure` and `Pass<n>AutoMask`, with n
+  the pass's number. The add-on never reads that section, so on the ReShade engine every pass runs
+  at the first pass's values for these.
+- **The intensity of passes 2 to 4** comes from the add-on's own keys, `NRPass2Intensity`,
+  `NRPass3Intensity` and `NRPass4Intensity` in its section, which the add-on keeps for those passes
+  and its overlay can change, so that where the section holds them the two engines run those passes
+  at the same intensity, see What is not measured. The engine reads the add-on's key ahead of the
+  lens's own `Pass<n>Intensity`, which counts only where the add-on's key is missing, and the first
+  pass's intensity counts where both are. A pass ticked Same as pass 1 on the panel has
+  `Pass<n>IntensityTied` in the lens's section and runs at the first pass's intensity, whatever the
+  add-on's key says. For such a pass the lens keeps the add-on's key at the first pass's intensity,
+  for the add-on, and the tie holds the value the lens last wrote there. Before each picture starts,
+  a tie whose add-on key still holds that value takes the first pass's intensity, which the overlay
+  may have moved, and a tie whose key holds another value goes, since the overlay then gave the pass
+  an intensity of its own.
+- **The intensity of passes 5 to 8**, which the add-on has no key for, comes from `Pass<n>Intensity`
+  in the lens's section. The lens runs four passes at most, so only the engine run by hand with more
+  passes reads these.
+
+Nothing is taken for a tie because two numbers are equal. A pass with no key of its own for a value
+runs at the first pass's. The section's header stays in the file once every key in it has gone.
+`NRPass4Color`, which the add-on also keeps in its section, belongs to the add-on's own colour
+stage, which the engine does not have, and is left as the add-on wrote it. The stack setup keeps the
+lens's section byte for byte on a repair, and on an update that runs it, see The add-on's defaults
+on a new install.
+
+Up to 0.6.0 the engine ran every pass at the first pass's values. So a fullscreen lens at two passes
+or more now draws another picture where the add-on's keys for passes 2 to 4 differ from the first
+pass's intensity. In the stack the tests ran on they read 0.94, 0.6 and 0.36, with the first pass at
+0.97. Ticking Same as pass 1 for a pass's intensity on the panel runs that pass at the first pass's
+intensity again, as 0.6.0 did. A new install's section holds none of these keys, see The add-on's
+defaults on a new install, and there the engine runs those passes at the first pass's intensity.
+Once the first pass's intensity is moved on the panel, the panel writes the add-on's keys for passes
+2 to 4 at that intensity, ticked Same as pass 1, so from then on the add-on runs those passes at it
+as well, see What is not measured.
+
+The engine reads each section of the file in one read, and only the passes it runs, so at one pass
+it does not read the lens's section at all, and one pass draws the same picture byte for byte as
+before. On an RTX 5090 a read took 0.034 ms at one pass and 0.056 ms at two and at four passes, the
+median of 2000 reads. The network runs when any pass within the count has an intensity above 0, and
+a pass at 0 among others hands its input on unchanged. On `reload` the engine's note names the first
+pass's values and each value of another pass that differs from them, such as
+`pass 2: intensity 0.30`, and so does its note as the network is made, such as
+`nr: pass 2 has its own intensity 0.94`.
+
+With `--passes 2` or more the self test draws one picture five ways, each the network's first
+picture of the frame: every pass at the first pass's values, the second pass at half the strength,
+every pass alike again, the second pass at another style, and the first pass at half the strength
+with the second at the values every pass started from. On an RTX 5090 at 2560x1053, the second at
+half was 1.372 of 255 from the first picture and the other style 2.285 of 255, the third picture was
+the first byte for byte, and the first pass at half was 1.534 of 255 from the first picture and
+0.356 of 255 from the second at half, with the network at 6.659 ms for the two passes. The check
+would not catch a swap of the two passes' values. Where the strength in the file is 0, a pass at the
+values every pass starts from gives its input back, and half the strength is taken as 0.5. The
+second pass at another style then draws the first picture again, and the first pass at half draws
+what the second at half draws, so the self test does not judge those two comparisons there, and its
+line and `timings.json` name them. Over a still at 6144x2558 with two passes, the lens's pictures
+with the second pass's intensity at 0.3 of its own and tied to the first pass were 6.975 of 255
+apart on average and 46 of 255 at most, and tied again the picture was the same byte for byte.
+
 ### The present path and the delay
 
 The engine's window is layered, click-through, topmost and out of the capture, and takes a flip
@@ -568,18 +640,63 @@ refresh was learned, and the lens keeps its last reading.
 
 Over a source that changes at every refresh, pictures can come to be shown a refresh late for
 seconds on end. The swapchain has two buffers. After a present the next back buffer is the one on
-screen until the next refresh, so a render into it waits for that refresh, and the next frame
-waits behind that render. Once one picture is finished a refresh late, every picture after it is
-late too, for as long as a frame comes at every refresh, and one refresh without a render ends
-it. Over the whole picture of noise scrolling at 120 steps a second with no limit, a loop with
-no rule for this showed the pictures at their frames' own refresh in most seconds, with single
-seconds at -8.3 ms and stretches of 4 to 40 s at 8.3 ms. So when the pictures of such a run have
-been late for a quarter of a second, the loop leaves one frame out. When they are as late again
-within 2 s of a frame left out, the wait before the next one doubles, up to 64 s. Over the
-scrolling picture for 45 s, with the loop made to stand still for 9 ms every 7 s so that such
-runs begin, 2311 of 5384 pictures were shown late without the rule and 166 of 5384 with it, for
-5 frames left out. With the rule and no stalls, all 3601 pictures of 30 s were shown at their
-frames' own refresh. At a limit of 80 the delay was -8.3 ms throughout.
+screen until the next refresh, so a render into it waits for that refresh, and the loop, which waits
+for the last render before it takes the next frame, see The newest frame, waits with it. Once one
+picture is finished a refresh late, every picture after it is late too, for as long as a frame comes
+at every refresh, and one refresh without a render ends it. Over the whole picture of noise
+scrolling at 120 steps a second with no limit, a loop with no rule for this showed the pictures at
+their frames' own refresh in most seconds, with single seconds at -8.3 ms and stretches of 4 to 40 s
+at 8.3 ms. So when the pictures of such a run have been late for a quarter of a second, the loop
+leaves one frame out. When they are as late again within 2 s of a frame left out, the wait before
+the next one doubles, up to 64 s. Over the scrolling picture for 45 s, with the loop made to stand
+still for 9 ms every 7 s so that such runs begin, 2311 of 5384 pictures were shown late without the
+rule and 166 of 5384 with it, for 5 frames left out. With the rule and no stalls, all 3601 pictures
+of 30 s were shown at their frames' own refresh. At a limit of 80 fps the delay was -8.3 ms
+throughout. These runs were made before 0.6.1, when the loop took each frame at once and its ingest
+waited on the card behind the render.
+
+**Over a source at half the refresh rate** the engine sometimes starts with every draw waiting about
+11 ms for its back buffer, and then shows each picture two refreshes later than it can, for as long
+as it runs. Under a window of a test's own that held the foreground at 60 fps with frames of 4.7 ms
+on the card, on the 120 Hz display with a second monitor at 144 Hz connected, with the compositor
+timing the 120 Hz display by the second monitor's refreshes, see Measurement pitfalls, 7 of 21
+starts went that way from their first second, with a delay of 19.5 to 20.5 ms and `dwait` at 10.6
+to 11.3 ms, where the other 14 read 3.0 to 4.4 ms. It was measured only in that state. The rule
+above counts only runs of frames at every refresh, so it never ends this, and the engine has no
+rule for it.
+
+### The newest frame
+
+Since 0.6.1 the loop waits for its last draw to be done on the card before it takes a frame from the
+capture, so the frame it takes is the newest there is once the card can start on it. A frame that
+arrives meanwhile takes the place of the one waiting, which counts as dropped. Up to 0.6.0 the loop
+took the waiting frame at once, and its ingest then waited on the card behind the draw before it, so
+the picture was made from a frame older by as long as that draw took. The frame rate limit, a frame
+the limit keeps back, the settle and the repeats are as they were. The profile's `dwait` is the
+wait, see Switches for tests.
+
+Measured on a test computer with an RTX 5090 at 6144x2526 on the 120 Hz display, with nothing else
+on the card, at Balanced, a work size of 2560x896, with no limit, over the whole picture of noise
+scrolling 8 pixels a step at 120 steps a second, 30 s each, before and after the change. A second
+monitor at 3840x1200 and 144 Hz was connected, and in these runs the compositor timed the display
+by that monitor's refreshes, with `lead` at 6.9 ms and `grid` at 1.8 to 2.4 ms in each run's median,
+see Measurement pitfalls, which adds to every delay below:
+
+```
+                       new a second   delay      ingest call   dwait      power
+one pass, before       120.5          16.95 ms    7.52 ms                 225.0 W
+one pass, after        119.9          10.45 ms    0.63 ms       4.47 ms   227.6 W
+eight passes, before    27.1          71.80 ms   34.69 ms                 320.6 W
+eight passes, after     27.1          39.65 ms    0.73 ms      33.44 ms   323.1 W
+```
+
+At eight passes the network takes 32 ms a picture, which stands in for a card that the network's
+work keeps busy. So where the engine's own work holds it back, the newest frame took 6.5 ms off the
+delay at one pass and 32.2 ms at eight, at the same pictures a second, for 2.5 to 2.6 W more, about
+the 2.5 W a row is good to. No frame was left out for late pictures in these runs. Over the moving
+square, where each picture is done before the next frame comes, `dwait` read 0.01 ms and the engine
+drew 218.9 W at 118.1 new pictures a second. Over a demanding game that kept the card fully busy the
+newest frame brought no gain, see A game in front that keeps the card busy.
 
 ### The still screen and the settle
 
@@ -685,14 +802,14 @@ against 12.0 a second beside 2560x1053.
 
 ### A game in front that keeps the card busy
 
-Measured on an RTX 5090, driver 617.14, Windows 11 build 26200 with hardware-accelerated GPU
-scheduling on, and one monitor at 6144x2560 and 120 Hz. A demanding game ran in borderless
-fullscreen under a fullscreen lens on the fast engine, 6144x2558 at the Quality step, a work size
-of 2560x1024, with one pass. In front means that the game's window had the foreground. Each row
-gives the range of the lens's 10 s summaries in that test, see The lens's log, their new pictures
-a second, which over the game are the game's own frames, and their median delay. The first six
-rows ran on the engine as installed, and the last two on a build of it with the profile and
-`LENS_FAST_SPLIT_WAIT=1`, see Switches for tests:
+Measured on 2026-10-03 on an RTX 5090, driver 617.14, Windows 11 build 26200 with
+hardware-accelerated GPU scheduling on, and one monitor at 6144x2560 and 120 Hz. A demanding game
+ran in borderless fullscreen under a fullscreen lens on the fast engine of 0.6.0, 6144x2558 at the
+Quality step, a work size of 2560x1024, with one pass. In front means that the game's window had the
+foreground. Each row gives the range of the lens's 10 s summaries in that test, see The lens's log,
+their new pictures a second, which over the game are the game's own frames, and their median delay.
+The first six rows ran on the engine as installed, and the last two on a build of it with the
+profile and `LENS_FAST_SPLIT_WAIT=1`, see Switches for tests:
 
 ```
 the game                                            new a second   delay
@@ -743,11 +860,14 @@ to spare every wait went.
 
 `LENS_FAST_SPLIT_WAIT=1` takes the wait for the capture's copy apart from the ingest's own turn.
 Over the first 171 s of that run with the game in front, at 28 new pictures a second, the copy's
-wait read 6.4 ms, 3.2 to 15.2 ms, the ingest's own turn after it 23.4 ms, 13.9 to 30.5 ms, and
-the flip, which takes in the render's turn on the card, 40.6 ms, 11.9 to 47.5 ms. The delay read
+wait read 6.4 ms, 3.2 to 15.2 ms, the ingest's own turn after it 23.4 ms, 13.9 to 30.5 ms, and the
+flip, which takes in the render's turn on the card, 40.6 ms, 11.9 to 47.5 ms. The delay read
 75.0 ms, 50.0 to 91.7 ms, in that run. So each job a new picture gives the card waits for a gap in
-the game's work, and there are three: the capture's copy on the capture's D3D11 device, the
-ingest, and the network with the composite before the flip.
+the game's work, and there are three: the capture's copy on the capture's D3D11 device, the ingest,
+and the network with the composite before the flip. The switch itself makes a list wait longer for
+its turn on a busy card, see Switches for tests, and that run's delay was longer than the 58.3 ms of
+the runs without it, so these figures say where the time went in that run, and not how long each
+wait is without the switch.
 
 The likely reading is in the card's scheduler. With hardware-accelerated GPU scheduling, Windows
 puts the process whose window has the foreground in a band of its own, above every priority class
@@ -763,6 +883,36 @@ the game's own limit pauses after the frame it has shown. The realtime class, th
 that band, and a realtime queue, both of which need the right to raise priorities, were not
 tried, and nor was hardware-accelerated GPU scheduling switched off.
 
+**Again on 2026-10-04, with the engine of 0.6.1.** The same computer and driver, and the same game
+in borderless fullscreen and in front, at another place in it, with the player standing still and
+turning the view, at about 16 frames a second with the card fully busy. The 6144x2560 display at
+120 Hz was the only monitor, the second one switched off. The lens was fullscreen on the fast engine
+at the Quality step with one pass, Neural Rendering on and no frame rate limit. Five separate
+sessions of about three minutes followed one another, each with the lens started afresh with the
+profile on. A session's delay is the median of its 10 s summaries that had the game in front for
+all their seconds, see The lens's log, which are counted beside it with their range. The seconds
+with the game in front, and the ingest call by the wall clock as the median of its per second
+figures, come from the profile:
+
+```
+session                              delay     summaries   their range       seconds   ingest call
+LENS_FAST_JOIN=3                     38.0 ms   14          35.0 to 39.2 ms   174        5.6 ms
+no switch                            38.0 ms   15          35.3 to 39.5 ms   170       37.0 ms
+LENS_FAST_COPY_QUEUE=1               36.5 ms   15          33.2 to 42.8 ms   166       36.5 ms
+no switch, again                     38.8 ms   16          35.2 to 39.8 ms   166       36.2 ms
+an engine without the newest frame   36.5 ms   15          34.9 to 39.2 ms   164       37.2 ms
+```
+
+In every session the per second figures showed 16.0 new pictures a second in the median, the game's
+own frames. The two sessions with no switch read 38.0 and 38.8 ms, and all five lay within 36.5 to
+38.8 ms, with the copy queue and the engine without the newest frame both at 36.5 ms. So neither
+switch brought the delay down beyond the spread between sessions, and both stay off. Nor did the
+newest frame bring a gain over this game, see The newest frame. In every session but the joined one
+the ingest call waited 36.2 to 37.2 ms for the card, and the joined one, whose ingest call did not
+wait, showed the same delay as the session after it. Every session read below the 58.3 ms median of
+the 88 summaries of 2026-10-03, the engine without the newest frame included, so that difference is
+not the engine's.
+
 A program with no window stands in for this only in part, since it is never in front. The engine
 by itself, fullscreen at the Quality step with one pass over a picture changing 40 times a
 second, read 0.0 to 8.3 ms alone. Beside one process with no window that blurs a 4K picture
@@ -772,6 +922,33 @@ through Vulkan in ffmpeg, the card at 90 percent, it read 16.7 ms with Neural Re
 6.2 ms beside one and 13.4 to 14.0 ms beside four. The queue and the class at high, not run as
 administrator, changed nothing, apart from one 25 s stretch beside four processes that read
 50.0 ms in place of 58.3 ms.
+
+A window of a test's own that holds the foreground stands in closer. It covers the display and draws
+one frame of a set cost on the card at a set rate, with vsync, held by a limiter or free running,
+and the stand-in figures under Switches for tests come from it. It draws one long draw a frame,
+where a game draws many short ones.
+
+**Where the network's list waits.** Under that window held at 30 fps with frames of 23.4 ms on the
+card, so that the card stood idle for 10 ms after each, the engine's trace of its draws was set
+against the window's own record of its frames, both on the CPU's clock. The lens's frame arrived in
+the idle time in 756 of 757 cases, 6.6 ms before the window's next frame in the median, and the
+ingest ran on the card 0.8 ms after the arrival. The list with the network, submitted 1.4 ms after
+the arrival with 5 ms of idle card left, began on the card only once the window's next frame had
+ended, 0.1 ms after its end in 753 of 754 pictures and 28.8 ms after its submission in the median,
+and the delay read 41 to 44 ms. With the network left out, the same list began at once and the delay
+read 8.0 ms. A plain compute list of the network's length, 3.1 ms, submitted at the arrival, was
+done 3.41 ms after it. The ingest and the network joined in one list began 29.2 ms after its
+submission. So a list with the network's work in it waits for the window's frame to end, and what
+the driver or the scheduler goes by was not found. It does not always wait. Held at 60 fps with
+frames of 4.7 ms, 98 percent of the lens's frames arrived in the idle time and the delay read
+3.0 ms, and the game above, held at 30 fps by its own limit with room to spare, read 0.0 to 8.3 ms.
+Holding the lens's work back to the next idle time where a frame arrives while the window draws
+would have shown the pictures 1.9 to 8.6 ms later in the median, and sooner for only 12 to
+23 percent of them, so the engine has no such rule. Measured on a test computer with an RTX 5090,
+driver 617.14, with hardware-accelerated GPU scheduling on, the engine fullscreen at 6144x2526 at
+Balanced with one pass and a second monitor at 144 Hz connected, with the compositor timing the
+120 Hz display by the second monitor's refreshes, see Measurement pitfalls, apart from the game's
+figures of 2026-10-03. Another driver and the scheduling switched off were not tried.
 
 **The warning.** A fullscreen lens says so when it falls behind like this. Each regular 10 s
 summary while a fullscreen lens on the fast engine is in view hands its median delay to a check,
@@ -828,11 +1005,11 @@ in this run of the lens. The exe is looked for in the stack's `fast` folder, the
 the `fast` folder beside the lens's own exe, and from source in `fast_engine\bin`. Everything
 else gets the presenter.
 
-- **Neural Rendering on and off.** No add-on is there to read F6, so under the fast engine F6
-  does nothing. The NR key, F9 to begin with, the menu and the NR settings panel switch it. The
-  lens sends `nr 0` or `nr 1` and writes `NeuralUplift` into ReShade.ini, where the add-on keeps
-  it, see Global hotkeys. An engine that starts with Neural Rendering off is told before its
-  first picture. With it off the engine's shot equalled the capture exactly.
+- **Neural Rendering on and off.** No add-on is there to read F6, so under the fast engine F6 does
+  nothing. The NR key, F9 to begin with, the menu, the NR settings panel and a profile switch it.
+  The lens sends `nr 0` or `nr 1` and writes `NeuralUplift` into ReShade.ini, where the add-on keeps
+  it, see Global hotkeys. An engine that starts with Neural Rendering off is told before its first
+  picture. With it off the engine's shot equalled the capture exactly.
 - **An engine that fails** prints `engine failed` with its reason and leaves. The lens then
   starts the presenter in its place and does not try the fast engine again until it is started
   again. Measured, with the engine ended while fullscreen the presenter's picture was up 2.7 s
@@ -853,30 +1030,93 @@ else gets the presenter.
 
 ### Switches for tests
 
-The engine reads these from its environment, and the lens starts it with its own, so a lens
-started with one set hands it on. None is set in use. The top of `fast_engine\src\main.cpp`
-lists them with the loop's own tests, such as `LENS_FAST_NO_NETWORK`, `LENS_FAST_HEARTBEAT` and
-`LENS_FAST_STALL`. These are the ones for finding where a picture's time goes and what changes
-it:
+The engine reads these from its environment, and the lens starts it with its own, so a lens started
+with one set hands it on. None is set in use. The top of `fast_engine\src\main.cpp` lists them with
+the loop's own tests, such as `LENS_FAST_NO_NETWORK`, `LENS_FAST_HEARTBEAT` and `LENS_FAST_STALL`.
+These are the ones for finding where a picture's time goes, what changes it and what the HDR path
+draws:
 
-- `LENS_PRESENTER_PROFILE=1` adds the profile to each stats line. `meter` and `delay` are as on
-  the plain line, the present call and the refresh that showed the picture, each against the
-  frame's timestamp. `flip` runs from the present call to that refresh, and `ahead` is how far the
-  timestamp lay ahead of the frame's arrival. `ingest`, `nr` and `composite` are the stages' times
-  on the card from timestamp queries, and `nr`, the network's span between its two timestamps,
-  stretches while another program has the card. `wake` runs from a frame's arrival to the start of
-  its ingest, `iwall` is the ingest call by the wall clock, its waits for the card included, and
-  `cwait` is the part of that spent waiting on the CPU for the capture's copy, 0 unless
-  `LENS_FAST_SPLIT_WAIT` is set. `meter`, `delay`, `flip` and `ahead` are medians over the second,
-  and the other times means.
+- `LENS_PRESENTER_PROFILE=1` adds the profile to each stats line. `meter` and `delay` are as on the
+  plain line, the present call and the refresh that showed the picture, each against the frame's
+  timestamp. `flip` runs from the present call to that refresh, and `ahead` is how far the timestamp
+  lay ahead of the frame's arrival. `grid` is how far the timestamp lies from the display's nearest
+  refresh, and `lead` how long before the refresh it was made for the compositor began that frame.
+  `ingest`, `nr` and `composite` are the stages' times on the card from timestamp queries, and `nr`,
+  the network's span between its two timestamps, stretches while another program has the card.
+  `wake` runs from a frame's arrival to the start of its ingest, `iwall` is the ingest call by the
+  wall clock, its waits for the card included, `cwait` is the part of that spent waiting on the CPU
+  for the capture's copy, 0 unless `LENS_FAST_SPLIT_WAIT` is set, `dwait` is the wait for the last
+  draw to finish before the loop takes a frame from the capture, so that the frame taken is the
+  newest one, see The newest frame, and `conv` is the time on the card of turning a 16-bit frame
+  into an 8-bit one, which the engine does for a monitor with Windows HDR on, 0 with it off.
+  `joined` counts the new pictures whose ingest and render went to the card as one list, which the
+  engine does under `LENS_FAST_JOIN` below, and `same` those of them that were found the same as the
+  frame before once the list was done, each a run of the network for nothing. For a joined picture
+  `wake` runs to the start of its list's recording and `iwall` is that recording and its submission,
+  with no wait in it. `meter`, `delay`, `flip`, `ahead`, `grid` and `lead` are medians over the
+  second, and the other times means.
+- `LENS_FAST_JOIN=N` has the ingest and the render of a new frame go to the card as one list,
+  presented at once, once N frames in a row were found changed, where otherwise every frame's ingest
+  is waited for before its render is submitted. The comparison's answer then comes back a turn
+  later. A frame found changed counts as a new picture in the stats line of the second the answer
+  came in, and a frame found the same after all is counted as a repeat and a skipped frame and ends
+  the run, so the engine cannot feed itself over a still screen. Unset or `0` it is off. The picture
+  is the same byte for byte either way. Measured on a test computer with an RTX 5090 under a window
+  of a test's own that held the foreground and kept the card busy, with the compositor timing the
+  120 Hz display by a second monitor's refreshes, see Measurement pitfalls, the one list saved the
+  ingest's wait for the card but took as long to get through the card as the two lists, or longer,
+  so the delay was the same at 85 percent of the card and at 60 or 30 fps with gaps, and 2 to 10 ms
+  longer under free running frames of 12 to 50 ms. Over a demanding game that kept the card fully
+  busy it brought no gain beyond the spread between sessions, see A game in front that keeps the
+  card busy, so it stays off.
 - `LENS_FAST_STATS_NOTE=1` writes each stats line to stderr as well, as a note with its time, so
   `presenter-stderr.log` keeps the profile's figures, which the lens does not log.
 - `LENS_FAST_TRACE=FILE`, with the profile on, writes every present, every answer of the
-  display's statistics and every compositor frame to that file as a line of text.
+  display's statistics, every compositor frame and every finished draw to that file as a line of
+  text. A draw's line carries the frame's stamp and arrival, the list's submission, and the
+  ingest's and the draw's timestamps on the card put on the CPU's clock by the queue's clock
+  calibration, so a test can see when the network's list began against another program's
+  frames. The top of `fast_engine\src\main.cpp` gives the lines' fields.
 - `LENS_FAST_SPLIT_WAIT=1` has the ingest wait on the CPU for the capture's copy first, before
   the queue's own turn, where otherwise only the queue waits for it, on the fence the two devices
   share. The profile's `cwait` then gives the copy's wait apart. It gives up the overlap of the
-  two waits.
+  two waits, and on a busy card a list submitted after a CPU wait takes longer to get its turn
+  than one submitted at once behind a fence, so the figures with the switch are not the figures
+  without it.
+- `LENS_FAST_COPY_QUEUE=1` has the capture copy the crop out of each frame with a D3D12 copy queue,
+  which the card's copy engine runs, instead of on the capture's D3D11 context, whose copy runs on
+  the 3D engine and waits there for its turn behind a game in the foreground. The frame pool's
+  textures are opened on the D3D12 device by shared handle, the copy is ordered behind the frame's
+  own work on the D3D11 context, the copy queue signals the slots' fence, and the frame stays open
+  until its copy is done. One frame is open at a time. Before the next is kept, the copy of the
+  frame before is waited for, 200 ms at most, since two frames held open would hold both of the
+  pool's buffers and the system delivers nothing while they do, and the next frame is dropped where
+  that copy is still not done. A pool texture that cannot be opened on the D3D12 device hands the
+  copy back to the D3D11 context for the rest of the session. The picture is the same. The capture
+  test's read of the screen agrees with GDI's texel for texel, and a probe that copied each frame
+  both ways compared 7523 frames, most of them under loads that kept the card busy, with none
+  differing. Measured on a test computer with an RTX 5090 under a window of a test's own that held
+  the foreground, with the compositor timing the 120 Hz display by a second monitor's refreshes, see
+  Measurement pitfalls, the time from a frame's arrival to the end of its copy was 2.0 to 7.5 ms in
+  the median on the 3D engine under free running frames of 12 to 50 ms, and 0.72 to 0.85 ms on the
+  copy engine under every load and on a free card, where the 3D engine takes 0.22 ms. The engine's
+  delay was 4 to 7 ms shorter, with 6 percent more pictures a second, under free running frames of
+  25 ms, the same under frames of 12 and 50 ms, under frames held at 60 fps and under frames of 1 ms
+  at 120 fps, and 2 to 4 ms longer under frames at 120 fps with vsync that nearly filled each
+  refresh, where the window then ran 2 percent faster. Over a demanding game that kept the card
+  fully busy it read 36.5 ms, 1.5 to 2.3 ms below the two sessions without a switch on the same
+  engine and the same as an engine without the newest frame, within the spread between sessions,
+  see A game in front that keeps the card busy, so it stays off.
+- `LENS_FAST_SHOT_RAW=1` makes a screenshot over a monitor with Windows HDR on also write the
+  captured 16-bit frame as it came, before its conversion to 8 bits, as `BASE-raw.npy` beside the
+  pictures, a NumPy array of float16, height by width by 4, in scRGB with 1.0 at 80 nits, and the
+  picture as drawn into the 16-bit swapchain the same way as `BASE-out.npy`. The PNG pictures are
+  8-bit renditions with it or without it, see HDR.
+- `LENS_FAST_HDR_ABOVE=pass`, `fade` or `clip` sets what the composite into a 16-bit swapchain does
+  with the network's change where the original is brighter than SDR white, where the network saw a
+  clipped input. `pass` applies it as at white, where it can only darken, `fade` scales it down to
+  nothing at twice white, and `clip` leaves it out. Unset, or with another word, it is `fade`, the
+  engine's own, see Above SDR white under HDR. A note names the way whenever the switch is set.
 - `LENS_FAST_QUEUE_PRIORITY=high` asks for the engine's D3D12 queue at high priority, and
   `realtime` for one at global realtime priority. A refusal falls back to a normal queue, and a
   note says which the engine has.
@@ -901,12 +1141,23 @@ they changed in use is under A game in front that keeps the card busy.
   connected. With one monitor, over a picture changing at every refresh, the delay read 0.0 ms in
   10 of 12 summaries and 8.3 and 12.5 ms in the other two, see the on-screen readout under
   Fullscreen in Gotchas.
-- **HDR.** The engine was not run with HDR on. It captures 8-bit frames, which Windows clips at
-  80 nits on a monitor with HDR on, see HDR, and presents an 8-bit swapchain.
-- **A game under the lens, beyond its delay.** One demanding game was measured for the delay and
-  for where a picture's time goes, see A game in front that keeps the card busy. The power, the
-  steps and the picture were measured over a moving square, a scrolling picture and stills, and
-  the test beside another program used one that has no window.
+- **HDR beyond one monitor and test pictures.** HDR ran on a second monitor at 3840x1200 and 144 Hz
+  alone, over test patterns, a still scene and the scrolling picture. It was not run on the main
+  monitor or at 6144x2560, nor under an HDR game or video, with the A/B split or with a change of
+  the quality step. HDR switched off while the engine captured, a change of the SDR white level
+  while it ran and the way of reading HDR for Windows before 24H2 were not run at all.
+- **A game under the lens, beyond its delay.** One demanding game was measured for the delay and for
+  where a picture's time goes, on 2026-10-03 and 2026-10-04, see A game in front that keeps the card
+  busy. The power, the steps and the picture were measured over a moving square, a scrolling picture
+  and stills, and the tests beside another program used one that has no window and a window of a
+  test's own.
+- **Passes at their own values beyond two.** The picture with a pass at values of its own was
+  measured at two passes, and not at three or four.
+- **The add-on's intensities for passes 2 to 4.** That the add-on runs passes 2 to 4 at
+  `NRPass2Intensity` to `NRPass4Intensity`, and that its overlay can change them, is taken from the
+  key names in the add-on's own file. The ReShade engine's picture at two passes or more was not
+  compared with the fast engine's, and what the add-on runs those passes at where its section holds
+  no such key was not measured.
 - **Motion at the steps.** The pictures the steps were judged on were stills, including stills
   three evaluations into a picture.
 - **The steps on screen at other sizes.** The on-screen figures are all at 6144x2526 and
@@ -987,12 +1238,28 @@ press. The menu takes them first, then the panel, then the note.
   own poll of Escape, see Gotchas, is left out while Escape is registered, so one press never
   closes two things.
 - **On the NR settings panel** Up and Down light a row, its name drawn in the accent colour, in
-  the order Neural Rendering, the style, the intensity, local tone, local structure, skin
+  the order the profile, the switch that loads a profile for the program in front, Neural
+  Rendering, the pass tabs, the style, the intensity, local tone, local structure, skin
   structure, skin structure left to the model, the auto mask, the passes and the quality step.
-  Left and Right change the style by one, a slider by 0.05, the passes by one and the quality
-  step by one. Enter switches Neural Rendering, skin structure left to the model and the auto
-  mask. The passes take one step a press, and a repeat within 0.5 s of a change is ignored, since
-  each change of the passes restarts the picture.
+  On the tab of a pass from the second on, each value's Same as pass 1 is a row of its own after
+  the value. Left and Right load the profile before or after the one in use, show the pass
+  before or after, and change the style by one, a slider by 0.01 a press, the passes by one and
+  the quality step by one. A key held down moves a slider further with each repeat the longer it
+  is held: 0.01 for the first 0.6 s, 0.02 up to 1.5 s and 0.05 after that. A move counts as part
+  of the hold when it comes within 0.15 s of the move before, with the key down all the while,
+  on the same slider of the same pass and the same way, as a held key's repeats do. Anything
+  else starts again at 0.01, a profile loaded or another tab shown meanwhile included. A press
+  and a repeat both reach the lens as WM_HOTKEY, so while a hold is under way the lens also reads
+  the key with GetAsyncKeyState every 50 ms. Windows does not show every program the keys while
+  another program is in front, so a key read as up counts only once the lens has read it down
+  with the same window in front, and until then the 0.15 s alone decide. The first repeat comes
+  after Windows' repeat delay, half a second by default, and starts the hold, so at the default
+  delay and rate a key held from 0 reaches 2 about 2.9 s after the press. Every value lands on a
+  hundredth within the slider's range. Enter opens the profile list and switches each switch:
+  the one for the program in front, Neural Rendering, a Same as pass 1, skin structure left to
+  the model and the auto mask. The profile and the passes take one step a press, and a repeat
+  within 0.5 s of a change is ignored, since a load can restart the picture and each change of
+  the passes does.
 
 F6 is the add-on's and is never registered. Under the ReShade engine the add-on reads it with
 GetAsyncKeyState itself, and the lens reads it the same way to follow. The fast engine has no
@@ -1008,15 +1275,15 @@ raise and lower the fast engine's quality step by one.
 
 ## Nothing of the lens goes into another program
 
-The lens is made so that nothing of it reaches the program under it, a game included. It reads
-the screen through Windows Graphics Capture, and the keyboard through RegisterHotKey and the state
-of a few keys from GetAsyncKeyState. It installs no hook, makes no keystroke, attaches to no other
-program's input, opens no other program's process and writes nothing into another program's
-folder. The only key messages it sends, Home and F5 for ReShade, are posted to the window of its
-own presenter, and the lens checks before each post that the process behind that very handle is
-one of its own. A posted message is no input of the system. It changes no key's state, and no
-low-level hook or raw input reader sees it, though a hook that runs in the presenter's own
-message loop could.
+The lens is made so that nothing of it reaches the program under it, a game included. It reads the
+screen through Windows Graphics Capture, the keyboard through RegisterHotKey and the state of a few
+keys from GetAsyncKeyState, and the title and the class of the window in front, see The program in
+front below. It installs no hook, makes no keystroke, attaches to no other program's input, opens no
+other program's process and writes nothing into another program's folder. The only key messages it
+sends, Home and F5 for ReShade, are posted to the window of its own presenter, and the lens checks
+before each post that the process behind that very handle is one of its own. A posted message is no
+input of the system. It changes no key's state, and no low-level hook or raw input reader sees it,
+though a hook that runs in the presenter's own message loop could.
 
 - **Neural Rendering on and off under the ReShade engine.** The add-on reads F6 from the keyboard
   and not from window messages, see Measurement pitfalls, so only a keystroke switches it, and a
@@ -1095,13 +1362,22 @@ message loop could.
   notice cannot be seen either, so the log is the record. Whether the shell answers 3 for every
   game that asks for exclusive fullscreen, among them the games Windows runs under its fullscreen
   optimisations, was not measured.
-- **The foreground in the log.** While the lens is fullscreen and in view, the 200 ms timer writes
-  a line each time another window comes to the front, see The lens's log, from
-  `GetForegroundWindow` and `GetClassNameW` alone. No process is opened, and no window's title is
-  read, since a title can hold private text. The warning that the lens falls behind uses the
-  same looks. As each regular summary is written its check asks those two again, and the process
-  id of the window in front to tell the lens's own windows, and it opens no process either, see
-  The warning under A game in front that keeps the card busy.
+- **The foreground in the log.** While the lens is fullscreen and in view, the 200 ms timer writes a
+  line each time another window comes to the front, see The lens's log, from `GetForegroundWindow`
+  and `GetClassNameW` alone. No process is opened, and the line names no title, since a title can
+  hold private text. The warning that the lens falls behind uses the same looks. As each regular
+  summary is written its check asks those two again, and the process id of the window in front to
+  tell the lens's own windows, and it opens no process either, see The warning under A game in front
+  that keeps the card busy.
+- **The program in front.** In a window and fullscreen alike, at each of its looks, five times a
+  second, the 200 ms timer reads the title of the window in front with `GetWindowTextW` and its
+  class with `GetClassNameW`, for a profile tied to that program, see Tied to a program under
+  Profiles. For a window of another program `GetWindowTextW` reads the caption Windows keeps for it
+  and sends that window nothing. The process id from `GetWindowThreadProcessId` tells the lens's own
+  windows apart, and no process is opened. The lens keeps in memory the title and the class of the
+  program last in front and the last tied title its window showed, and no list of the titles it
+  reads, whether profiles load by themselves or not. A title is written only for a program the
+  person tied a profile to, into `profiles.json` and the log.
 
 ## The lens's log
 
@@ -1132,40 +1408,56 @@ A line that starts with `action ` is something done to the lens, with the way it
 action menu opened (key F7)
 action menu item "Leave fullscreen" (Enter)
 action NR settings NRIntensity 0.95 (keyboard)
+action NR settings show pass 2 (click)
+action NR settings Pass2LocalTone same as pass 1 (mouse)
+action NR settings NRLocalTone 1 (reset button)
 action NR off (key F9)
 action readout hidden (key F10)
 action fullscreen off (taskbar list)
 action style list item "Natural" (click)
 action Settings saved: max_fps 30, fs_readout fps,latency (Save)
 action profile "Video" renamed to "Film" (Settings)
+action profile "Game" tied to "Window title" (panel)
+action profile "Game" loaded for the program in front, "Window title" (auto)
+action auto profile on (keyboard)
 action check for a new version (Settings)
 action quit (close button)
 ```
 
-Each action taken through the lens's keys, its menu, the NR settings panel, the buttons of the
-title bar, a click on the tab, the note, the taskbar list or Settings has such a line. The lens
-menu, and the style list and the profile list of the title bar, each have lines under their own
-names for their opening, the entry chosen and their closing. The NR settings panel has lines for
-its opening, its closing and each value changed on it, tweak mode for its start and its end, and
-the note for its closing and its Don't show this again. Neural Rendering on and off, the quality
-step, the passes, fullscreen, screenshots, the A/B split, the on-screen readout shown or hidden,
-minimising and bringing the lens back, applying a profile, hiding and showing the title bar,
-Ready mode, detaching and quitting each have their line, also where the lens stays as it was,
-such as `fullscreen left as it is` for a lens attached to a window. A click on the taskbar
-button writes `brought back (taskbar button)` for a minimised lens and
-`menu opened (taskbar button)` where it opens the menu, and nothing where it only brings a lens
-in view to the front again. Save in Settings writes one line that names
-each setting it changed, by its key in the ini and its new value, or says that nothing changed.
-On the Profiles page, Rename, Delete and Save the current settings each write a line that names
-the profile, and so does Save in the dialog for a new profile. Check now on the Program page
-writes `check for a new version`. The plus and minus on the title bar only choose a number, and
-Set has the line. Moving the lens by its title bar or its tab, sliding the tab along the edge,
-resizing the lens by its edges and dragging the divider write no action line, and neither do
-Browse, Cancel and the choices made in Settings before Save. A value changed on the panel gets
-one line once it has held still for 0.6 s, or as the panel closes, under its key in
-`ReShade.ini`, such as `NRIntensity`, and `NRSkinStructure -1` is skin structure left to the
-model. The lines the lens wrote before, such as `Neural Rendering off` and
-`fullscreen 6144x2558 at (0,0)`, stay as they were beside them.
+Each action taken through the lens's keys, its menu, the NR settings panel, the buttons of the title
+bar, a click on the tab, the note, the taskbar list or Settings has such a line. The lens menu, and
+the style list and the profile list of the title bar and of the NR settings panel, each have lines
+under their own names for their opening, the entry chosen and their closing. The NR settings panel
+has lines for its opening, its closing, each tab chosen and each value changed on it, tweak mode for
+its start and its end, and the note for its closing and its Don't show this again. Neural Rendering
+on and off, the quality step, the passes, fullscreen, screenshots, the A/B split, the on-screen
+readout shown or hidden, minimising and bringing the lens back, applying a profile, tying one to a
+program and untying it, the switch that loads profiles by themselves, hiding and showing the title
+bar, Ready mode, detaching and quitting each have their line, also where the lens stays as it was,
+such as `fullscreen left as it is` for a lens attached to a window. A click on the taskbar button
+writes `brought back (taskbar button)` for a minimised lens and `menu opened (taskbar button)` where
+it opens the menu, and nothing where it only brings a lens in view to the front again. Save in
+Settings writes one line that names each setting it changed, by its key in the ini and its new
+value, or says that nothing changed. On the Profiles page, Rename, Delete, Save the current
+settings, the tie to the program last in front and Untie each write a line that names the profile,
+and so does Save in the dialog for a new profile. Check now on the Program page writes
+`check for a new version`. The plus and minus on the title bar only choose a number, and Set has the
+line. Moving the lens by its title bar or its tab, sliding the tab along the edge, resizing the lens
+by its edges and dragging the divider write no action line, and neither do Browse, Cancel and the
+choices made in Settings before Save. A value changed on the panel gets one line once it has held
+still for 0.6 s, or as the panel closes, under its key in `ReShade.ini` for the first pass, such as
+`NRIntensity`, and for a pass from the second on under `Pass` with the pass's number and the value's
+name, such as `Pass2LocalTone`, which is the name for the intensity of passes 2 to 4 as well.
+`same as pass 1` is a value ticked to follow the first pass, `NRSkinStructure -1` is skin structure
+left to the model, and `(reset button)` is the button beside a slider. A profile the lens loads by
+itself for the program in front has its line with `(auto)`. The lines the lens wrote before, such as
+`Neural Rendering off` and `fullscreen 6144x2558 at (0,0)`, stay as they were beside them.
+
+Lines for a profile tied to a program, untied from one or loaded for one name the program by its
+window's title, or by its class where the title is empty, and so does the entry of the panel's
+profile list that ties one, once chosen. No other line names a window's title, and these name only a
+program the person tied a profile to. A tie saved without a class, which no window can match, is
+taken off as `profiles.json` loads, with a line for each profile that loses one.
 
 While a fullscreen lens on the fast engine is in view, a line every 10 s sums up the engine's
 stats lines:
@@ -1199,6 +1491,20 @@ lens's monitor. A median up to a tenth of a refresh below that figure counts as 
 rate Windows gives as 119 Hz the figure can read 25.2 ms over medians of 25.0 ms. Where the switch
 in Settings is off, the line ends `and the warning is off in Settings`.
 
+While Windows HDR is on for the lens's monitor and the ReShade engine draws the picture, see The
+warning under HDR, a line says so each time the warning would be said, with the monitor's SDR white
+level:
+
+```
+Windows HDR is on for the lens's monitor, SDR white 240 nits, and the ReShade engine draws the picture, so it comes out washed out, and the warning is shown
+```
+
+Where the switch in Settings is off, the line ends `and the warning is off in Settings`. When HDR
+goes off for that monitor while the warning applies, the log has
+`Windows HDR is off for the lens's monitor again`. Save in Settings names `hdr_warn 0` or
+`hdr_warn 1` where that switch changed, as it names `fs_behind_warn 0` or `fs_behind_warn 1` for the
+warning that the lens falls behind.
+
 While the lens is fullscreen and in view, a line each time another window comes to the front:
 
 ```
@@ -1212,16 +1518,41 @@ title, since a title can hold private text.
 
 ## Profiles
 
-A profile captures the add-on's section of ReShade.ini whole, apart from ConfigVersion and
-EnableHooks, which belong to the install, and applying one replaces the section with the profile's
-keys and nothing else, so a setting the profile never held goes back to the add-on's default
-rather than lingering from the last look. The add-on reads the section only when its process
-starts and writes it back within about a second of a change in its overlay, so a profile saved
-after a change in the overlay carries it, and applying one restarts the picture. The name on the
-bar compares the pass count, the Cost Scaler rule, ready, the frame rate limit, the motion detail,
-the readout, the delay meter and fullscreen against the profile, not the add-on's section, since
-reading the file on every tick is not worth it. Verified with a test that saves and switches
-profiles through the lens's own methods.
+A profile holds everything that makes the picture under a name: the lens's place and size,
+fullscreen, the pass count, the Cost Scaler rule, the motion detail, Ready mode, the frame rate
+limit, what the title bar shows, the add-on's section of ReShade.ini whole, apart from ConfigVersion
+and EnableHooks, which belong to the install, and since 0.6.1 the lens's own section
+`[NeuralLens.Passes]` whole, the quality step in force and the program it is tied to, kept in
+`profiles.json` as `per_pass`, `quality` and `program`. Applying one writes both sections of the
+file in one write, each made the profile's whole, so a setting the profile never held goes back to
+its default rather than lingering from the last look, and each pass ticked Same as pass 1 stays at
+the first pass's intensity, see Each pass's values. Where Windows refuses the write for a moment, as
+while the engine reads the file, it is tried again up to ten times, 30 ms apart. Where the file
+still does not take it, nothing of the profile is loaded, the log says
+`ReShade.ini could not be written, so profile 'Game' was not loaded`, and the notice or the bar says
+that the profile was not loaded. Neural Rendering goes on or off as the profile's section has it.
+
+A profile saved before 0.6.1 holds neither `per_pass` nor `quality`. Applying one empties the lens's
+section, so each pass from the second on runs at the first pass's values, apart from the intensity
+of passes 2 to 4, which comes from the add-on's keys saved with the profile's section, and it leaves
+the quality step as it is, as a profile without a frame rate limit leaves the limit.
+
+The add-on reads its section only when its process starts and writes it back within about a second
+of a change in its overlay, so a profile saved after a change in the overlay carries it, and on the
+ReShade engine applying one restarts the picture. A fullscreen lens on the fast engine takes a
+fullscreen profile at its own pass count as it runs. The lens tells the engine to read the file
+again, the profile's frame rate limit and Ready mode, and the quality step and Neural Rendering
+where they change, and the picture goes on in the same engine process, which the log calls
+`loaded in place`. Every other profile restarts the picture.
+
+The name on the bar and on the NR settings panel's picker gets a star, in amber, once the lens no
+longer matches its profile. It compares the pass count, the Cost Scaler rule, ready, the frame rate
+limit, the motion detail, the readout, the delay meter, what the title bar shows and fullscreen, the
+quality step where the profile holds one, and the six values of every pass the lens can run as
+`ReShade.ini` has them against the profile's, number by number. Verified with a test that saves and
+switches profiles through the lens's own methods. `profiles.json` is written beside itself and put
+in its place in one step, and a file that is there but cannot be read as profiles is kept as
+`profiles.json.bad`, with a line in the log, so the next save cannot write over it.
 
 A control on the title bar that answers a click of its own has to be named in the bar's
 `nodrag` list, because the bar binds the drag handlers to every other child after it is
@@ -1236,6 +1567,52 @@ of 255 mean, the noise between two frames of a still, and the same value after a
 it by 1.47 of 255. So a control on the lens can show the Home menu's values live, since the
 add-on writes them within a second, but can only set them by restarting the picture. The Home
 menu itself is the live path.
+
+### Tied to a program
+
+A profile can be tied to a program by the title and the class of the program's window, and the two
+must match exactly, so a program whose title changes with what it shows matches only under the title
+it was tied with. The panel's profile list ties the profile in use to the program in front, which
+over a fullscreen lens is the program under it, since the panel never takes the front. The Profiles
+page of Settings ties the profile chosen in its list to the program whose window was last in front
+before the dialog, which it names under its button, and greys the button where no other program has
+been in front. Each also unties. A program has one profile, so tying a profile unties any other tied
+to the same title and class, with a line in the log.
+
+With Load the profile tied to the program in front ticked, on the panel or on the Profiles page,
+which the ini keeps as `auto_profile = 1`, the lens loads the profile tied to a program each time
+that program comes to the front from another program, unless it is the profile in use, and says so
+on the notice of a fullscreen lens for 5 s, and on the bar of a lens in a window. Ticking it looks
+at the program in front at once, or, with a dialog of the lens's own in front, at the next program
+to come to the front. It starts unticked.
+
+In a window and fullscreen alike, the 200 ms timer looks at the window in front five times a second,
+and reads its title with `GetWindowTextW` and its class with `GetClassNameW` at each look, also with
+the switch off, to know the program last in front for the tie entries. The program counts, not the
+window. A window that stays in front and takes another title is the program of that title from then
+on, so with the switch on a window that takes a tied title a moment after it comes up, as a game's
+window can, loads that profile then. A tied title counts when the window shows it first or after
+another tied title, so a title that goes back and forth with untied ones loads nothing again, and a
+window that shows one tied title after another, as an emulator or a launcher can for each game it
+starts, loads each one's profile as its title comes. No list of the titles shown is kept, so a title
+that never settles, such as one with a counter in it, costs nothing. Once the switch is on, a tied
+title the window in front showed while it was off loads its profile when the window shows it again.
+
+No window, a window of the lens's own, which the windows of its stages and the process id from
+`GetWindowThreadProcessId` tell apart, the desktop, the taskbar and the task switcher are no
+program, the last three by their classes `Progman`, `WorkerW`, `Shell_TrayWnd`,
+`Shell_SecondaryTrayWnd`, `XamlExplorerHostIslandWindow`, `MultitaskingViewFrame`, `TaskSwitcherWnd`
+and `ForegroundStaging`. So a program that comes back from a dialog of the lens's own or from the
+desktop has not come to the front anew, and a profile chosen meanwhile stays. A window whose class
+cannot be read, as one that is gone by the time it is read, is no program either. The title is read
+first, so a window that goes between the two reads counts for nothing too. A window with a class and
+an empty title is a program, matched by its class and the empty title, and the panel and Settings
+name it by its class. A tie without a class would match no window, so none is made, and one found in
+`profiles.json` is taken off as the file loads, with a line in the log for each profile. A line that
+cannot be written, as on a full disk, is left out, and the profiles load all the same. A lens that
+is minimised or replacing its picture looks at nothing, and judges the window in front against the
+program before once it is back. A title is shown cut to 40 letters with three dots, and kept whole
+in the profile and the match.
 
 ## Attached to a window
 
@@ -1387,10 +1764,15 @@ With a section holding only `ConfigVersion=2`, 5.2.1 ran at its defaults, logged
 `intensity=1.000000 color_strength=1.000000 transfer=1.000000 paper_white=2.537500 preset=0
 style=0 enabled=ON`, wrote back `EnableHooks=2`, `NeuralUplift=1` and `NREnableUpscaling=0`, and
 created and evaluated feature 18 at one pass. So that is all the setup writes into the section,
-and a repair keeps whatever the section holds. Before each presenter starts, the lens writes
-`NRChainedHistory=1` and `NRCodecMode=0` where the section holds no value for them and leaves a
-value that is there, so a choice made in the add-on's overlay, which the add-on writes back to
-the section, stays.
+and a repair keeps whatever the section holds. Since 0.6.1 the setup also keeps the lens's own
+section, `[NeuralLens.Passes]`, on a repair and on an update that runs it, see Each pass's values.
+It writes the file anew from its template and puts that section after it byte for byte, finding it
+by its name as Windows reads it, whatever its case and with spaces or a comment on its name line,
+and its log says so. A file without the section comes out as before.
+
+Before each presenter starts, the lens writes `NRChainedHistory=1` and `NRCodecMode=0` where the
+add-on's section holds no value for them and leaves a value that is there, so a choice made in the
+add-on's overlay, which the add-on writes back to the section, stays.
 
 The add-on's developer asked, for the v5 line, that the proxy codec be set to Classic,
 `NRCodecMode=0`, where the add-on's default is Anchored, `NRCodecMode=1`. Over a still the two
@@ -1558,11 +1940,176 @@ and 160, and it came out lower for Half and Quarter than for Full. Full stays th
 
 ## HDR
 
-The lens shows standard range only. windows-capture 2.0.1, the newest release, asks Windows
-Graphics Capture for 8-bit BGRA. Its Python binding hard-codes `ColorFormat::Bgra8`, while the
-Rust crate under it supports `Rgba16F`. The presenter's swapchain is `B8G8R8A8_UNORM` in
-`SRGB_NONLINEAR`. The fast engine captures with its own code, 8-bit BGRA as well, and presents a
-`B8G8R8A8_UNORM` flip model swapchain in the standard colour space.
+Since 0.6.1 a fullscreen lens on the fast engine draws in HDR on a monitor that has Windows HDR on.
+The ReShade engine still works in 8 bits, so on such a monitor every lens it draws comes out washed
+out: every lens in a window, a lens attached to a window and a fullscreen lens on that engine. The
+lens says so, see The warning below.
+
+### Telling HDR from Auto Colour Management
+
+The lens and the fast engine read a monitor's state the same way, through DisplayConfig, from the
+active path whose source is that monitor. From Windows 11 24H2,
+`DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO_2` gives the active colour mode, which is HDR
+only with Windows HDR on. Auto Colour Management gives the wide colour mode, which does not count.
+Before 24H2 the older `DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO` counts as HDR where
+advanced colour is on and wide colour is not enforced. The SDR white level, the brightness Windows
+gives standard content on that monitor, comes from `DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL`,
+in thousandths of 80 nits. On Windows 11 build 26200, a 3840x1200 monitor at 144 Hz on DisplayPort
+with HDR on read as HDR at 240 nits, and the 6144x2560 display at 120 Hz with Auto Colour Management
+on read as not HDR, at 80 nits. The older way, for Windows before 24H2, was not run. The engine
+reads the state when its window is made, whenever its capture starts and once a second while it
+captures, and the lens reads it once a second on its 200 ms timer.
+
+### The fast engine in HDR
+
+With HDR on for its monitor the engine captures, works and draws like this:
+
+- **The capture takes 16-bit floats**, `R16G16B16A16_FLOAT` in scRGB, linear light with 1.0 at
+  80 nits, for the frame pool and the four textures it copies into.
+- **A compute pass makes the 8-bit frame the network works on.** Each texel's level is
+  `round(255 * sRGB(clamp(scRGB / white, 0, 1)))`, where white is the SDR white level in units of
+  80 nits, so standard content comes out as it would with HDR off and everything above SDR white is
+  white. It goes into one of two `R8G8B8A8` textures, and the downscale and the network work on it
+  as on an 8-bit capture. Whether a frame is new is decided on the two 16-bit frames, compared bit
+  for bit, so a change that lies only above SDR white counts too.
+- **The swapchain is in 16-bit floats in scRGB**, `R16G16B16A16_FLOAT` with the colour space
+  `RGB_FULL_G10_NONE_P709`, on both ways of making it. The ready line then gives the format as 10,
+  where it is 87 in 8 bits.
+- **The composite is drawn in linear light.** It draws
+  `native + white * (decode(v / 255) - decode(l / 255))` with `v = clamp(l + d, 0, 255)`, where
+  native is the captured 16-bit value, l the level the network saw at the pixel, d the change in
+  levels that the standard range composite draws there, and decode the sRGB transfer function. At or
+  below SDR white that is the standard range picture in linear light, with the original's own 16-bit
+  value under it, so nothing is lost to 8 bits there, and above SDR white the change fades out, see
+  Above SDR white.
+
+A composite of the network's own output against its input in linear light,
+`white * (decode(out) - decode(in))` scaled up, was not taken, since it applies the change at the
+brightness of the work texel and not of the pixel. A pixel at level 50 beside a work texel at 150,
+with a change of 10 levels, would get 0.0465 of SDR white in linear light where the standard range
+picture gives it 0.0133 of SDR white, 3.5 times as much, a halo the standard range picture does not
+have. Where the swapchain does not take scRGB it stays in 8 bits and shows the standard range
+picture at SDR white, as Windows shows a standard program, and the engine says so in its note and
+does not ask again in that run. The engine's note `hdr: on, sdr white 240 nits, the capture takes
+16-bit floats, the network sees them scaled to that white, and the picture is drawn in 16-bit
+floats`, or `hdr: off`, comes when the capture first starts and whenever it changes, and the ready
+line ends with `hdr on` or `hdr off`.
+
+**Switched on or off while the engine runs.** Windows did not end a capture when HDR was switched on
+for its monitor. Measured, with HDR switched on while the engine captured, no loss of the capture
+came in 8 s, and the session went on in 8 bits, whose pictures of the HDR desktop were 45.6 of 255
+from the right ones on average. So the engine reads the monitor's state once a second while it
+captures, in a few hundred microseconds, and where HDR went on or off it starts the capture again,
+which takes the format, the swapchain and the white level with it, with a note such as
+`hdr: Windows HDR went on for the monitor while the capture ran, so the capture starts again`. A
+new SDR white level alone is taken without a restart, with the note
+`hdr: the SDR white level is now N nits`, and the picture on screen is drawn again. In one run on
+each of the two ways of making the swapchain, with HDR switched on once while the engine captured
+and then off, on and off again while it was paused, the swapchain followed every change, and after
+each change to HDR the drawn picture matched the pattern to a hundredth of a nit at twice SDR white
+and above. HDR switched off while the engine captured was not run, the time from the switch to the
+new picture was not measured, and a change of the SDR white level while the engine ran was not run.
+
+**Screenshots.** Under HDR the lens's before and after pictures, the side by side picture, the
+clipboard's copy and the probe are 8-bit pictures made the way Windows shows standard content, by
+scaling the 16-bit picture by one over the SDR white level, clipping it, encoding it as sRGB and
+rounding it, so anything above SDR white is white in them. The before picture is the 8-bit frame the
+network saw. Measured, the after picture equalled such a picture made on the CPU from the drawn
+16-bit picture byte for byte, and at 3840x1198 the engine answered a screenshot in 0.151 s in the
+median. `LENS_FAST_SHOT_RAW` keeps the two 16-bit pictures as well, see Switches for tests.
+
+Measured on a test computer with an RTX 5090, driver 617.14 and Windows 11 build 26200, with HDR on
+for a second monitor at 3840x1200 and 144 Hz alone, at an SDR white of 240 nits, and the engine
+fullscreen on it at Balanced, a work size of 2560x640, over a pattern drawn in scRGB from 0 to
+1000 nits and over a photo-like scene:
+
+- The 8-bit frame the network saw was within 0.04 of 255 on average, and 0.52 of 255 at most, of the
+  pattern's own picture at SDR white, at or below white. The same conversion made on the CPU from
+  the captured 16-bit frame equalled it in all of its 4.6 million texels. A grey of 20 nits came out
+  at level 82 where an 8-bit capture gives level 137, and one of 80 nits at level 156 where the
+  capture gives level 255.
+- With Neural Rendering off the drawn 16-bit picture equalled the captured frame texel for texel up
+  to 1000 nits, and the desktop's 16-bit frame from Desktop Duplication equalled the drawn picture
+  texel for texel with Neural Rendering off and on.
+- With Neural Rendering on, the change at or below SDR white was within 0.18 nits on average of the
+  standard range picture's change over the pattern, 1.41 nits at the 99th percentile and 2.09 nits
+  at most, where half a level at white is 1.07 nits, and within 0.04 nits on average over the scene,
+  0.38 nits at the 99th percentile.
+- Over a still screen the 16-bit swapchain was shown directly, as the 8-bit one is, with
+  17.7 repeats a second and no frames of the compositor's own. Over a picture scrolling at 120 steps
+  a second the delay read 0.00 ms on that monitor's own grid. The swapchain made for
+  DirectComposition gave the same.
+- A square at 800 nits moving at 120 steps a second over a field at 400 nits, both above SDR white,
+  gave 120 new pictures a second at a median delay of 0.0 ms. Over a still HDR screen 0.1 new
+  pictures a second came.
+
+### Above SDR white
+
+Above SDR white the network saw a clipped input, a level of 255, and not the original's value. The
+engine fades its change out there. Per channel and by the original's own value, the change is scaled
+by a weight of 1 at or below SDR white that falls to 0 at twice SDR white, from where the original
+is shown as it is. `LENS_FAST_HDR_ABOVE` sets the two other ways for tests, see Switches for tests.
+`pass` applies the change as at white, where it can only darken, and `clip` leaves out the change
+wherever a channel is above white.
+
+Measured as above, at an SDR white of 240 nits, over the Blender picture with a disc at 480 nits, a
+soft glow up to 400 nits, a framed rectangle at 400 nits, a ramp from 120 to 360 nits through white
+and highlights of its own at 300 to 430 nits, 3.8 percent of its pixels above white. The change
+against the original, in nits, a mean over each part, with the glow by the original's value in units
+of SDR white:
+
+```
+                                     pass      fade      clip
+the disc at 480 nits                -11.5      0.00      0
+the glow at 0.95 to 1               -11.0    -11.3     -11.3
+            1 to 1.05               -10.0    -10.1      -0.1
+            1.05 to 1.2              -4.4     -4.0      0
+            1.2 to 1.5               -3.0     -2.1      0
+            1.5 to 1.7               -6.9     -3.2      0
+the rectangle at 400 nits            -0.08    -0.03     0
+the scene's own highlights          -43.2    -34.4     -7.2
+```
+
+In each of the three ways the network's own dark ring 2 to 20 px outside the disc read -5 to
+-7 nits, as it does with HDR off, the largest step between neighbouring columns of the ramp near
+white was 1.15 to 1.17 nits, and the change at or below white was within 0.04 nits on average of the
+standard range picture's. `clip` steps by 11 nits along the line where the glow crosses white, a
+ring the original does not have. Over the pattern a red patch at 320 nits changed by -31 nits with
+`pass`, -24 nits with `fade` and not at all with `clip`. Looked at on that monitor with the lens
+fullscreen over the scene, `fade` looked right, with only a slight change to the soft glow, `pass`
+darkened the disc slightly, and `clip` drew a hard outline on the glow where it crosses white. So
+`fade` is the engine's way, and the other two stay switches for tests.
+
+### What HDR costs
+
+Measured as above, at 3840x1166 on that monitor over a picture scrolling as a whole at 120 steps a
+second, so that every pixel changes at every step, at Balanced with a work size of 2560x640 and a
+frame rate limit of 60 fps, 30 s each. The power is the card's whole draw less that of the source
+alone in the same state:
+
+```
+          new a second   power above the source   card busy
+HDR off   60.0           56.5 W                   26 percent
+HDR on    60.0           58.1 W and 59.0 W        30 and 31 percent
+```
+
+So the HDR path drew 1.6 to 2.5 W more at 60 new pictures a second, within the 2.5 W a row is good
+to. With the 16-bit capture and the conversion alone, and an 8-bit swapchain, the same row read
+56.5 W, as with HDR off. On the card the conversion took 0.02 ms a frame and the composite 0.04 ms
+against 0.03 ms, and the delay read 0.00 ms either way. Without a limit the compositor delivered 114
+to 135 frames a second from run to run with HDR on, so those runs do not compare row by row. They
+drew about 1 W for each new picture a second, with HDR on or off. In video memory at 3840x1198, the
+four textures of the capture take 140 MiB in place of 70 MiB, the two 8-bit frames 35 MiB and the
+swapchain's two buffers 70 MiB in place of 35 MiB. The engine held 600 MiB at its start with HDR on
+against 487 MiB with it off. With HDR off the engine draws the same picture byte for byte and costs
+what it did. Neither the conversion's time at 6144x2526 nor HDR on the main monitor was measured.
+
+### The ReShade engine under HDR
+
+The ReShade engine shows standard range only. windows-capture 2.0.1, which the presenter uses, asks
+Windows Graphics Capture for 8-bit BGRA. Its Python binding hard-codes `ColorFormat::Bgra8`, while
+the Rust crate under it supports `Rgba16F`. The presenter's swapchain is `B8G8R8A8_UNORM` in
+`SRGB_NONLINEAR`.
 
 With Windows HDR on, the 8-bit capture is clipped. Measured on a 3840x1200 monitor at 144 Hz on
 DisplayPort, with HDR on and standard content at 240 nits, over a pattern drawn in scRGB from 0
@@ -1575,9 +2122,44 @@ off, Desktop Duplication gives that monitor's desktop in 8 bits, so nothing is c
 the main monitor, with Auto Colour Management on, the 8-bit capture was within 0.06 of 255 of
 the 16-bit frame.
 
-What a native HDR path through the presenter and the stack would need, from reading the parts on
-2026-09-30. The first three do not apply to the fast engine, whose capture, shaders and swapchain
-are its own, and what it would need has not been worked out:
+**The warning.** While Windows HDR is on for the lens's monitor and the ReShade engine draws the
+picture, the lens warns that the picture comes out washed out. That is a lens in a window, a lens
+attached to a window or with its title bar hidden, and a fullscreen lens on the ReShade engine,
+whether the Fullscreen page of Settings chose that engine or the fast engine is not installed or has
+failed. A fullscreen lens on the fast engine gets no warning, and nor does one while the ReShade
+engine stands in for a fast engine that got no picture from the screen, as after an unlock, since
+the fast engine comes back by itself, see An engine that gets no picture has not failed.
+
+- The lens reads its monitor's state once a second, see Telling HDR from Auto Colour Management, so
+  the warning follows HDR switched on or off, and a move of the lens to another monitor, within
+  about a second.
+- A fullscreen lens, a lens attached to a window and a lens with its title bar hidden show the whole
+  warning on the notice for 12 s in the warning colour, as a line of its own after those for a
+  program in exclusive fullscreen and for a sentence the lens keeps up to be read, and before the
+  latest message. It says that the picture comes out washed out because Windows HDR is on for this
+  monitor, to switch HDR off for the monitor or, where the lens can offer it, to use fullscreen on
+  the fast engine, and that the warning can be switched off in Settings, Picture. The lens cannot
+  offer the fast engine where its exe or the Cost Scaler's files are missing, or where it has failed
+  in this run of the lens.
+- A lens in a window has a bar narrower than that, so for 12 s the bar carries the longest of three
+  short sentences that fits there, `Windows HDR is on for this monitor. See Settings, Picture.`,
+  `Windows HDR is on. See Settings, Picture.` or `HDR is on. See Settings, Picture.`, chosen again
+  when the lens is resized. Where none fits beside the bar's title, the title gives way until the
+  sentence goes, and a lens too narrow for the shortest beside its controls cuts it short at its
+  end, down to none of it at the narrowest. On a test computer with Windows 11 the shortest was
+  whole from 566, 640 and 750 px at a display scale of 100, 125 and 150 percent. The Picture page of
+  Settings shows the whole warning in the warning colour when it applies as Settings opens.
+- It comes each time it begins to apply, and once more when the lens goes fullscreen or comes back
+  to a window, and not when the picture only restarts, as for a new pass count. It goes at once when
+  HDR goes off, when the fast engine draws the picture, and while the lens is minimised.
+- The Picture page of Settings has a switch for it, Warn when Windows HDR is on, which starts
+  ticked. Unticked, the ini holds `hdr_warn = 0`, and ticked, the key is left out. Unticking it
+  takes a warning that is up away at once, ticking it says it again at the next reading where it
+  still applies, and Save names `hdr_warn 0` or `hdr_warn 1` in its one line. The log has a line
+  either way, see The lens's log.
+
+What an HDR path through the presenter and the stack would need for the ReShade engine, from reading
+the parts on 2026-09-30:
 
 - **A 16-bit capture**, through a rebuilt binding, which needs a Rust toolchain. The binding
   copies and maps the whole monitor for every frame whatever the lens's size. In 16-bit at
@@ -1912,6 +2494,15 @@ picture. The top edge is the bar, which moves the lens, so there is no top grip.
 first, since a picture restart is what a new pass count does too, with nothing but the note on
 the title bar.
 
+Since 0.6.1 a lens in a window, with its title bar shown or hidden, is never narrower than the
+controls on its bar, with the pass count at its widest, and never under 240 px, the narrowest a drag
+could make it before. Worked out with the bar's own widgets and fonts on a test computer with
+Windows 11, that is 322, 366 and 414 px at a display scale of 100, 125 and 150 percent. A drag on
+the frame stops there, and a resize, the way back from fullscreen and a start at a size saved
+narrower widen the lens to it. Tk's packer hands out the bar's room in the order things went onto
+it, so the bar takes its buttons first and its words after them, and a narrow lens cuts its title,
+its readout and the profile selector short before any button.
+
 The caption buttons are Windows' own glyphs from Segoe Fluent Icons, or Segoe MDL2 Assets before
 Windows 11, falling back to plain characters when neither font is there.
 
@@ -1983,8 +2574,9 @@ is 34 pixels and holds a 10 point label up to 200 percent.
   program in front, a line says so for 12 s, below the lines for a program in exclusive
   fullscreen and for a sentence the lens keeps up to be read, such as the fast engine giving way
   to the ReShade engine, and above the latest message, see The warning under A game in front that
-  keeps the card busy. The readout the bar would show is the second line of the menu, kept
-  current while the menu is open.
+  keeps the card busy. The warning that Windows HDR is on, for a fullscreen lens on the ReShade
+  engine, shows in the same way, see The warning under HDR. The readout the bar would show is the
+  second line of the menu, kept current while the menu is open.
 - **A note as the lens goes fullscreen** says that the lens itself is invisible while it goes on
   applying DLSS 5. With Neural Rendering off that first line says so instead, and names the keys
   and the menu entry that bring it back, such as F9 or Turn NR back on in the lens menu on the
@@ -2074,16 +2666,31 @@ taskbar list as Done ends it left the keyboard with the window that had it befor
 after Set it has not been measured again.
 
 **The fast engine has no overlay to open**, since no ReShade runs in it. The lens's own NR settings
-panel takes its place there, with Neural Rendering on or off, the style, the four strengths, the
-auto mask, the passes and the quality step. A change goes into the add-on's section of ReShade.ini
-at once, with every other byte of the file kept, and the engine is told `reload`, at most about
-ten times a second while a slider moves. Measured, a change of the intensity from 0.97 to 0.3
-changed one line of the file, 1038 bytes to 1037 bytes, and with the value put back the file was byte
-for byte as before. The engine's shot differed from the capture by 5.06 of 255 at 0.97 and by
-1.58 at 0.3, and a slider moved 91 times in a second gave 11 reloads. The panel's ranges, 0.00 to
-2.00 and -1 for a skin structure left to the model, are the ones the Cost Scaler's ini gives for
-the model's settings. A new pass count restarts the picture, since the engine takes the count
-when it starts. The panel works from the keyboard as well, with the keys under Global hotkeys.
+panel takes its place there. From the top it holds the profile picker, the switch that loads a
+profile for the program in front, see Profiles, Neural Rendering on or off, a tab for each pass that
+runs, the style, the four strengths, the auto mask, the passes and the quality step. On the tab of a
+pass from the second on each value has a tick, Same as pass 1. Ticked, the pass runs at the first
+pass's value, and the control shows that value greyed. Unticked, the value is the pass's own, and
+the control moves it alone. A pass fewer keeps that pass's own values in the file for when it comes
+back. A change goes into `ReShade.ini` at once, into the add-on's section for the first pass and for
+the intensity of passes 2 to 4, and into the lens's own section for the other values of a pass from
+the second on, see Each pass's values, in one write that keeps every other byte of the file. The
+file is written beside itself and put in its place in one step, so the engine never reads it cut
+short, and the engine is told `reload`, at most about ten times a second while a slider moves.
+Measured, a change of the intensity from 0.97 to 0.3 changed one line of the file, 1038 bytes to
+1037 bytes, and with the value put back the file was byte for byte as before. The engine's shot
+differed from the capture by 5.06 of 255 at 0.97 and by 1.58 at 0.3, and a slider moved 91 times in
+a second gave 11 reloads. The panel's ranges, 0.00 to 2.00 and -1 for a skin structure left to the
+model, are the ones the Cost Scaler's ini gives for the model's settings, and every value lands on a
+hundredth. To the right of each slider's number a button with an anticlockwise arrow puts the slider
+at 1.00 for the pass shown, as the arrow keys set a value. It is greyed, and does nothing, while its
+slider is greyed, for a value ticked Same as pass 1 or for skin structure left to the model, and it
+has no key. A new pass count restarts the picture, since the engine takes the count when it starts.
+The panel works from the keyboard as well, with the keys under Global hotkeys. Its last line says
+that the arrow keys pick a setting and change it, that a slider moves faster the longer Left or
+Right is held and that the button beside a number puts its slider at 1.00. The add-on of the ReShade
+engine reads only its own section, so there every pass from the second on runs at the first pass's
+values apart from the intensity of passes 2 to 4.
 
 ### The A/B divider
 
@@ -2126,6 +2733,14 @@ the presenter is clipped with `SetWindowRgn` to the left of it. Two things about
   DisplayPort the meter read -2.7 ms and the delay about 8.5 ms with no limit and 3 ms at a limit
   of 60, where at 1920x1080 and 60 Hz the delay read -8.3 ms in both. Compare runs only within one
   arrangement of monitors.
+- **The compositor can time the display by another monitor's refreshes.** With a second monitor at
+  3840x1200 and 144 Hz connected, the compositor at times timed the 120 Hz display's frames by the
+  second monitor's refreshes, for hours on end, and the fast engine's delay over the moving source
+  then read 7 to 11 ms, where it read 0.0 ms with the compositor on the display's own refreshes. An
+  earlier build of the engine read the same, so the state is not the engine's. The profile's `grid`
+  and `lead` tell the two apart, 0.00 ms and 8.3 ms on the display's own refreshes against about
+  2 to 3 ms and 3 to 7 ms on the other monitor's. Whether a restart of Windows ends it was not
+  tried. Say with each delay figure which state it was taken in.
 - **Power drifts, and the baseline has clocks of its own.** The same arrangement read 254 W and,
   a quarter of an hour later, 245 W, and one run's samples spread over about 6 W, so a difference
   under about 5 W cannot be told. A baseline taken with the card's memory clock at 810 MHz read

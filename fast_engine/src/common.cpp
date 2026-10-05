@@ -253,7 +253,14 @@ const char kUsage[] =
     "  cap N | ready 1|0 | clip 1|0 | stop-capture | quit\n"
     "and four of its own:\n"
     "  nr 1|0       the network on or off. Off shows the capture unchanged\n"
-    "  reload       read the settings in ReShade.ini again\n"
+    "  reload       read the settings in ReShade.ini again: the six in [RenoDX.DLSS5],\n"
+    "               the base every pass starts from, and each pass's own values where the\n"
+    "               file holds them, Pass<n>Style, Pass<n>Intensity, Pass<n>LocalTone,\n"
+    "               Pass<n>LocalStructure, Pass<n>SkinStructure and Pass<n>AutoMask in\n"
+    "               [NeuralLens.Passes], n from 2 up to the pass count. The intensity of\n"
+    "               passes 2 to 4 is the add-on's own NRPass<n>Intensity, or the base's\n"
+    "               where Pass<n>IntensityTied is in the lens's section. The start reads\n"
+    "               the same\n"
     "  settle 1|0   on by default. When a picture that changed over 1/32 of its area or\n"
     "               more has stood still for 150 ms, the network runs on it up to 4\n"
     "               more times, so a still picture reaches the network's settled state.\n"
@@ -269,7 +276,13 @@ const char kUsage[] =
     "\n"
     "Lines on stdout:\n"
     "  presenter ready ...   once the first picture is on screen. It ends with the work\n"
-    "                        size, the passes and the quality step in use\n"
+    "                        size, the passes, the quality step in use and \"hdr off\" or\n"
+    "                        \"hdr on\", whether Windows HDR is on for the monitor, which a\n"
+    "                        note on stderr says as well when the capture first starts and\n"
+    "                        whenever that state changes. With it on the capture and the\n"
+    "                        picture are in 16-bit floats, the picture is shown in HDR as\n"
+    "                        the desktop is, and the line's format is 10\n"
+    "                        (R16G16B16A16_FLOAT) in place of 87\n"
     "  engine quality N work WxH\n"
     "                        the answer to a quality line, once that step is in use\n"
     "  stats new=N arrived=N repeated=N dropped=N skipped=N meter=MS delay=MS\n"
@@ -364,37 +377,113 @@ double now_s() {
 
 namespace {
 
-// One number from [RenoDX.DLSS5]. ReShade writes them with a full stop whatever the
-// system's locale, and this program never changes the C locale, so wcstod reads them right.
-float ini_number(const std::wstring& ini, const wchar_t* key, float fallback) {
-  wchar_t text[64] = {};
-  GetPrivateProfileStringW(L"RenoDX.DLSS5", key, L"", text, 64, ini.c_str());
-  if (!text[0]) return fallback;
+// One section of the ini as its key and value pairs, in the file's order. Read in one call,
+// GetPrivateProfileSectionW, which opens the file once. A reload reads two sections, where a
+// call for each key opened the file 51 times at four passes and held it about a millisecond,
+// long enough to make the lens's swap of the file in its place fail more often.
+using IniSection = std::vector<std::pair<std::wstring, std::wstring>>;
+
+std::wstring trimmed(const std::wstring& text) {
+  const size_t a = text.find_first_not_of(L" \t");
+  if (a == std::wstring::npos) return std::wstring();
+  const size_t b = text.find_last_not_of(L" \t");
+  return text.substr(a, b - a + 1);
+}
+
+// The section's lines as GetPrivateProfileStringW would read each key, with the spaces
+// around the key and the value gone, and a pair of quotes around the value. A line with no
+// sign is no key. A section that is not there is empty.
+IniSection read_section(const std::wstring& ini, const wchar_t* section) {
+  IniSection out;
+  std::vector<wchar_t> buf(8192);
+  DWORD n = 0;
+  for (;;) {
+    n = GetPrivateProfileSectionW(section, buf.data(), (DWORD)buf.size(), ini.c_str());
+    // nSize - 2 means the section did not fit, so it is read again into more room
+    if (n + 2 < (DWORD)buf.size() || buf.size() >= (1u << 20)) break;
+    buf.assign(buf.size() * 4, L'\0');
+  }
+  if (n >= (DWORD)buf.size()) n = (DWORD)buf.size() - 1;
+  buf[n] = L'\0';
+  for (size_t at = 0; at < n;) {
+    const std::wstring line(buf.data() + at);
+    at += line.size() + 1;
+    const size_t eq = line.find(L'=');
+    if (eq == std::wstring::npos) continue;
+    std::wstring key = trimmed(line.substr(0, eq));
+    std::wstring value = trimmed(line.substr(eq + 1));
+    if (value.size() >= 2 && (value.front() == L'"' || value.front() == L'\'') && value.back() == value.front()) {
+      value = value.substr(1, value.size() - 2);
+    }
+    if (!key.empty()) out.emplace_back(std::move(key), std::move(value));
+  }
+  return out;
+}
+
+// The value of a key, matched whatever its case as the profile functions match it, the first
+// line with that key as they take it, or nullptr where the section has none.
+const std::wstring* find_key(const IniSection& section, const std::wstring& key) {
+  for (const auto& kv : section) {
+    if (_wcsicmp(kv.first.c_str(), key.c_str()) == 0) return &kv.second;
+  }
+  return nullptr;
+}
+
+// One number from a section, or fallback where the key is missing or is no number. ReShade
+// writes them with a full stop whatever the system's locale, and this program never changes
+// the C locale, so wcstod reads them right. Sets found when the key held a number.
+float section_number(const IniSection& section, const std::wstring& key, float fallback, bool* found = nullptr) {
+  if (found) *found = false;
+  const std::wstring* text = find_key(section, key);
+  if (!text || text->empty()) return fallback;
   wchar_t* end = nullptr;
-  double v = wcstod(text, &end);
-  if (end == text || !std::isfinite(v)) return fallback;
+  const double v = wcstod(text->c_str(), &end);
+  if (end == text->c_str() || !std::isfinite(v)) return fallback;
+  if (found) *found = true;
   return (float)v;
+}
+
+// The add-on's section, the base's six values and its own per-pass intensities.
+constexpr const wchar_t* kAddonSection = L"RenoDX.DLSS5";
+
+// The section the lens keeps the passes' own values in, see NrPasses in common.h.
+constexpr const wchar_t* kPassSection = L"NeuralLens.Passes";
+
+// The six values as the lens's section names them after "Pass<n>", in NrSettings' order.
+constexpr const wchar_t* kPassNames[6] = {L"Style", L"Intensity", L"LocalTone", L"LocalStructure",
+                                           L"SkinStructure", L"AutoMask"};
+
+// The full path of the stack's ReShade.ini: given a bare name, the profile functions look
+// in the Windows folder instead.
+std::wstring stack_ini(const std::wstring& stack_dir) { return path_join(absolute(stack_dir), L"ReShade.ini"); }
+
+void read_base(const IniSection& addon, NrSettings& out) {
+  const NrSettings d;
+  const float style = section_number(addon, L"NRStyle", (float)d.style);
+  out.style = style > 0.0f ? (unsigned)style : 0u;
+  out.intensity = section_number(addon, L"NRIntensity", d.intensity);
+  out.local_tone = section_number(addon, L"NRLocalTone", d.local_tone);
+  out.local_structure = section_number(addon, L"NRLocalStructure", d.local_structure);
+  out.skin_structure = section_number(addon, L"NRSkinStructure", d.skin_structure);
+  out.auto_mask = (int)section_number(addon, L"NRAutoMask", (float)d.auto_mask) != 0 ? 1 : 0;
+}
+
+std::wstring pass_key(int n, const wchar_t* name) {
+  wchar_t key[48];
+  swprintf_s(key, L"Pass%d%s", n, name);
+  return key;
 }
 
 }  // namespace
 
 bool read_nr_settings(const std::wstring& stack_dir, NrSettings& out, std::string& err) {
   out = NrSettings();
-  // The path has to be a full one: given a bare name, the profile functions look in the
-  // Windows folder instead.
-  const std::wstring ini = path_join(absolute(stack_dir), L"ReShade.ini");
+  const std::wstring ini = stack_ini(stack_dir);
   if (!file_exists(ini)) {
     err = "no ReShade.ini in the stack folder " + narrow(stack_dir);
     return false;
   }
-  const NrSettings d;
-  const float style = ini_number(ini, L"NRStyle", (float)d.style);
-  out.style = style > 0.0f ? (unsigned)style : 0u;
-  out.intensity = ini_number(ini, L"NRIntensity", d.intensity);
-  out.local_tone = ini_number(ini, L"NRLocalTone", d.local_tone);
-  out.local_structure = ini_number(ini, L"NRLocalStructure", d.local_structure);
-  out.skin_structure = ini_number(ini, L"NRSkinStructure", d.skin_structure);
-  out.auto_mask = (int)ini_number(ini, L"NRAutoMask", (float)d.auto_mask) != 0 ? 1 : 0;
+  read_base(read_section(ini, kAddonSection), out);
   return true;
 }
 
@@ -402,6 +491,66 @@ bool same_settings(const NrSettings& a, const NrSettings& b) {
   return a.style == b.style && a.intensity == b.intensity && a.local_tone == b.local_tone &&
          a.local_structure == b.local_structure && a.skin_structure == b.skin_structure &&
          a.auto_mask == b.auto_mask;
+}
+
+bool read_nr_passes(const std::wstring& stack_dir, NrPasses& out, std::string& err, int count) {
+  out = NrPasses();
+  const std::wstring ini = stack_ini(stack_dir);
+  if (!file_exists(ini)) {
+    err = "no ReShade.ini in the stack folder " + narrow(stack_dir);
+    return false;
+  }
+  const IniSection addon = read_section(ini, kAddonSection);
+  read_base(addon, out.pass[0]);
+  const NrSettings base = out.pass[0];
+  for (NrSettings& p : out.pass) p = base;      // a pass beyond the count runs nothing of its own
+  if (count > kNrMaxPasses) count = kNrMaxPasses;
+  if (count < 2) return true;                   // one pass reads what it did before the passes had values
+  const IniSection own = read_section(ini, kPassSection);
+  for (int n = 2; n <= count; ++n) {
+    NrSettings& p = out.pass[n - 1];
+    const float style = section_number(own, pass_key(n, kPassNames[0]), (float)base.style);
+    p.style = style > 0.0f ? (unsigned)style : 0u;
+    bool found = false;
+    if (n <= kAddonPassIntensities) {
+      if (find_key(own, pass_key(n, L"IntensityTied"))) {
+        found = true;                           // ticked Same as pass 1, so the base's, whatever else says
+      } else {
+        wchar_t key[32];
+        swprintf_s(key, L"NRPass%dIntensity", n);
+        p.intensity = section_number(addon, key, base.intensity, &found);   // the add-on's key comes first
+      }
+    }
+    if (!found) p.intensity = section_number(own, pass_key(n, kPassNames[1]), base.intensity);
+    p.local_tone = section_number(own, pass_key(n, kPassNames[2]), base.local_tone);
+    p.local_structure = section_number(own, pass_key(n, kPassNames[3]), base.local_structure);
+    p.skin_structure = section_number(own, pass_key(n, kPassNames[4]), base.skin_structure);
+    p.auto_mask = (int)section_number(own, pass_key(n, kPassNames[5]), (float)base.auto_mask) != 0 ? 1 : 0;
+  }
+  return true;
+}
+
+bool same_passes(const NrPasses& a, const NrPasses& b, int count) {
+  if (count > kNrMaxPasses) count = kNrMaxPasses;
+  for (int i = 0; i < count; ++i) {
+    if (!same_settings(a.pass[i], b.pass[i])) return false;
+  }
+  return true;
+}
+
+std::string own_values_text(const NrSettings& base, const NrSettings& pass) {
+  std::string text;
+  auto add = [&text](const std::string& part) {
+    if (!text.empty()) text += ", ";
+    text += part;
+  };
+  if (pass.style != base.style) add(strf("style %u", pass.style));
+  if (pass.intensity != base.intensity) add(strf("intensity %.2f", pass.intensity));
+  if (pass.local_tone != base.local_tone) add(strf("local tone %.2f", pass.local_tone));
+  if (pass.local_structure != base.local_structure) add(strf("local structure %.2f", pass.local_structure));
+  if (pass.skin_structure != base.skin_structure) add(strf("skin structure %.2f", pass.skin_structure));
+  if (pass.auto_mask != base.auto_mask) add(strf("auto mask %d", pass.auto_mask));
+  return text;
 }
 
 // ---------------------------------------------------------------- the command line
@@ -994,6 +1143,66 @@ void set_dpi_aware() {
 HMONITOR monitor_under(int x, int y, int w, int h) {
   POINT middle = {x + w / 2, y + h / 2};
   return MonitorFromPoint(middle, MONITOR_DEFAULTTONEAREST);
+}
+
+MonitorColour monitor_colour(HMONITOR monitor) {
+  MonitorColour c;
+  MONITORINFOEXW info = {};
+  info.cbSize = sizeof(info);
+  if (!monitor || !GetMonitorInfoW(monitor, &info)) return c;
+  UINT paths = 0, modes = 0;
+  if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &paths, &modes) != ERROR_SUCCESS) return c;
+  std::vector<DISPLAYCONFIG_PATH_INFO> path(paths);
+  std::vector<DISPLAYCONFIG_MODE_INFO> mode(modes);
+  if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &paths, path.data(), &modes, mode.data(), nullptr) !=
+      ERROR_SUCCESS) {
+    return c;
+  }
+  for (UINT i = 0; i < paths; ++i) {
+    DISPLAYCONFIG_SOURCE_DEVICE_NAME source = {};
+    source.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+    source.header.size = sizeof(source);
+    source.header.adapterId = path[i].sourceInfo.adapterId;
+    source.header.id = path[i].sourceInfo.id;
+    if (DisplayConfigGetDeviceInfo(&source.header) != ERROR_SUCCESS) continue;
+    if (_wcsicmp(source.viewGdiDeviceName, info.szDevice) != 0) continue;
+    c.known = true;
+
+    // From Windows 11 24H2 the active colour mode tells HDR from Auto Colour Management,
+    // which composes in wide colour but shows standard range.
+    DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO_2 two = {};
+    two.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO_2;
+    two.header.size = sizeof(two);
+    two.header.adapterId = path[i].targetInfo.adapterId;
+    two.header.id = path[i].targetInfo.id;
+    if (DisplayConfigGetDeviceInfo(&two.header) == ERROR_SUCCESS) {
+      c.hdr = two.activeColorMode == DISPLAYCONFIG_ADVANCED_COLOR_MODE_HDR;
+      c.bits = (int)two.bitsPerColorChannel;
+    } else {
+      // Before that, advanced colour on meant HDR, unless Windows itself enforced wide colour.
+      DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO one = {};
+      one.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO;
+      one.header.size = sizeof(one);
+      one.header.adapterId = path[i].targetInfo.adapterId;
+      one.header.id = path[i].targetInfo.id;
+      if (DisplayConfigGetDeviceInfo(&one.header) == ERROR_SUCCESS) {
+        c.hdr = one.advancedColorEnabled && !one.wideColorEnforced;
+        c.bits = (int)one.bitsPerColorChannel;
+      }
+    }
+
+    // The SDR white level, in thousandths of 80 nits: 1000 is 80 nits, 3000 is 240 nits.
+    DISPLAYCONFIG_SDR_WHITE_LEVEL white = {};
+    white.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL;
+    white.header.size = sizeof(white);
+    white.header.adapterId = path[i].targetInfo.adapterId;
+    white.header.id = path[i].targetInfo.id;
+    if (DisplayConfigGetDeviceInfo(&white.header) == ERROR_SUCCESS) {
+      c.sdr_white_nits = (double)white.SDRWhiteLevel * 80.0 / 1000.0;
+    }
+    break;
+  }
+  return c;
 }
 
 // ---------------------------------------------------------------- small helpers

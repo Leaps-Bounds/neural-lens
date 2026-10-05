@@ -655,8 +655,8 @@ int run_capturetest(const Options& o) {
   // ---- the first session, and the first frame read back whole
   const double mib_before = reader.video_memory_mib();
   const double t_start = now_s();
-  if (!capture.start(reader.device.Get(), reader.luid, monitor, W, H, o.crop_x, o.crop_y, interval,
-                     frame_event, err)) {
+  if (!capture.start(reader.device.Get(), reader.luid, monitor, W, H, false, o.crop_x, o.crop_y,
+                     interval, frame_event, err)) {
     return failed(err);
   }
   const double start_ms = (now_s() - t_start) * 1000.0;
@@ -776,7 +776,7 @@ int run_capturetest(const Options& o) {
   for (int k = 1; k <= restarts; ++k) {
     ResetEvent(frame_event);
     const double a = now_s();
-    if (!capture.start(reader.device.Get(), reader.luid, monitor, W, H, o.crop_x, o.crop_y,
+    if (!capture.start(reader.device.Get(), reader.luid, monitor, W, H, false, o.crop_x, o.crop_y,
                        interval, frame_event, err)) {
       say("capturetest restart=%d start failed: %s", k, err.c_str());
       continue;
@@ -807,6 +807,96 @@ int run_capturetest(const Options& o) {
   say("capturetest restarts: %d of %d starts delivered a frame, the held frame was kept through "
       "%d of %d",
       delivered, restarts, kept, restarts);
+
+  // ---- the slots' guard, see Capture::note_read. A fence of the test's own stands for the
+  // reader's queue, signalled from the CPU. Each session delivers one frame at its start,
+  // which is how frames are made to come here, one at a time.
+  //   1. two frames are taken, so one slot is HELD and one PREV, and the PREV one is
+  //      guarded until the fence reaches 1, which it never does yet
+  //   2. the next frame frees it (the rule of acquire), and the four frames after it must
+  //      all come in other slots
+  //   3. in one session a frame delivered and not taken waits in the last free slot, and
+  //      every frame after it in that session finds no free slot and must take its place,
+  //      each one dropped, so the frame taken at the end is the newest. A session brings a
+  //      second frame only when the screen under the crop changes: over a still screen
+  //      this step is not tried, and the harness runs the test over a moving source for it
+  //   4. the fence is signalled, and the guarded slot is handed out again within four frames
+  int guard_got = 0;           // frames delivered in the check
+  int guard_kept = 0;          // of the four after the guard, those that came in other slots
+  bool guard_tried = false;    // step 3 had a second frame to try with
+  bool guard_gave_way = false; // step 3
+  bool guard_released = false; // step 4
+  unsigned guard_dropped = 0;  // what the counters said at step 3
+  {
+    ComPtr<ID3D12Fence> guard;
+    if (FAILED(reader.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&guard)))) {
+      say("capturetest slot guard: no fence could be made for it");
+    } else {
+      capture.set_reader_fence(guard.Get());
+      auto deliver = [&](CaptureFrame* take) -> bool {
+        ResetEvent(frame_event);
+        if (!capture.start(reader.device.Get(), reader.luid, monitor, W, H, false, o.crop_x, o.crop_y, interval,
+                           frame_event, err)) {
+          return false;
+        }
+        bool got = false;
+        if (take) {
+          got = wait_frame(capture, frame_event, 3000, *take);
+        } else {
+          got = WaitForSingleObject(frame_event, 3000) == WAIT_OBJECT_0 && capture.pending();
+        }
+        capture.stop();
+        if (got) ++guard_got;
+        return got;
+      };
+      CaptureFrame first, second, taken;
+      (void)capture.take_counters();
+      if (deliver(&first) && deliver(&second)) {
+        capture.note_read(first, 1);  // step 1
+        for (int k = 0; k < 4; ++k) {  // step 2
+          if (!deliver(&taken)) break;
+          if (taken.texture != first.texture) ++guard_kept;
+        }
+        // step 3: HELD, PREV, the guarded one and one free: the session's first frame waits
+        // there untaken, and the frames after it in the same session can only take its place
+        (void)capture.take_counters();
+        ResetEvent(frame_event);
+        if (capture.start(reader.device.Get(), reader.luid, monitor, W, H, false, o.crop_x, o.crop_y, interval,
+                          frame_event, err)) {
+          if (WaitForSingleObject(frame_event, 3000) == WAIT_OBJECT_0 && capture.pending()) {
+            ++guard_got;
+            const double t_first = now_s();
+            Sleep(150);  // over a moving source, a dozen more frames
+            const CaptureCounters c = capture.take_counters();
+            const bool got = capture.acquire(taken);
+            guard_dropped = c.dropped;
+            guard_tried = c.arrived >= 2;
+            // the frame handed out is the newest, it took the waiting frame's place, which was
+            // not the guarded slot, and every frame it replaced counts as dropped
+            guard_gave_way = guard_tried && got && c.dropped >= 1 && c.dropped + 1 >= c.arrived &&
+                             taken.arrived_s > t_first && taken.texture != first.texture;
+          }
+          capture.stop();
+        }
+        // step 4
+        if (SUCCEEDED(guard->Signal(1))) {
+          for (int k = 0; k < 4 && !guard_released; ++k) {
+            if (!deliver(&taken)) break;
+            if (taken.texture == first.texture) guard_released = true;
+          }
+        }
+      }
+      capture.set_reader_fence(nullptr);
+    }
+  }
+  const bool guard_ok = guard_kept == 4 && (guard_gave_way || !guard_tried) && guard_released;
+  say("capturetest slot guard: %d frames delivered, the guarded slot passed by for %d of 4 frames, with no free "
+      "slot the frames of one session took the waiting frame's place and the newest was handed out: %s, after "
+      "the fence was signalled the slot was handed out again: %s",
+      guard_got, guard_kept,
+      guard_tried ? (guard_gave_way ? strf("yes (%u dropped)", guard_dropped).c_str() : "NO")
+                  : "not tried, the screen under the crop was still and the session brought one frame",
+      guard_released ? "yes" : "NO");
 
   capture.destroy();
   CloseHandle(frame_event);
@@ -876,7 +966,7 @@ int run_capturetest(const Options& o) {
   // "ok" needs the picture to match the screen. Over a screen that moves the two reads are
   // of different moments and it will not: the lines above then say which part held.
   const bool all_good = agrees && run.prev_changed == 0 && run.same_twice == 0 && quiet &&
-                        delivered == restarts && kept == restarts;
+                        delivered == restarts && kept == restarts && guard_ok;
   say("capturetest result: %s", all_good ? "ok" : "see the lines above");
   return exit_code::ok;
 }

@@ -77,9 +77,18 @@ How it works. Every piece below was measured before it was built:
      keyboard. Under the fast engine the NR settings are a panel of the
      lens's own, which writes the add-on's section of ReShade.ini and has
      the engine read it again, so the picture follows a value as it moves.
-     What the bar would have said goes onto a notice at the top of the
-     monitor for a few seconds. See fullscreen_rect, Lens.show_chrome,
-     Lens.say, Lens.open_panel, Lens.nav_key and Lens.show_readout.
+     The panel has a tab for each pass. A pass from the second on runs at
+     the first pass's values, or at values of its own, which go into a
+     section of the lens's own in the same file. The intensity of passes 2
+     to 4 goes into the add-on's own key for the pass, NRPass<n>Intensity,
+     and the engine runs the pass at it unless the pass is ticked to follow
+     the first, see PASS_NAMES.
+     At its top a picker loads and saves the lens's profiles, and a profile
+     tied to a program loads by itself when that program comes to the front,
+     with the switch on, see Lens.check_auto_profile. What the bar would have
+     said goes onto a notice at the top of the monitor for a few seconds. See
+     fullscreen_rect, Lens.show_chrome, Lens.say, Lens.open_panel,
+     Lens.nav_key and Lens.show_readout.
 
  10. THE TASKBAR BUTTON has a list of the lens's own on a right click, with
      three entries: the lens menu, the NR settings, and fullscreen and back.
@@ -604,6 +613,12 @@ def _write_addon_settings(n, nr=None):
     of its F6 toggle. The fast engine has no add-on in it to write that back, so
     the lens does when Neural Rendering is switched there, see Lens._nr_toggled,
     and the presenter that starts next, of either kind, finds it as it was left.
+
+    The intensity of each pass ticked Same as pass 1 is brought to the first
+    pass's after that, in the add-on's own key for the pass, see
+    _sync_tied_passes. The add-on's overlay may have moved the first pass's
+    while the ReShade engine ran, and the add-on that starts reads its keys
+    as they are.
     """
     if not STACK_DIR:
         return False
@@ -653,9 +668,10 @@ def _write_addon_settings(n, nr=None):
         with open(path + ".tmp", "w", encoding="utf-8") as fh:
             fh.writelines(out)
         os.replace(path + ".tmp", path)
-        return True
     except OSError:
         return False
+    _sync_tied_passes()
+    return True
 
 
 def _drme_in_use():
@@ -777,22 +793,20 @@ def _read_nr_passes():
     return None
 
 
-def _read_addon_section():
-    """The add-on's section of ReShade.ini as it stands, key by key, in order.
-
-    This is every setting the Home menu holds, as the add-on last wrote it
-    back, which it does within about a second of a change there.
-    """
+def _read_ini_section(section):
+    """A section of ReShade.ini as it stands, key by key, in order. section is
+    the name between the brackets, matched whatever its case."""
     values = {}
     if not STACK_DIR:
         return values
+    want = "[%s]" % section.lower()
     try:
         with open(os.path.join(STACK_DIR, "ReShade.ini"), encoding="utf-8", errors="replace") as fh:
             inside = False
             for line in fh:
                 bare = line.strip()
                 if bare.startswith("["):
-                    inside = bare.lower() == "[renodx.dlss5]"
+                    inside = bare.lower() == want
                 elif inside and "=" in bare:
                     k, v = bare.split("=", 1)
                     values[k.strip()] = v.strip()
@@ -801,19 +815,36 @@ def _read_addon_section():
     return values
 
 
-def _set_addon_values(values):
-    """Set these keys in the add-on's section of ReShade.ini and leave every
-    other byte of the file as it is: the other lines, their order and their
-    line endings. A key the section holds keeps its line and gets the new
-    value, one it does not hold is added at the section's end, and a file
-    without the section gets one at its end.
+def _read_addon_section():
+    """The add-on's section of ReShade.ini as it stands, key by key, in order.
+
+    This is every setting the Home menu holds, as the add-on last wrote it
+    back, which it does within about a second of a change there.
+    """
+    return _read_ini_section(ADDON_SECTION)
+
+
+def _read_pass_section():
+    """The lens's own section of ReShade.ini, which holds the values a pass
+    from the second on has of its own, see PASS_NAMES."""
+    return _read_ini_section(PASS_SECTION)
+
+
+def _set_ini_values(changes):
+    """Set keys in sections of ReShade.ini and leave every other byte of the
+    file as it is: the other lines, their order and their line endings.
+    changes is {section: {key: value}}. A key the section holds keeps its line
+    and gets the new value, one it does not hold is added at the section's
+    end, a value of None takes the key's line out, and a file without a
+    section gets one at its end, with the keys that have a value.
 
     This is the write behind the lens's own NR settings panel. The fast engine
-    reads the section again when it is told reload, so the file has to be whole
-    at every moment: it is written beside the real one and put in its place in
-    one step. Returns whether the file now holds the values.
+    reads the sections again when it is told reload, so the file has to be
+    whole at every moment: it is written beside the real one and put in its
+    place in one step. Returns whether the file now holds the values.
     """
-    if not STACK_DIR or not values:
+    changes = {s: v for s, v in (changes or {}).items() if v}
+    if not STACK_DIR or not changes:
         return False
     path = os.path.join(STACK_DIR, "ReShade.ini")
     try:
@@ -822,13 +853,18 @@ def _set_addon_values(values):
     except OSError:
         return False
     eol = "\r\n" if any(l.endswith("\r\n") for l in lines) or not lines else "\n"
-    want = {str(k).lower(): (str(k), str(v)) for k, v in values.items()}
-    out, inside, found, done = [], False, False, set()
+    # by the section's name in lower case: the keys wanted, by theirs, and the
+    # section's own spelling for one the file has to be given
+    want = {str(s).lower(): {str(k).lower(): (str(k), None if v is None else str(v)) for k, v in vals.items()}
+            for s, vals in changes.items()}
+    spelling = {str(s).lower(): str(s) for s in changes}
+    out, inside, found, done = [], None, set(), {s: set() for s in want}
 
-    def rest():
+    def rest(section):
         # the keys the section does not hold, after its last line and ahead of
         # the blank lines that part it from the next section
-        missing = [(k, v) for low, (k, v) in want.items() if low not in done]
+        missing = [(k, v) for low, (k, v) in want[section].items() if low not in done[section] and v is not None]
+        done[section].update(want[section])
         if not missing:
             return
         blanks = []
@@ -837,35 +873,39 @@ def _set_addon_values(values):
         if out and not out[-1].endswith(("\n", "\r")):
             out[-1] += eol
         out.extend("%s=%s%s" % (k, v, eol) for k, v in missing)
-        done.update(want)
         out.extend(blanks)
 
     for line in lines:
         bare = line.strip()
         if bare.startswith("["):
-            if inside:
-                rest()
-            inside = bare.lower() == "[renodx.dlss5]"
-            found = found or inside
-        elif inside and "=" in bare:
+            if inside in want:
+                rest(inside)
+            inside = bare[1:bare.index("]")].strip().lower() if "]" in bare else bare[1:].strip().lower()
+            found.add(inside)
+        elif inside in want and "=" in bare:
             name = bare.split("=", 1)[0].strip().lower()
-            if name in want:
+            if name in want[inside]:
+                done[inside].add(name)
+                value = want[inside][name][1]
+                if value is None:
+                    continue            # the line goes
                 # the key as the file spells it, the space it leaves after the
                 # sign, and the line's own ending
                 body = line.rstrip("\r\n")
                 key, _, old = body.partition("=")
-                out.append("%s=%s%s%s" % (key, old[:len(old) - len(old.lstrip())], want[name][1],
-                                          line[len(body):]))
-                done.add(name)
+                out.append("%s=%s%s%s" % (key, old[:len(old) - len(old.lstrip())], value, line[len(body):]))
                 continue
         out.append(line)
-    if inside:
-        rest()
-    elif not found:
+    if inside in want:
+        rest(inside)
+    for section in want:
+        if section in found or not any(v is not None for _k, v in want[section].values()):
+            continue
         if out and not out[-1].endswith(("\n", "\r")):
             out[-1] += eol
-        out.append("%s[RenoDX.DLSS5]%s" % (eol if out else "", eol))
-        rest()
+        out.append("%s[%s]%s" % (eol if out else "", spelling[section], eol))
+        inside = section
+        rest(section)
     if out == lines:
         return True
     try:
@@ -875,6 +915,23 @@ def _set_addon_values(values):
         return True
     except OSError:
         return False
+
+
+def _set_addon_values(values):
+    """Set these keys in the add-on's section of ReShade.ini and leave every
+    other byte of the file as it is, see _set_ini_values."""
+    return _set_ini_values({ADDON_SECTION: values})
+
+
+def _replace_pass_section(values):
+    """Make the lens's own section of ReShade.ini hold these values and nothing
+    else: every key it holds now and is not given goes. For a profile, which
+    carries the section whole, and an older profile carries none."""
+    if not STACK_DIR:
+        return False
+    changes = {k: None for k in _read_pass_section()}
+    changes.update({str(k): str(v) for k, v in (values or {}).items()})
+    return _set_ini_values({PASS_SECTION: changes}) if changes else True
 
 
 def _nr_text(value):
@@ -897,12 +954,198 @@ def _nr_number(values, key, default):
 # the add-on's section holds these for the install, not for a look: they are
 # kept as they are when a profile replaces the rest
 ADDON_KEEP = ("ConfigVersion", "EnableHooks")
+ADDON_SECTION = "RenoDX.DLSS5"          # the add-on's section of ReShade.ini, the first pass's values
+# The values a pass from the second on may have of its own, under the fast
+# engine, which runs one network for each pass: each of the six as the add-on's
+# section names it for the first pass, and the name the lens's own section,
+# PASS_SECTION, gives it for the others, after Pass and the pass's number, so
+# the second pass's style is Pass2Style. A pass with no key of its own for a
+# value runs at the first pass's. The add-on never reads that section, so it
+# sees no key it does not know. The intensity of passes 2 to 4 is the one value
+# the add-on has a key of its own for, NRPass2Intensity to NRPass4Intensity.
+# Their names suggest that the add-on runs those passes at them under the
+# ReShade engine and that its overlay can change them, which was not measured,
+# see docs/NOTES.md, What is not measured. The lens writes such a pass's
+# intensity into that key, the fast engine reads it and runs the pass at it,
+# and the lens's section has none for it. Such a pass ticked Same as pass 1 has
+# Pass<n>IntensityTied in the lens's section instead, with the value the lens
+# last wrote into the add-on's key, which it keeps at the first pass's
+# intensity, see _pass_writes and _tie_sync, and the fast engine runs it at the
+# first pass's whatever that key says. NRPass4Color, which the add-on keeps
+# there too, is left as the add-on wrote it: it belongs to the add-on's own
+# colour stage, which the fast engine does not have. The stack setup writes
+# ReShade.ini anew on a repair, and on an update that runs it, and keeps the
+# lens's section byte for byte, by the name LENS_SECTION in neural_stack.py.
+PASS_SECTION = "NeuralLens.Passes"
+PASS_NAMES = {"NRStyle": "Style", "NRIntensity": "Intensity", "NRLocalTone": "LocalTone",
+              "NRLocalStructure": "LocalStructure", "NRSkinStructure": "SkinStructure", "NRAutoMask": "AutoMask"}
+ADDON_PASS_INTENSITIES = 4              # NRPass2Intensity to NRPass4Intensity
+
+
+def _pass_key(n, key):
+    """The key that holds this value, one of PASS_NAMES, for pass n: the
+    add-on's own for the first pass, the lens's for the others."""
+    return key if n <= 1 else "Pass%d%s" % (n, PASS_NAMES[key])
+
+
+def _addon_pass_key(n):
+    """The add-on's own key for the intensity of pass n, 2 to 4, or None."""
+    return "NRPass%dIntensity" % n if 2 <= n <= ADDON_PASS_INTENSITIES else None
+
+
+def _tied_key(n):
+    """The lens's key that says the intensity of pass n, 2 to 4, is ticked
+    Same as pass 1, see PASS_NAMES."""
+    return "Pass%dIntensityTied" % n
+
+
+def _pass_state(n, addon=None, own=None):
+    """What pass n runs at, as the engine reads it: {key: (text, its own)} for
+    each of PASS_NAMES, the text as the file has it, and whether the pass has
+    the value of its own, as against the first pass's. addon and own are the
+    two sections as _read_addon_section and _read_pass_section give them,
+    read here when not given.
+
+    The intensity of passes 2 to 4 is the first pass's where the tie says so,
+    else the add-on's own key for the pass, whatever its value, else the
+    lens's own key, else the first pass's. Nothing is taken for a tie because
+    two numbers happen to be equal."""
+    addon = _read_addon_section() if addon is None else addon
+    own = _read_pass_section() if own is None else own
+    state = {}
+    for key, default in NR_DEFAULTS.items():
+        base_v = _nr_number(addon, key, default)
+        base = _nr_text(base_v)
+        if n <= 1:
+            state[key] = (base, True)
+            continue
+        theirs = _addon_pass_key(n) if key == "NRIntensity" else None
+        if theirs and own.get(_tied_key(n)) is not None:
+            state[key] = (base, False)
+            continue
+        v = _nr_number(addon, theirs, None) if theirs else None
+        if v is not None:
+            state[key] = (_nr_text(v), True)        # the add-on's own key, which the fast engine runs the pass at
+            continue
+        if own.get(_pass_key(n, key)) is not None:
+            state[key] = (_nr_text(_nr_number(own, _pass_key(n, key), base_v)), True)
+            continue
+        state[key] = (base, False)
+    return state
+
+
+def _pass_writes(n, key, text, state):
+    """The lines that give pass n this value as its own, or with None the
+    first pass's, as {section: {key: text or None}} for _set_ini_values, and
+    state, {m: {key: (text, own)}} as _pass_state gives each pass, brought
+    up to date with it.
+
+    The first pass's value goes into the add-on's key, and every pass that
+    runs at the first pass's value follows it, whether it runs now or not.
+    For the intensity of passes 2 to 4 that means the add-on's own key for
+    the pass and the tie, so the add-on's key holds the intensity the fast
+    engine runs the pass at. The key's name suggests that the add-on runs
+    the pass at it too, which was not measured, see PASS_NAMES. A pass from
+    the second on gets the lens's own key, or for the intensity of passes 2
+    to 4 the add-on's own key, with the value or the first pass's, and the
+    tie taken off or put on. An own intensity an older build kept in the
+    lens's section goes then."""
+    changes = {ADDON_SECTION: {}, PASS_SECTION: {}}
+    if n <= 1:
+        if text is None:
+            return changes
+        changes[ADDON_SECTION][key] = text
+        state.setdefault(1, {})[key] = (text, True)
+        for m in list(state):
+            if m >= 2 and key in state[m] and not state[m][key][1]:
+                state[m][key] = (text, False)
+                if key == "NRIntensity" and _addon_pass_key(m):
+                    changes[ADDON_SECTION][_addon_pass_key(m)] = text
+                    changes[PASS_SECTION][_tied_key(m)] = text
+        return changes
+    base = state.get(1, {}).get(key, (_nr_text(NR_DEFAULTS[key]), True))[0]
+    if key == "NRIntensity" and _addon_pass_key(n):
+        changes[ADDON_SECTION][_addon_pass_key(n)] = text if text is not None else base
+        changes[PASS_SECTION][_tied_key(n)] = None if text is not None else base
+        changes[PASS_SECTION][_pass_key(n, key)] = None
+    else:
+        changes[PASS_SECTION][_pass_key(n, key)] = text
+    state.setdefault(n, {})[key] = (text, True) if text is not None else (base, False)
+    return changes
+
+
+def _tie_sync(addon, own):
+    """What keeps each pass 2 to 4 ticked Same as pass 1 at the first pass's
+    intensity in the add-on's own key, for the two sections as they stand or
+    as a profile has them, as {section: {key: value or None}} for
+    _set_ini_values, with nothing in it where nothing is to change.
+
+    The tie holds the value the lens last wrote into the add-on's key. Where
+    the key still holds it, the pass was left alone, so the key and the tie
+    take the first pass's intensity, which the add-on's overlay may have
+    moved. Where the key holds another value, the pass was given that value
+    as its own, so the tie goes and the pass keeps it."""
+    changes = {ADDON_SECTION: {}, PASS_SECTION: {}}
+    base = _nr_text(_nr_number(addon, "NRIntensity", NR_DEFAULTS["NRIntensity"]))
+    for n in range(2, ADDON_PASS_INTENSITIES + 1):
+        if own.get(_tied_key(n)) is None:
+            continue
+        theirs = _addon_pass_key(n)
+        now, was = _nr_number(addon, theirs, None), _nr_number(own, _tied_key(n), None)
+        if now is not None and was is not None and abs(now - was) >= 0.005:
+            changes[PASS_SECTION][_tied_key(n)] = None
+            continue
+        if now is None or _nr_text(now) != base:
+            changes[ADDON_SECTION][theirs] = base
+        if was is None or _nr_text(was) != base:
+            changes[PASS_SECTION][_tied_key(n)] = base
+    return changes
+
+
+def _sync_tied_passes():
+    """_tie_sync on ReShade.ini as it stands, written. It runs before every
+    presenter starts, see _write_addon_settings, since a time on the ReShade
+    engine, whose overlay may have moved the first pass's intensity or given
+    a pass one of its own, can come before. Returns whether the file holds
+    it."""
+    changes = _tie_sync(_read_addon_section(), _read_pass_section())
+    if not any(changes.values()):
+        return True
+    return _set_ini_values(changes)
+
+
+def _profile_changes(p):
+    """The lines that make ReShade.ini what profile p says, as one change for
+    _set_ini_values. The add-on's section and the lens's own section each
+    become the profile's whole, every key the profile does not have taken
+    out, apart from ADDON_KEEP, with the ties kept at the first pass's
+    intensity, see _tie_sync. A profile with no add-on's section leaves that
+    section as it is, and one from before the passes had values of their own
+    empties the lens's."""
+    changes = {ADDON_SECTION: {}, PASS_SECTION: {}}
+    keep = {k.lower() for k in ADDON_KEEP}
+    addon = _read_addon_section()
+    if isinstance(p.get("addon"), dict):
+        new = {str(k): str(v) for k, v in p["addon"].items() if str(k).lower() not in keep}
+        low = {k.lower() for k in new}
+        changes[ADDON_SECTION] = {k: None for k in addon if k.lower() not in keep and k.lower() not in low}
+        changes[ADDON_SECTION].update(new)
+        addon = new
+    own = {str(k): str(v) for k, v in p["per_pass"].items()} if isinstance(p.get("per_pass"), dict) else {}
+    low = {k.lower() for k in own}
+    changes[PASS_SECTION] = {k: None for k in _read_pass_section() if k.lower() not in low}
+    changes[PASS_SECTION].update(own)
+    for section, vals in _tie_sync(addon, own).items():
+        changes[section].update(vals)
+    return changes
 
 
 def _replace_addon_section(values):
     """Make the add-on's section of ReShade.ini hold these values and nothing
     else, apart from ADDON_KEEP, which stay as they are. For a presenter about
-    to start, since the add-on reads its settings only then."""
+    to start, since the add-on reads its settings only then. The file is
+    written beside the real one and put in its place in one step, so a reader
+    never finds it cut short."""
     if not STACK_DIR:
         return False
     path = os.path.join(STACK_DIR, "ReShade.ini")
@@ -942,8 +1185,9 @@ def _replace_addon_section(values):
         out.append("\n[RenoDX.DLSS5]\n")
         section()
     try:
-        with open(path, "w", encoding="utf-8") as fh:
+        with open(path + ".tmp", "w", encoding="utf-8") as fh:
             fh.writelines(out)
+        os.replace(path + ".tmp", path)
     except OSError:
         return False
     return True
@@ -951,23 +1195,68 @@ def _replace_addon_section(values):
 
 # ---- profiles: named sets of everything that makes the picture, see Lens.capture_profile
 def _load_profiles():
+    """profiles.json as it was saved, less any tie to a program without a
+    class, see _drop_empty_ties. A file that is there and cannot be read as
+    profiles is kept as profiles.json.bad, so the next save, which starts
+    from none, cannot write over what is left of them. Only the read and the
+    parse judge the file, so nothing that goes wrong after them, such as a
+    log line that cannot be written, is taken for a file that cannot be read."""
     try:
         with open(PROFILES, encoding="utf-8") as fh:
             d = json.load(fh)
-        if isinstance(d, dict) and isinstance(d.get("profiles"), dict):
-            return d
-    except (OSError, ValueError):
+    except OSError:
+        return {"profiles": {}, "current": None}
+    except ValueError:
+        d = None
+    if isinstance(d, dict) and isinstance(d.get("profiles"), dict):
+        _drop_empty_ties(d)
+        return d
+    try:
+        os.replace(PROFILES, PROFILES + ".bad")
+        print("profiles.json could not be read as profiles, so it is kept as profiles.json.bad", flush=True)
+    except OSError:
         pass
     return {"profiles": {}, "current": None}
 
 
+def _drop_empty_ties(d):
+    """Take off each tie to a program that has no class, see _program, from
+    the profiles d holds. Such a tie matches no window. It is what a tie to a
+    window that was gone before its class was read would hold, and
+    Lens.profile_tie refuses one. profiles.json is saved without them, so the
+    log names each profile that lost one once. A line that cannot be written
+    is left out, and the profiles load all the same. Returns their names."""
+    lost = sorted((name for name, p in d["profiles"].items()
+                   if isinstance(p, dict) and "program" in p and _program(p["program"]) is None), key=str.lower)
+    if not lost:
+        return lost
+    for name in lost:
+        d["profiles"][name].pop("program")
+    saved = _save_profiles(d)
+    for name in lost:
+        # a line can fail on a full disk, or on output whose code page has no
+        # letter for a character of the name, and then only that line is lost
+        try:
+            print('profile "%s" had a tie to a program with no class, which no window can match, so it is untied%s'
+                  % (name, "" if saved else ", for this session only, since profiles.json could not be written"),
+                  flush=True)
+        except (OSError, ValueError):
+            pass
+    return lost
+
+
 def _save_profiles(d):
+    """Write the profiles beside profiles.json and put the file in its place
+    in one step, so a write that is cut off leaves the old file whole.
+    Returns whether the file was written."""
     try:
         os.makedirs(DATA_DIR, exist_ok=True)
-        with open(PROFILES, "w", encoding="utf-8") as fh:
+        with open(PROFILES + ".tmp", "w", encoding="utf-8") as fh:
             json.dump(d, fh, indent=1)
+        os.replace(PROFILES + ".tmp", PROFILES)
     except OSError:
-        pass
+        return False
+    return True
 
 
 # ---- the Cost Scaler proxy
@@ -1099,7 +1388,7 @@ def _write_proxy(enabled, scale):
 # process's id, so two lenses at once, one per monitor say, never pick up each
 # other's presenter.
 TITLE = "LensNR %d" % os.getpid()
-__version__ = "0.6.0"        # beta; see CHANGELOG.md
+__version__ = "0.6.1"        # beta; see CHANGELOG.md
 
 DATA_DIR = (os.environ.get("NEURAL_LENS_DATA") or _INI.get("data_dir")
             or os.path.join(_script_dir(), "data"))
@@ -1205,7 +1494,7 @@ BAR = 34
 # the rest a strip the mouse can catch. The top edge is the bar.
 LINE, EDGE = 2, 8
 CORNER = 16                  # how far from a grip's end still counts as the corner
-MIN_W, MIN_H = 240, 120      # the smallest lens a drag can make
+MIN_W, MIN_H = 240, 120      # the smallest lens a drag makes, or as wide as the bar's controls, see Lens.min_width
 # Attached to a window, the chrome is a two pixel line around the region and
 # this tab on its top edge, the only part of the lens that takes the mouse
 TAB_W, TAB_H = 28, 14
@@ -1448,6 +1737,71 @@ NR_SLIDERS = (
     ("NRLocalStructure", "Local structure", 0.0, 2.0, 1.0),
     ("NRSkinStructure", "Skin structure", 0.0, 2.0, -1.0),
 )
+# the six values a pass has, each with the model's own default, see PASS_NAMES
+NR_DEFAULTS = {"NRStyle": 0.0, "NRIntensity": 1.0, "NRLocalTone": 1.0, "NRLocalStructure": 1.0,
+               "NRSkinStructure": -1.0, "NRAutoMask": 0.0}
+# Left and Right move a slider on the panel by a hundredth a press, so a single
+# press is always the finest step. A key held down moves it further with each
+# repeat the longer it is held, which at Windows' default repeat rate crosses
+# the whole range in about three seconds. A hold is a run of moves of one
+# slider of one pass the same way, each within PANEL_HOLD_GAP seconds of the
+# one before with the key down all the while, as a held key's repeats come.
+# Each step of PANEL_HOLD_STEPS holds from its number of seconds into the hold
+# on, and anything else, a pause or the key let go included, starts the next
+# move at a hundredth again. See Lens._panel_step and Lens._panel_key_up.
+PANEL_HOLD_GAP = 0.15
+PANEL_HOLD_STEPS = ((0.0, 0.01), (0.6, 0.02), (1.5, 0.05))
+# The button to the right of each slider's number puts the slider at this
+# value. Its glyph is an anticlockwise arrow, which Segoe UI Symbol has and
+# Segoe UI does not. See Lens._panel_reset.
+PANEL_RESET = 1.0
+RESET_GLYPH, RESET_FONT = "↺", ("Segoe UI Symbol", 12)
+# Load a profile by itself when the program it is tied to comes to the front,
+# see Lens.check_auto_profile. Off unless the ini says auto_profile = 1.
+AUTO_PROFILE = str(_INI.get("auto_profile", "0")).strip().lower() in ("1", "yes", "on", "true")
+
+
+def _set_auto_profile(on):
+    """Change the switch, from Settings or the NR settings panel, and record it
+    in the ini, where the default, off, is left unwritten."""
+    global AUTO_PROFILE
+    AUTO_PROFILE = bool(on)
+    _save_ini("auto_profile", "1" if on else None)
+
+
+def _short_title(text, most=40):
+    """A window's title as the panel, its list, the notice and Settings show
+    it, whole up to most letters, else cut there and ended with three dots,
+    so a long one widens nothing. The profile and the match keep it whole."""
+    text = str(text or "")
+    return text if len(text) <= most else text[:most - 3].rstrip() + "..."
+
+
+def _program(names):
+    """A program as the lens knows one, (title, class): the window in front as
+    Lens.front_names reads it, or the tie a profile keeps, a dict with the
+    title and the class. A program is matched by its window's title and class
+    together, and a window with no class cannot be matched, so anything
+    without a class is None: no window, a window whose class could not be
+    read, or a tie saved without one. A window with a class and an empty title
+    is a program all the same."""
+    if isinstance(names, dict):
+        names = (names.get("title"), names.get("class"))
+    if not isinstance(names, (tuple, list)) or len(names) != 2:
+        return None
+    title, cls = names
+    if not isinstance(cls, str) or not cls:
+        return None
+    return (title if isinstance(title, str) else ""), cls
+
+
+def _program_name(names):
+    """A program's name as the panel, its list and Settings show it: its
+    window's title, or its class where the title is empty, so that no program
+    is shown without a name. None for no program, see _program."""
+    prog = _program(names)
+    return None if prog is None else (prog[0] or prog[1])
+
 
 # Keep the picture ready while nothing changes: the presenter presents thirty
 # times a second over a still instead of falling to four after ten seconds, so
@@ -1506,6 +1860,39 @@ def _set_fs_behind_warn(on):
     global FS_BEHIND_WARN
     FS_BEHIND_WARN = bool(on)
     _save_ini("fs_behind_warn", None if FS_BEHIND_WARN else "0")
+
+
+# Said when Windows HDR is on for the lens's monitor while the ReShade engine
+# draws the picture, see Lens.check_hdr. That engine takes 8-bit frames of the
+# screen, which under HDR Windows clips at 80 nits, 1.0 in scRGB, so the
+# picture comes out washed out. The remedy names the fast engine only where the
+# lens can offer it (HDR_SAID_FAST), and not where that engine is absent or
+# ruled out (HDR_SAID_ONLY). Nothing is said while the ReShade engine stands in
+# for the fast engine, which comes back by itself. The whole warning, with the
+# way to switch it off, goes on the notice of a fullscreen, attached or folded
+# lens, which wraps it. The bar of a windowed lens is narrower than the
+# sentence, so it carries the longest of HDR_BARS that fits beside the bar's
+# controls, see Lens.hdr_bar_words, and each of them points to the Settings
+# page that has the warning and the state. Settings, Picture switches it off,
+# hdr_warn = 0, and on again, the default, which is left unwritten.
+HDR_SAID_ONLY = "Windows HDR is on for this monitor, so the picture comes out washed out. Switch HDR off for the monitor."
+HDR_SAID_FAST = ("Windows HDR is on for this monitor, so the picture comes out washed out. Switch HDR off for the "
+                 "monitor, or use fullscreen on the fast engine.")
+HDR_SETTINGS = " This warning can be switched off in Settings, Picture."
+HDR_SAID = HDR_SAID_FAST
+HDR_WORDS = HDR_SAID_FAST + HDR_SETTINGS
+HDR_BAR = "Windows HDR is on for this monitor. See Settings, Picture."
+HDR_BARS = (HDR_BAR, "Windows HDR is on. See Settings, Picture.", "HDR is on. See Settings, Picture.")
+HDR_WARN = str(_INI.get("hdr_warn", "1")).strip().lower() not in ("0", "no", "off", "false")
+
+
+def _set_hdr_warn(on):
+    """Switch the warning that Windows HDR is on for the lens's monitor on or
+    off, from Settings, and record it in the ini, where on is the default and
+    is left unwritten. It applies at once, see Lens.check_hdr."""
+    global HDR_WARN
+    HDR_WARN = bool(on)
+    _save_ini("hdr_warn", None if HDR_WARN else "0")
 
 
 def _either(words):
@@ -2369,6 +2756,95 @@ def monitor_hz(hwnd):
     return None
 
 
+def monitor_hdr(hwnd):
+    """Whether Windows HDR is on for the monitor a window is on, or else the one
+    nearest to it, as (on, SDR white in nits), or None where it cannot be read.
+    It asks DisplayConfig for the active path whose source device is the
+    monitor's: from Windows 11 24H2 the active colour mode, which tells HDR
+    from Auto Colour Management, and before that whether advanced colour is on
+    and not wide colour enforced by Windows, and then the SDR white level, in
+    thousandths of 80 nits. The same reading the fast engine makes, which it
+    says in its "hdr:" note. Through _u32, as monitor_hz."""
+    class MONITORINFOEXW(ctypes.Structure):
+        _fields_ = [("cbSize", ctypes.c_ulong), ("rcMonitor", w.RECT), ("rcWork", w.RECT),
+                    ("dwFlags", ctypes.c_ulong), ("szDevice", ctypes.c_wchar * 32)]
+
+    class LUID(ctypes.Structure):
+        _fields_ = [("LowPart", w.DWORD), ("HighPart", w.LONG)]
+
+    class PATH_SOURCE(ctypes.Structure):
+        _fields_ = [("adapterId", LUID), ("id", w.UINT), ("modeInfoIdx", w.UINT), ("statusFlags", w.UINT)]
+
+    class RATIONAL(ctypes.Structure):
+        _fields_ = [("Numerator", w.UINT), ("Denominator", w.UINT)]
+
+    class PATH_TARGET(ctypes.Structure):
+        _fields_ = [("adapterId", LUID), ("id", w.UINT), ("modeInfoIdx", w.UINT), ("outputTechnology", w.UINT),
+                    ("rotation", w.UINT), ("scaling", w.UINT), ("refreshRate", RATIONAL),
+                    ("scanLineOrdering", w.UINT), ("targetAvailable", w.BOOL), ("statusFlags", w.UINT)]
+
+    class PATH(ctypes.Structure):
+        _fields_ = [("sourceInfo", PATH_SOURCE), ("targetInfo", PATH_TARGET), ("flags", w.UINT)]
+
+    class MODE(ctypes.Structure):
+        _fields_ = [("infoType", w.UINT), ("id", w.UINT), ("adapterId", LUID), ("blob", ctypes.c_byte * 48)]
+
+    class HEADER(ctypes.Structure):
+        _fields_ = [("type", w.UINT), ("size", w.UINT), ("adapterId", LUID), ("id", w.UINT)]
+
+    class SOURCE_NAME(ctypes.Structure):
+        _fields_ = [("header", HEADER), ("viewGdiDeviceName", ctypes.c_wchar * 32)]
+
+    class COLOUR_1(ctypes.Structure):
+        _fields_ = [("header", HEADER), ("value", w.UINT), ("colorEncoding", w.UINT), ("bitsPerColorChannel", w.UINT)]
+
+    class COLOUR_2(ctypes.Structure):
+        _fields_ = [("header", HEADER), ("value", w.UINT), ("colorEncoding", w.UINT), ("bitsPerColorChannel", w.UINT),
+                    ("activeColorMode", w.UINT)]
+
+    class SDR_WHITE(ctypes.Structure):
+        _fields_ = [("header", HEADER), ("SDRWhiteLevel", w.ULONG)]
+
+    def ask(s, kind, adapter, ident):
+        s.header.type, s.header.size = kind, ctypes.sizeof(s)
+        s.header.adapterId, s.header.id = adapter, ident
+        return _u32.DisplayConfigGetDeviceInfo(ctypes.byref(s))
+
+    try:
+        mon = _u32.MonitorFromWindow(hwnd, 2)          # MONITOR_DEFAULTTONEAREST
+        mi = MONITORINFOEXW()
+        mi.cbSize = ctypes.sizeof(MONITORINFOEXW)
+        if not mon or not _u32.GetMonitorInfoW(ctypes.c_void_p(mon), ctypes.byref(mi)):
+            return None
+        n_p, n_m = w.UINT(), w.UINT()
+        if _u32.GetDisplayConfigBufferSizes(2, ctypes.byref(n_p), ctypes.byref(n_m)):     # QDC_ONLY_ACTIVE_PATHS
+            return None
+        paths, modes = (PATH * n_p.value)(), (MODE * n_m.value)()
+        if _u32.QueryDisplayConfig(2, ctypes.byref(n_p), paths, ctypes.byref(n_m), modes, None):
+            return None
+        for p in list(paths)[:n_p.value]:
+            name = SOURCE_NAME()
+            if ask(name, 1, p.sourceInfo.adapterId, p.sourceInfo.id):                       # GET_SOURCE_NAME
+                continue
+            if name.viewGdiDeviceName.lower() != mi.szDevice.lower():
+                continue
+            two = COLOUR_2()
+            if ask(two, 15, p.targetInfo.adapterId, p.targetInfo.id) == 0:                  # GET_ADVANCED_COLOR_INFO_2
+                on = two.activeColorMode == 2                                               # HDR, 1 is wide colour
+            else:
+                one = COLOUR_1()
+                if ask(one, 9, p.targetInfo.adapterId, p.targetInfo.id):                    # GET_ADVANCED_COLOR_INFO
+                    return None
+                on = bool(one.value & 2) and not bool(one.value & 4)      # advancedColorEnabled, not wideColorEnforced
+            white = SDR_WHITE()
+            nits = (white.SDRWhiteLevel * 80.0 / 1000.0
+                    if ask(white, 11, p.targetInfo.adapterId, p.targetInfo.id) == 0 else 0.0)  # GET_SDR_WHITE_LEVEL
+            return on, nits
+    except Exception:
+        pass
+    return None
+
+
 def monitor_of(x, y):
     """The monitor containing the point, as (index from 1 in enumeration order,
     left, top). Windows Graphics Capture numbers monitors the same way."""
@@ -2864,6 +3340,18 @@ class Lens:
         self.panel_row = None       # the one the arrow keys are on
         self.panel_said = {}        # {key: (value, how, timer)}: a change on it still to be logged
         self.panel_pass_at = 0.0    # when the arrow keys last changed the pass count on it
+        self.panel_profile_at = 0.0     # and when they last loaded a profile from it
+        self.panel_hold = None      # the arrow keys' run of moves on one slider, see _panel_step
+        self.panel_seen = None      # the window in front when a held arrow key was last read down, see _panel_key_up
+        self.panel_pass = 1         # the pass whose values its controls show, see panel_show_pass
+        self.panel_state = {}       # {n: {key: (text, own)}}: what each pass runs at, see _pass_state
+        self.panel_tabs = []        # the tab for each pass, in order
+        self.front_program = None   # (title, class) of the window of another program last in
+                                    # front, for a profile tied to it, see check_auto_profile.
+                                    # Never without a class, see front_names
+        self.fg_auto = None         # the window of the program watch_front last saw in front
+        self.auto_front = None      # and that program, by the title and class it had then
+        self.fg_tied = None         # the last title and class that window showed with a profile tied to it
         self.key_wait = False       # a hotkey's keys are waited for, see tweak_by_key
         self.fs_origin = (x, y)     # fullscreen: where the picture is, for good
         self.frames = 0             # frames the presenter has captured
@@ -2922,6 +3410,11 @@ class Lens:
         self.summary_at = time.perf_counter()               # when that summary was, see summarise
         self.behind_run = 0         # summaries in a row with the lens behind, see check_behind
         self.behind_next = 0.0      # when its warning may come again
+        self.hdr_state = None       # Windows HDR for the lens's monitor as last read, see check_hdr
+        self.hdr_up = False         # the HDR warning applies as things are, and has been said
+        self.hdr_full = None        # whether the lens was fullscreen when it was said
+        self.hdr_words = None       # the words it was said with, HDR_SAID_FAST or HDR_SAID_ONLY
+        self.hdr_next = 0.0         # when the state is read again
         self.commands = None        # the listener for --do, from when the picture is up, see Commands
         self.hotkeys = Hotkeys()
         self.sync_hotkeys()
@@ -2956,14 +3449,17 @@ class Lens:
         self.menu_btn = tk.Label(bar, text=" \u2630 ", bg=BG, fg=FG, font=("Segoe UI", 12))
         self.menu_btn.pack(side="left", padx=(6, 0))
         self.menu_btn.bind("<Button-1>", self.menu)
-        tk.Label(bar, text="  DLSS 5 Neural Lens", bg=BG, fg=ACCENT,
-                 font=("Segoe UI", 10, "bold")).pack(side="left")
+        # the title, the readout and the profile selector go onto the bar after
+        # its buttons, see below. The first two start at their left end, so
+        # that cut short they still read from the start. The title gives way
+        # to the HDR warning's sentence where the bar has no room for both,
+        # see hdr_bar_words
+        title = self.bar_title = tk.Label(bar, text="  DLSS 5 Neural Lens", bg=BG, fg=ACCENT,
+                                          font=("Segoe UI", 10, "bold"), anchor="w")
         self.info = tk.Label(bar, text="%d x %d" % (cw, ch), bg=BG, fg=DIM,
-                             font=("Consolas", 9))
-        self.info.pack(side="left", padx=10)
+                             font=("Consolas", 9), anchor="w")
         # the profile selector: the name of the profile in use, or Profile
         self.prof_btn = tk.Label(bar, text="▾ Profile", bg=BG, fg=DIM, font=("Segoe UI", 9), padx=4)
-        self.prof_btn.pack(side="left")
         self.prof_btn.bind("<Button-1>", lambda e: self.profile_menu())
         self.prof_btn.bind("<Enter>", lambda e: self.prof_btn.config(bg=HOVER))
         self.prof_btn.bind("<Leave>", lambda e: self.prof_btn.config(bg=BG))
@@ -2978,7 +3474,6 @@ class Lens:
         self.style_btn.bind("<Enter>", lambda e: self.style_btn.config(bg=HOVER))
         self.style_btn.bind("<Leave>", lambda e: self.style_btn.config(bg=BG))
         self.intensity_lbl = tk.Label(bar, text="intensity 1.00", bg=BG, fg=DIM, font=("Consolas", 9), padx=4)
-        self.show_bar_mirrors()
 
         # the caption buttons, right to left as on every window: close,
         # maximise or restore, minimise. They sit on a shade of their own, so
@@ -3024,6 +3519,17 @@ class Lens:
             b.bind("<Enter>", lambda e, b=b: b.config(bg=HOVER))
             b.bind("<Leave>", lambda e, b=b: b.config(bg=BG))
 
+        # Tk's packer hands out the bar's room in the order things went onto it,
+        # and leaves out whatever comes after the room is used up. So the words
+        # go on last: a lens too narrow for all of it cuts its title, its readout
+        # and the profile selector short before any of its buttons. Where all of
+        # it fits, the bar looks the same either way, since each side keeps its
+        # own order
+        title.pack(side="left")
+        self.info.pack(side="left", padx=10)
+        self.prof_btn.pack(side="left")
+        self.show_bar_mirrors()
+
         # the frame the lens is resized by: a strip down each side and one along
         # the bottom, inside the border's line. Which way a drag on one resizes
         # depends on where it starts, see _grip_zone.
@@ -3045,6 +3551,10 @@ class Lens:
                 wdg.bind("<ButtonPress-1>", self.down)
                 wdg.bind("<B1-Motion>", self.move)
                 wdg.bind("<ButtonRelease-1>", self.up)
+        # a lens saved narrower than its bar's controls, which a lens before
+        # 0.6.1 could be, opens as wide as they are, see min_width
+        if not fullscreen and self.cw < self.min_width():
+            x, y, self.cw, self.ch = fit_rect(x, y, self.min_width(), self.ch)
         self.layout_chrome(x, y)
         self.chrome = u.GetParent(t.winfo_id()) or t.winfo_id()
         # never take foreground: the lens is a tool window floating over whatever
@@ -3495,6 +4005,10 @@ class Lens:
                 self.sync_hotkeys()     # a dialog of the lens's own that came in front takes the keys, see nav_wanted
         except Exception:
             pass
+        try:
+            self.watch_front()
+        except Exception:
+            pass
         if not self.minimized and self.attach is None:
             try:
                 self.keep_chrome_on_top()
@@ -3503,6 +4017,10 @@ class Lens:
                 pass
         try:
             self.watch_layout()
+        except Exception:
+            pass
+        try:
+            self.check_hdr()
         except Exception:
             pass
         if not self.closing:
@@ -4251,9 +4769,19 @@ class Lens:
 
     def menu_anchor(self):
         """Where the menu opens from: (x, top, bottom) of the bar, the tab, or
-        the control that asked for it. A fullscreen lens has none of them in
-        view, so its menu opens at the pointer when that is on the lens's
-        monitor, and else at that monitor's top left corner."""
+        the control that asked for it while that control is in view, such as
+        the NR settings panel's profile picker. A fullscreen lens has no bar
+        and no tab in view, so its menu opens at the pointer when that is on
+        the lens's monitor, and else at that monitor's top left corner. So
+        does a list asked for by a control of the bar, which a fullscreen lens
+        has put away where it last was."""
+        wdg = self.anchor_widget
+        if wdg is not None:
+            try:
+                if wdg.winfo_viewable():
+                    return wdg.winfo_rootx() - 6, wdg.winfo_rooty(), wdg.winfo_rooty() + wdg.winfo_height()
+            except Exception:
+                pass
         if self.fullscreen:
             x, y = self.inner()
             mx, my, mw, mh = monitor_rect(x + self.cw // 2, y + self.ch // 2)
@@ -4261,12 +4789,6 @@ class Lens:
             if mx <= px < mx + mw and my <= py < my + mh:
                 return px - 6, py, py
             return mx - 6, my, my
-        wdg = self.anchor_widget
-        if wdg is not None:
-            try:
-                return wdg.winfo_rootx() - 6, wdg.winfo_rooty(), wdg.winfo_rooty() + wdg.winfo_height()
-            except Exception:
-                pass
         if (self.attach is not None or self.folded) and self.tab is not None:
             try:
                 tx, ty = self.tab.winfo_rootx(), self.tab.winfo_rooty()
@@ -4277,10 +4799,12 @@ class Lens:
 
     def menu_widgets(self):
         """The controls whose clicks the menu leaves alone: they toggle it themselves.
-        A fullscreen lens has none of them in view."""
+        A fullscreen lens has none of them in view but the NR settings panel's
+        profile picker, while the panel is open."""
+        picker = [self.panel_ui["profile"]] if self.panel is not None and "profile" in self.panel_ui else []
         if self.fullscreen:
-            return []
-        return [self.menu_btn, self.prof_btn] + ([self.tab] if self.tab is not None else [])
+            return picker
+        return [self.menu_btn, self.prof_btn] + ([self.tab] if self.tab is not None else []) + picker
 
     # ---- updates
     def check_updates(self, quiet, how=None):
@@ -4428,6 +4952,7 @@ class Lens:
             # restart is about to end, as none does during a rebuild
             while self.nr_wait is None and not self.hotkeys.fired.empty():
                 self.hotkey_action(self.hotkeys.fired.get_nowait())
+            self._panel_key_up()        # a hold of Left or Right on a slider ends once its key is up
             self.poll_commands()
         except Exception:
             pass
@@ -4943,12 +5468,16 @@ class Lens:
     # ---- profiles
     # A profile is everything that makes the picture, under a name: the windowed
     # place and size, fullscreen, the pass count, the Cost Scaler rule, the
-    # motion detail, ready, the frame rate limit, what the title bar shows, and
-    # the add-on's whole section of ReShade.ini,
-    # which is every setting the Home menu holds. Applying one writes all of
-    # that and restarts the picture, since the add-on reads its settings only
-    # when its process starts. The selector on the bar switches; Settings
-    # renames and deletes.
+    # motion detail, ready, the frame rate limit, what the title bar shows, the
+    # add-on's whole section of ReShade.ini, which is every setting the Home
+    # menu holds, the lens's own section with the values the passes have of
+    # their own, the quality step, and the program it is tied to, if any.
+    # Applying one writes all of that. A fullscreen lens on the fast engine
+    # takes a fullscreen profile at its pass count as it runs, and every other
+    # profile restarts the picture, since the add-on reads its settings only
+    # when its process starts. The selector on the bar and the picker on the NR
+    # settings panel switch profiles, and Settings renames, deletes and ties
+    # them.
     def capture_profile(self):
         if self.attach is not None:
             cw, ch, x, y = self.attach["saved"]
@@ -4963,12 +5492,222 @@ class Lens:
             x, y = self.inner()
             cw, ch = self.cw, self.ch
         addon = {k: v for k, v in _read_addon_section().items() if k not in ADDON_KEEP}
+        # the values the passes from the second on have of their own, the
+        # lens's own section whole, and the quality step in force
         return {"width": cw, "height": ch, "x": x, "y": y, "fullscreen": bool(self.fullscreen),
                 "passes": self.passes, "cost_scaler": COST_SCALER, "ready": bool(self.ready),
                 "max_fps": int(self.max_fps), "motion_detail": self.motion_detail,
                 "readout": self.readout, "latency": bool(self.latency_on),
                 "title_size": bool(self.show_size), "title_style": bool(self.show_style),
-                "title_intensity": bool(self.show_intensity), "addon": addon}
+                "title_intensity": bool(self.show_intensity), "addon": addon,
+                "per_pass": _read_pass_section(), "quality": int(self.quality_now())}
+
+    def profile_same(self, p):
+        """Whether the lens is what this profile says, in what the bar, Settings
+        and the NR settings panel hold: the lens's own settings, and the values
+        of the network for every pass the lens can run, as the file has them
+        against the profile's, number by number, the quality step too."""
+        try:
+            same = (p.get("passes") == self.passes and p.get("cost_scaler") == COST_SCALER
+                    and bool(p.get("ready")) == self.ready and p.get("readout") == self.readout
+                    and int(p.get("max_fps", self.max_fps) or 0) == int(self.max_fps)
+                    and p.get("motion_detail", self.motion_detail) == self.motion_detail
+                    and bool(p.get("latency")) == self.latency_on and bool(p.get("fullscreen")) == self.fullscreen
+                    and bool(p.get("title_size", True)) == bool(self.show_size)
+                    and bool(p.get("title_style", False)) == bool(self.show_style)
+                    and bool(p.get("title_intensity", False)) == bool(self.show_intensity))
+            if not same:
+                return False
+            if "quality" in p and int(p["quality"]) != self.quality_now():
+                return False
+            addon, own = _read_addon_section(), _read_pass_section()
+            theirs_addon = p.get("addon") if isinstance(p.get("addon"), dict) else {}
+            theirs_own = p.get("per_pass") if isinstance(p.get("per_pass"), dict) else {}
+            for n in range(1, _pass_limit() + 1):
+                now, then = _pass_state(n, addon, own), _pass_state(n, theirs_addon, theirs_own)
+                for key in PASS_NAMES:
+                    if now[key] != then[key]:
+                        return False
+            return True
+        except Exception:
+            return False
+
+    def profile_label(self):
+        """The profile's name as the bar and the panel show it, and its colour:
+        amber with a star once the lens no longer matches it."""
+        name = self.profile
+        if not name or name not in self.profiles["profiles"]:
+            return "▾ Profile", DIM
+        same = self.profile_same(self.profiles["profiles"][name])
+        return "▾ %s%s" % (name, "" if same else "*"), ACCENT if same else WARN
+
+    # the windows of Windows itself that come to the front on the way to a
+    # program, and never are one: the desktop, the taskbar, and the task
+    # switcher of Alt+Tab and Task View with the window that stands in while a
+    # program comes up
+    SHELL_CLASSES = ("Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd", "XamlExplorerHostIslandWindow",
+                     "MultitaskingViewFrame", "TaskSwitcherWnd", "ForegroundStaging")
+
+    def front_names(self, fg=None):
+        """The title and the class of the window in front, or of fg, as the
+        plain window calls give them: GetWindowTextW reads the caption Windows
+        keeps for a window of another program and sends it nothing, and
+        GetClassNameW the class. None for no window, one of the lens's own,
+        the desktop, the taskbar or the task switcher, see SHELL_CLASSES, and
+        for a window whose class cannot be read, as one that is gone by the
+        time it is read, since a program is known by its class, see _program.
+        The title is read first, so a window that goes between the two reads
+        counts for nothing too, and not as a program with no title. A window
+        with a class and an empty title is a program, matched by its class
+        and the empty title."""
+        if fg is None:
+            fg = u.GetForegroundWindow()
+        if not fg or self.own_foreground(fg):
+            return None
+        title = ctypes.create_unicode_buffer(512)
+        u.GetWindowTextW(fg, title, 512)
+        cls = ctypes.create_unicode_buffer(256)
+        if not u.GetClassNameW(fg, cls, 256) or not cls.value or cls.value in self.SHELL_CLASSES:
+            return None
+        return title.value, cls.value
+
+    def profile_for(self, names):
+        """The profile tied to a program with this title and class, or None.
+        A tie without a class counts for nothing, nor do names without one,
+        see _program. Should more than one be, as a profiles.json from before
+        a tie took the others off can have it, the one in use stays, else the
+        first by name."""
+        prog = _program(names)
+        if prog is None:
+            return None
+        tied = [name for name in sorted(self.profiles["profiles"], key=str.lower)
+                if isinstance(self.profiles["profiles"][name], dict)
+                and _program(self.profiles["profiles"][name].get("program")) == prog]
+        if not tied:
+            return None
+        return self.profile if self.profile in tied else tied[0]
+
+    def profile_tie(self, name, names=None, how=None):
+        """Tie this profile to the program in front, or to names, (title,
+        class), where given, so that check_auto_profile loads it when that
+        program comes to the front. A program has one profile, so one tied to
+        it before is untied. Names without a class are no program, see
+        _program, and tie nothing, since such a tie would match no window.
+        how is the way it was asked, for the log. Returns the names tied, or
+        None where no program is in front or none could be read."""
+        names = names or self.front_program
+        if name not in self.profiles["profiles"] or not names:
+            if how:
+                self.act('profile "%s" not tied, no program in front (%s)' % (name, how))
+            return None
+        prog = _program(names)
+        if prog is None:
+            if how:
+                self.act('profile "%s" not tied, no program could be read (%s)' % (name, how))
+            else:
+                print('profile "%s" not tied, no program could be read' % name, flush=True)
+            return None
+        shown = _program_name(prog)
+        for other, p in sorted(self.profiles["profiles"].items()):
+            if other != name and isinstance(p, dict) and _program(p.get("program")) == prog:
+                p.pop("program")
+                print('profile %r untied from the program "%s", which profile %r is tied to now'
+                      % (other, shown, name), flush=True)
+        self.profiles["profiles"][name]["program"] = {"title": prog[0], "class": prog[1]}
+        _save_profiles(self.profiles)
+        if how:
+            self.act('profile "%s" tied to "%s" (%s)' % (name, shown, how))
+        print('profile %r tied to the program "%s", class %s' % (name, prog[0], prog[1]), flush=True)
+        self.sync_panel()
+        return prog
+
+    def profile_untie(self, name, how=None):
+        """Take the tie off this profile. how is the way it was asked, for the log."""
+        p = self.profiles["profiles"].get(name)
+        if not p or "program" not in p:
+            return
+        prog = p.pop("program")
+        _save_profiles(self.profiles)
+        if how:
+            self.act('profile "%s" untied from "%s" (%s)' % (name, _program_name(prog) or "", how))
+        print("profile %r untied" % name, flush=True)
+        self.sync_panel()
+
+    def front_window(self):
+        """The window in front, as Windows gives it. In one place, so that a
+        test can stand a window of its own in for it."""
+        return u.GetForegroundWindow()
+
+    def watch_front(self):
+        """The window in front, looked at five times a second with the rest of
+        watch_filter. Its title and class are read each time, see front_names,
+        and kept as the program last in front, which a profile is tied to. The
+        program counts, not the window, and each time another program comes to
+        the front, check_auto_profile has a look at it. A window that stays in
+        front and takes another title, as a game's window can a moment after
+        it comes up, is the program of that title from then on, looked at the
+        same way. A title a profile is tied to is looked at when the window
+        shows it first or after another such title, so a title that goes back
+        and forth with untied ones loads nothing again, and one tied title
+        after another loads each one's profile. No list of the titles shown
+        is kept, so a title that never settles, with a counter in it, costs
+        nothing. The lens's own windows, the desktop, the taskbar, a window
+        whose class cannot be read and no window at all count for nothing, so
+        a program that comes back from a dialog of the lens's own, or from the
+        desktop, has not come to the front anew. A lens that is minimised or
+        replacing its picture looks at nothing, and the window in front is
+        judged once it is back, against the program in front before. In a
+        window and fullscreen alike."""
+        if self.closing or self.minimized or self.rebuilding:
+            return
+        fg = self.front_window()
+        names = self.front_names(fg)
+        if names is None:
+            return
+        if fg != self.fg_auto:
+            self.fg_auto, self.fg_tied = fg, None
+        self.front_program = names
+        came = names != self.auto_front
+        self.auto_front = names
+        if self.profile_for(names) is None or names == self.fg_tied:
+            return
+        self.fg_tied = names
+        if came:
+            self.check_auto_profile(fg, names)
+
+    def check_auto_profile(self, fg, names=None):
+        """A program has come to the front. With the switch on, see
+        AUTO_PROFILE, and a profile tied to it that is not the one in use,
+        load that profile and say so. fg is its window and names its title and
+        class, read here where not given, see front_names. Nothing for a lens
+        that is minimised, closing or replacing its picture."""
+        if names is None:
+            names = self.front_names(fg)
+            if names is not None:
+                self.front_program = names
+        if not AUTO_PROFILE or names is None or self.minimized or self.closing or self.rebuilding:
+            return
+        name = self.profile_for(names)
+        if name is None or name == self.profile:
+            return
+        self.act('profile "%s" loaded for the program in front, "%s" (auto)' % (name, _program_name(names)))
+        if self.apply_profile(name):
+            self.say('Profile "%s" loaded for %s.' % (name, _short_title(names[0]) or "the program in front"),
+                     FG, 5.0)
+
+    def auto_profile_on(self):
+        """The auto-load switch has just been turned on, so the program in
+        front is looked at now. Where none is, as while a dialog of the lens's
+        own is in front, the next one to come to the front is, whichever it
+        is, see watch_front. The titles the window in front showed while the
+        switch was off are looked at again when it shows them."""
+        self.auto_front = None
+        self.fg_tied = None
+        fg = self.front_window()
+        names = self.front_names(fg)
+        if names is not None:
+            self.front_program = self.auto_front = names
+            self.check_auto_profile(fg, names)
 
     def show_bar_mirrors(self):
         """Put the Home menu's style and intensity on the bar, or take them off,
@@ -5055,7 +5794,11 @@ class Lens:
             return
         if how:
             self.act('profile "%s" saved (%s)' % (name, how))
-        self.profiles["profiles"][name] = self.capture_profile()
+        p = self.capture_profile()
+        old = self.profiles["profiles"].get(name)
+        if isinstance(old, dict) and _program(old.get("program")) is not None:
+            p["program"] = old["program"]       # the program it is tied to stays tied
+        self.profiles["profiles"][name] = p
         self.profiles["current"] = self.profile = name
         _save_profiles(self.profiles)
         print("profile %r saved" % name, flush=True)
@@ -5126,18 +5869,48 @@ class Lens:
 
     def apply_profile(self, name, how=None):
         """Make the lens what this profile says: the settings, the add-on's
-        section, and the picture restarted at the profile's place, size and
-        pass count. Attached, the target keeps the place and size. how is the
-        way the person at the lens asked, for the log."""
+        section, the values the passes have of their own, the quality step,
+        Neural Rendering on or off, and the picture restarted at the profile's
+        place, size and pass count. A fullscreen lens on the fast engine takes
+        a fullscreen profile at the same pass count as it runs, with no
+        restart. Attached, the target keeps the place and size. how is the way
+        the person at the lens asked, for the log.
+
+        ReShade.ini is written first, in one write. Should the file not take
+        the profile, nothing of it is loaded, and the notice says so. Returns
+        whether the profile was loaded."""
         p = self.profiles["profiles"].get(name)
         if p is None or self.closing or self.rebuilding or self.rs is not None:
-            return
+            return False
         if how:
             self.act('profile "%s" applied (%s)' % (name, how))
+        # a change made on the NR settings panel that waits for its write goes.
+        # The profile replaces both sections whole, and written after it, the
+        # change would put a value of before back, see _panel_flush
+        self.panel_drop()
         self.summarise(now=True)        # what the fast engine did under the settings before, see summarise
         if self.minimized:
             self.restore()
         self.popup.close()
+        # the Home menu and the values the passes have of their own, both
+        # whole, in one write, with each pass ticked Same as pass 1 kept at the
+        # first pass's intensity, see _profile_changes. A profile from before
+        # the passes had values of their own has none, so each pass from the
+        # second on runs at the first pass's values, apart from the intensity
+        # of passes 2 to 4, which comes from the add-on's own NRPass<n>Intensity
+        # saved in the profile. A write that Windows refuses for a moment, as
+        # while the engine reads the file, is tried again
+        changes = _profile_changes(p)
+        written = not STACK_DIR or not any(changes.values()) or _set_ini_values(changes)
+        tries = 0
+        while not written and tries < 10:
+            time.sleep(0.03)
+            tries += 1
+            written = _set_ini_values(changes)
+        if not written:
+            print("ReShade.ini could not be written, so profile %r was not loaded" % name, flush=True)
+            self.say('Profile "%s" was not loaded, since ReShade.ini could not be written.' % name, WARN, 6.0)
+            return False
         self.profiles["current"] = self.profile = name
         _save_profiles(self.profiles)
         print("profile %r applied" % name, flush=True)
@@ -5167,13 +5940,49 @@ class Lens:
         mode = p.get("cost_scaler", COST_SCALER)
         if COST_SCALER != "manual" and mode in ("off", "fullscreen", "always") and mode != COST_SCALER:
             _set_cost_scaler(mode)
-        # the Home menu, whole, for the presenter about to start
-        if isinstance(p.get("addon"), dict):
-            _replace_addon_section(p["addon"])
-        self.passes = self.pending = max(1, min(_pass_limit(), int(p.get("passes", self.passes))))
+        # the quality step, as the profile has it. A profile from before it was
+        # kept leaves the step in force as it is, as it leaves the limit
+        try:
+            step = max(0, min(len(FAST_QUALITY_NAMES) - 1, int(p["quality"])))
+        except (KeyError, TypeError, ValueError):
+            step = None
+        if step is not None:
+            self.quality_set = None if step == self.default_quality() else step
+            _set_fast_quality(self.quality_set)
+        else:
+            step = self.quality_now()
+        # Neural Rendering on or off as the profile's NeuralUplift has it, which
+        # the next presenter of either kind starts with, so the lens goes by it
+        # from now on, and a fast engine that goes on is told
+        nr = _read_nr_enabled()
+        nr_changed = nr != self.nr_on
+        if nr_changed:
+            self.nr_on = nr
+            print("Neural Rendering %s, as the profile has it" % ("on" if nr else "off"), flush=True)
+        wanted = max(1, min(_pass_limit(), int(p.get("passes", self.passes))))
+        full = bool(p.get("fullscreen"))
+        if (self.engine == "fast" and self.fullscreen and full and self.attach is None and wanted == self.passes
+                and not self.rebuilding and self.stages):
+            # the fast engine reads the file again and changes its step in
+            # place, and it takes the limit, Ready mode and the network on or
+            # off as they come, so a fullscreen profile at the same pass count
+            # loads live, with no restart and no gap in the picture
+            self.tell_presenter("reload")
+            self.tell_presenter("cap %d" % self.max_fps)
+            self.tell_presenter("ready %d" % (1 if self.ready else 0))
+            if self.engine_quality != step:
+                self.tell_presenter("quality %d" % step)
+                self.engine_quality = step
+            if nr_changed:
+                self.tell_presenter("nr %d" % (1 if nr else 0))
+            print("profile %r loaded in place, the picture goes on" % name, flush=True)
+            self.load_panel()
+            self.save_state()
+            self.update_info()
+            return True
+        self.passes = self.pending = wanted
         cw, ch = int(p.get("width", self.cw)), int(p.get("height", self.ch))
         x, y = int(p.get("x", 0)), int(p.get("y", 0))
-        full = bool(p.get("fullscreen"))
         if self.attach is not None:
             self.resize_to(*self.attach["rect"])
         elif full:
@@ -5197,6 +6006,7 @@ class Lens:
             self.resize_to(x, y, cw, ch)
         self.save_state()
         self.update_info()
+        return True
 
     def toggle_split(self, how=None):
         """The live A/B split on or off. how is the way the person at the lens
@@ -5695,22 +6505,16 @@ class Lens:
         self.update_profile_label()
 
     def update_profile_label(self):
-        """The profile's name on the bar, amber with a star once the lens no
-        longer matches it in what the bar and Settings hold."""
-        name = self.profile
-        if not name or name not in self.profiles["profiles"]:
-            self.prof_btn.config(text="▾ Profile", fg=DIM)
-            return
-        p = self.profiles["profiles"][name]
-        same = (p.get("passes") == self.passes and p.get("cost_scaler") == COST_SCALER
-                and bool(p.get("ready")) == self.ready and p.get("readout") == self.readout
-                and int(p.get("max_fps", self.max_fps) or 0) == int(self.max_fps)
-                and p.get("motion_detail", self.motion_detail) == self.motion_detail
-                and bool(p.get("latency")) == self.latency_on and bool(p.get("fullscreen")) == self.fullscreen
-                and bool(p.get("title_size", True)) == bool(self.show_size)
-                and bool(p.get("title_style", False)) == bool(self.show_style)
-                and bool(p.get("title_intensity", False)) == bool(self.show_intensity))
-        self.prof_btn.config(text="▾ %s%s" % (name, "" if same else "*"), fg=ACCENT if same else WARN)
+        """The profile's name on the bar and on the NR settings panel, amber
+        with a star once the lens no longer matches it, see profile_same."""
+        text, colour = self.profile_label()
+        self.prof_btn.config(text=text, fg=colour)
+        picker = self.panel_ui.get("profile") if self.panel is not None else None
+        if picker is not None:
+            try:
+                picker.config(text=text, fg=colour)
+            except Exception:
+                pass
 
     def bump_passes(self, step):
         """Choose a pass count on the bar without restarting anything yet."""
@@ -5738,13 +6542,15 @@ class Lens:
     # said, a restart's note, a screenshot's result, a sentence that has to be
     # read, goes onto a notice at the top of the lens's monitor instead: a small
     # window of the lens's own that is out of the picture, takes no click and no
-    # focus, and goes away by itself. It has five slots: exclusive while a
+    # focus, and goes away by itself. It has six slots: exclusive while a
     # program has the screen in exclusive fullscreen, see check_exclusive, held
     # for a sentence from hold_note, behind for the warning that the lens runs
-    # behind the program in front, see check_behind, and note for whatever is
-    # going on right now, shown one under the other in that order, and attached
-    # for the sentence do_command gives a lens attached to a window, which has
-    # no bar either.
+    # behind the program in front, see check_behind, hdr for the warning that
+    # Windows HDR is on for the lens's monitor, see check_hdr, and note for
+    # whatever is going on right now, shown one under the other in that order,
+    # and attached for the sentence do_command gives a lens attached to a
+    # window, which has no bar either, as a folded lens has none: those two
+    # show the attached sentence and the hdr slot.
     def say(self, text, colour=None, seconds=4.0, slot="note", bar=True):
         """Tell the person at the lens something: on the bar, unless bar is
         False, and for a fullscreen lens on the notice as well, for this many
@@ -5760,19 +6566,25 @@ class Lens:
         """Draw the notice from what is still to be said, or take it away when
         nothing is, or when the lens is not fullscreen and in view. Called
         whenever a slot changes and once a second from stats, which is how a
-        slot's time runs out. An attached lens has no bar either, and shows the
-        one sentence do_command gives it in a slot of its own."""
+        slot's time runs out. An attached or folded lens has no bar either, and
+        shows the one sentence do_command gives an attached lens, in a slot of
+        its own, and the HDR warning."""
         now = time.perf_counter()
         for slot in [s for s, v in self.notes.items() if v[2] <= now]:
             del self.notes[slot]
         lines = []
         if self.fullscreen and not self.minimized and not self.closing:
-            for slot in ("exclusive", "held", "behind", "note"):
+            for slot in ("exclusive", "held", "behind", "hdr", "note"):
                 v = self.notes.get(slot)
                 if v is not None and v[0] not in [l[0] for l in lines]:
                     lines.append(v[:2])
-        elif self.attach is not None and not self.minimized and not self.closing and "attached" in self.notes:
-            lines.append(self.notes["attached"][:2])
+        elif (self.attach is not None or self.folded) and not self.minimized and not self.closing:
+            # attached or folded, no bar either: the attached sentence, and the
+            # HDR warning of check_hdr
+            for slot in ("attached", "hdr"):
+                v = self.notes.get(slot)
+                if v is not None:
+                    lines.append(v[:2])
         if lines == self.notice_lines and (self.notice is not None) == bool(lines):
             return
         self.notice_lines = lines
@@ -5897,6 +6709,10 @@ class Lens:
             self.recover_after = self.root.after(0, self._recover)
         if self.held is not None and (now >= self.held[1] or not (self.fullscreen or self.held[2])):
             self.held = None
+        # the bar's title is off the bar only while the HDR warning's sentence
+        # is held there, see hdr_bar_words
+        if self.held is None or self.held[0] not in HDR_BARS:
+            self.bar_title_back()
         readout = None
         # nothing under the lens has changed for a few seconds: the presenter
         # shows nothing new, the neural pass rests, and the delay of the last
@@ -5921,8 +6737,12 @@ class Lens:
                 parts.append("latency %s%.0f ms" % ("" if self.engine == "fast" else "~", self.latency_ms))
             readout = "   ".join(parts)
         self.readout_now = readout
-        # not during a drag on the frame, which shows the size it is making
+        # not during a drag on the frame, which shows the size it is making. The
+        # HDR warning's sentence is chosen again for the bar as it is now, which
+        # a resize or another profile's name may have changed, see hdr_bar_words
         if self.held is not None and not self.tweak and self.rs is None:
+            if self.held[0] in HDR_BARS:
+                self.held = (self.hdr_bar_words(),) + tuple(self.held[1:])
             self.info.config(text=self.held[0], fg=WARN)       # see hold_note
         elif readout is not None and not self.tweak and self.rs is None:
             self.info.config(text=readout, fg=DIM)
@@ -6206,12 +7026,161 @@ class Lens:
         if FS_BEHIND_WARN:
             self.say(BEHIND_WORDS % median, seconds=12.0, slot="behind", bar=False)
 
+    def check_hdr(self):
+        """Whether Windows HDR is on for the lens's monitor while the ReShade
+        engine draws the picture, which that engine's 8-bit frames of the
+        screen then show washed out, see HDR_SAID_FAST. Read once a second on
+        the layout timer, see watch_filter, so the first read comes with the
+        picture at the start, and the next ones follow HDR being switched on or
+        off and the lens moving to another monitor. While it applies, the
+        warning is said for twelve seconds on the moment it begins to apply,
+        and once more when the lens goes fullscreen or comes back to a window,
+        unless Settings, Picture has it off, and the log says so either way: a
+        windowed lens gets one of HDR_BARS on the bar, the longest that fits
+        beside the bar's controls, see hdr_bar_words, a fullscreen, attached or
+        folded lens gets the whole warning on the notice, in a slot of its own,
+        and Settings, Picture shows it where it applies as the dialog opens.
+        The remedy names the fast engine only where the lens can offer it. It
+        goes when it stops applying: HDR off again, the fast engine drawing
+        the picture, which handles HDR itself, the ReShade engine standing in
+        for the fast engine, which comes back by itself once the screen gives
+        pictures again, see standing_in, or no picture. The fast engine's own
+        reading is in its "hdr:" note and its ready line."""
+        now = time.perf_counter()
+        if now < self.hdr_next or self.closing:
+            return
+        self.hdr_next = now + 1.0
+        was = self.hdr_state
+        if not self.stages or self.minimized or self.rebuilding:
+            applies = False
+        else:
+            self.hdr_state = monitor_hdr(self.stages[0]["hwnd"])
+            applies = (bool(self.hdr_state and self.hdr_state[0]) and self.engine != "fast"
+                       and not self.standing_in())
+        if applies and (not self.hdr_up or self.fullscreen != self.hdr_full):
+            self.hdr_up = True
+            self.hdr_full = self.fullscreen
+            offer = FAST_EXE is not None and _proxy_installed() and self.fast_failed is None
+            self.hdr_words = HDR_SAID_FAST if offer else HDR_SAID_ONLY
+            print("Windows HDR is on for the lens's monitor, SDR white %.0f nits, and the ReShade engine draws the "
+                  "picture, so it comes out washed out, and the warning is %s"
+                  % (self.hdr_state[1], "shown" if HDR_WARN else "off in Settings"), flush=True)
+            if HDR_WARN:
+                words = self.hdr_words + HDR_SETTINGS
+                if self.attach is not None or self.folded:
+                    # no bar to say it on: the notice carries it, as for a fullscreen lens
+                    self.notes["hdr"] = (words, WARN, now + 12.0)
+                    self.show_notice()
+                else:
+                    bar_words = self.hdr_bar_words()
+                    self.held = (bar_words, now + 12.0, True)    # the bar keeps it, as hold_note does
+                    self.info.config(text=bar_words, fg=WARN)
+                    self.say(words, WARN, 12.0, slot="hdr", bar=False)
+        elif not applies and self.hdr_up:
+            self.hdr_up = False
+            self.hdr_quiet()
+            if was and was[0] and self.hdr_state is not None and not self.hdr_state[0]:
+                print("Windows HDR is off for the lens's monitor again", flush=True)
+
+    def hdr_quiet(self):
+        """Take the HDR warning off the bar and the notice at once, with the
+        readout back on the bar where the warning stood, and the bar's title
+        back where the warning had it give way."""
+        if self.held is not None and self.held[0] in HDR_BARS:
+            self.held = None
+        try:
+            if str(self.info.cget("text")) in HDR_BARS:
+                self.info.config(text=self.readout_now or "", fg=DIM)
+            self.bar_title_back()
+        except Exception:
+            pass
+        if self.notes.pop("hdr", None) is not None:
+            self.show_notice()
+
+    def bar_room(self):
+        """The width in pixels the bar of a windowed lens leaves its readout:
+        the lens's width less what every other widget on the bar asks for,
+        with the padding it was packed with, and less the readout's own
+        padding and border."""
+        px, used = self.bar.winfo_pixels, 0
+        for wdg in self.bar.pack_slaves():
+            pads = wdg.pack_info().get("padx", 0)
+            pads = sum(px(p) for p in pads) if isinstance(pads, (tuple, list)) else 2 * px(pads)
+            used += pads + (0 if wdg is self.info else wdg.winfo_reqwidth())
+        own = 2 * sum(px(self.info.cget(k)) for k in ("bd", "highlightthickness", "padx"))
+        return self.cw - used - own
+
+    def bar_text_width(self, text):
+        """How wide text is in the bar readout's font, in pixels."""
+        return int(self.info.tk.call("font", "measure", self.info.cget("font"), text))
+
+    def hdr_bar_words(self):
+        """The sentence the bar of a windowed lens carries while the HDR
+        warning is up: the longest of HDR_BARS that fits beside everything
+        else on the bar, the title included, see bar_room. Where none does,
+        the title gives way while the sentence is held, and the bar carries
+        the shortest, which it cuts short at its end only where its controls
+        leave no room for it, see the order the bar is packed in. The title
+        is put back first, so the choice is made again for the bar as it is
+        now, and it stays back once the sentence goes, see bar_title_back."""
+        try:
+            self.bar_title_back()
+            room = self.bar_room()
+            for text in HDR_BARS:
+                if self.bar_text_width(text) <= room:
+                    return text
+            self.bar_title.pack_forget()
+        except Exception:
+            pass
+        return HDR_BARS[-1]
+
+    def bar_title_back(self):
+        """The bar's title back in its place ahead of the readout, where the
+        HDR warning's sentence had it give way, see hdr_bar_words."""
+        if not self.bar_title.winfo_manager():
+            self.bar_title.pack(side="left", before=self.info)
+
+    def bar_controls_width(self):
+        """The width in pixels the controls on the bar of a windowed lens
+        take, with the padding they were packed with, worked out as bar_room
+        does: everything on the bar but its words, which are the title, the
+        readout, the profile selector and the Home menu's style and
+        intensity. The pass count counts at the widest of its texts, so the
+        controls keep their room at any pass count."""
+        px, used = self.bar.winfo_pixels, 0
+        words = (self.bar_title, self.info, self.prof_btn, self.style_btn, self.intensity_lbl)
+        for wdg in self.bar.pack_slaves():
+            if any(wdg is w for w in words):
+                continue
+            pads = wdg.pack_info().get("padx", 0)
+            pads = sum(px(p) for p in pads) if isinstance(pads, (tuple, list)) else 2 * px(pads)
+            used += pads + wdg.winfo_reqwidth()
+        font = self.pass_lbl.cget("font")
+        texts = ["NR off"] + ["%d pass%s" % (n, "" if n == 1 else "es") for n in range(1, ADDON_MAX_PASSES + 1)]
+        widest = max(int(self.pass_lbl.tk.call("font", "measure", font, text)) for text in texts)
+        now = int(self.pass_lbl.tk.call("font", "measure", font, self.pass_lbl.cget("text")))
+        return used + max(0, widest - now)
+
+    def min_width(self):
+        """The narrowest a windowed lens may be, folded or not: as wide as its
+        bar's controls, see bar_controls_width, and never under MIN_W, in an
+        even number of pixels as the picture is. So a narrow lens cuts its
+        words short and never a control. A drag stops there, see _grip_rect,
+        and so do a resize, see resize_to, the way back from fullscreen and
+        the start of a lens saved narrower."""
+        try:
+            low = max(MIN_W, self.bar_controls_width())
+        except Exception:
+            low = MIN_W
+        return low + low % 2
+
     def log_foreground(self, own):
         """While the lens is fullscreen and in view, one line in the log each
         time another window comes to the front: its class, and whether it is
         one of the lens's own, by the list of them, own, that watch_filter
-        made. Only GetForegroundWindow and GetClassNameW are asked: no process
-        is opened and no title is read, since a title can hold private text.
+        made. Only GetForegroundWindow and GetClassNameW are asked here, so no
+        process is opened and the line names no title, since a title can hold
+        private text.
 
         It also notes when it saw another window, or none, take the place of
         the one it saw before, fg_since, for check_behind. The first window
@@ -6848,15 +7817,15 @@ class Lens:
         box = tk.Frame(t, bg=BG)
         box.pack(padx=1, pady=1)
         ui = self.panel_ui = {}
-        rows = self.panel_rows = []         # (kind, name, the widget lit for it), in order, see panel_key
-        self.panel_row = None
+        self.panel_rows, self.panel_row, self.panel_tabs = [], None, []
+        self.panel_pass = max(1, min(max(1, self.passes), self.panel_pass))
         font, small = ("Segoe UI", 10), ("Segoe UI", 9)
         tick = dict(bg=BG, fg=FG, selectcolor=FIELD, activebackground=BG, activeforeground=FG,
                     disabledforeground=DIM, font=font)
 
         # the head, which the panel is dragged by, with the cross that closes it
         head = tk.Frame(box, bg=CAP)
-        head.grid(row=0, column=0, columnspan=3, sticky="we")
+        head.grid(row=0, column=0, columnspan=4, sticky="we")
         name = tk.Label(head, text="  NR settings", bg=CAP, fg=FG, font=("Segoe UI", 10, "bold"), pady=5)
         name.pack(side="left")
         key = self.key_for("nr_panel")
@@ -6878,46 +7847,116 @@ class Lens:
             lbl.grid(row=row, column=0, sticky="w", padx=(12, 10), pady=(4, 0))
             return lbl
 
+        # the profile picker: the profile in use, with a star once the lens no
+        # longer matches it, and the list that loads, saves and ties profiles
+        prow = tk.Frame(box, bg=BG)
+        prow.grid(row=1, column=0, columnspan=4, sticky="we", padx=8, pady=(8, 0))
+        ui["profile_word"] = tk.Label(prow, text="Profile", bg=BG, fg=FG, font=font)
+        ui["profile_word"].pack(side="left", padx=(4, 10))
+        text, colour = self.profile_label()
+        ui["profile"] = tk.Label(prow, text=text, bg=FIELD, fg=colour, font=font, padx=8, pady=2)
+        ui["profile"].pack(side="left")
+        ui["profile"].bind("<Button-1>", lambda e: self.panel_profile_menu("panel"))
+        ui["profile"].bind("<Enter>", lambda e: ui["profile"].config(bg=HOVER))
+        ui["profile"].bind("<Leave>", lambda e: ui["profile"].config(bg=FIELD))
+        ui["program"] = tk.Label(prow, text="", bg=BG, fg=DIM, font=small)
+        ui["program"].pack(side="left", padx=(10, 0))
+        ui["auto"] = tk.BooleanVar(master=t, value=bool(AUTO_PROFILE))
+        auto_box = tk.Checkbutton(box, text="Load the profile tied to the program in front",
+                                  variable=ui["auto"], command=self._panel_auto, **tick)
+        auto_box.grid(row=2, column=0, columnspan=4, sticky="w", padx=8, pady=(2, 0))
+        ui["auto_box"] = auto_box
+
         ui["nr"] = tk.BooleanVar(master=t, value=bool(self.nr_on))
         nr_keys = _either(self.nr_keys())
         nr_box = tk.Checkbutton(box, text="Neural Rendering on" + ("   (%s)" % nr_keys if nr_keys else ""),
                                 variable=ui["nr"], command=self._panel_nr, **tick)
-        nr_box.grid(row=1, column=0, columnspan=3, sticky="w", padx=8, pady=(8, 0))
-        rows.append(("switch", "nr", nr_box))
-        rows.append(("choice", "style", label(2, "Style")))
+        nr_box.grid(row=3, column=0, columnspan=4, sticky="w", padx=8, pady=(6, 0))
+        ui["nr_box"] = nr_box
+
+        # the tabs: one for each pass, and the controls below show and set the
+        # values of the pass whose tab is chosen, see panel_show_pass
+        ui["tabs_word"] = label(4, "Settings of")
+        ui["tabs_word"].grid(pady=(10, 0))
+        tabs = ui["tabs"] = tk.Frame(box, bg=BG)
+        tabs.grid(row=4, column=1, columnspan=3, sticky="w", pady=(10, 0))
+        ui["tabs_words"] = tk.Label(tabs, text="", bg=BG, fg=DIM, font=small)
+
+        ui["style_word"] = label(5, "Style")
         styles = tk.Frame(box, bg=BG)
-        styles.grid(row=2, column=1, columnspan=2, sticky="w", pady=(4, 0))
+        styles.grid(row=5, column=1, columnspan=2, sticky="w", pady=(4, 0))
         ui["style"] = tk.StringVar(master=t, value="0")
+        ui["style_btns"] = []
         for code, text in STYLE_NAMES.items():
-            tk.Radiobutton(styles, text=text, variable=ui["style"], value=code,
-                           command=lambda: self.panel_set("NRStyle", ui["style"].get()),
-                           **tick).pack(side="left", padx=(0, 8))
-        row = 3
+            b = tk.Radiobutton(styles, text=text, variable=ui["style"], value=code,
+                               command=lambda: self.panel_set("NRStyle", ui["style"].get()), **tick)
+            b.pack(side="left", padx=(0, 8))
+            ui["style_btns"].append(b)
+        # a pass from the second on has, beside each value, whether it is the
+        # first pass's or its own, see _panel_tie: shown on those passes alone
+        ui["tie"], ui["tie_box"] = {}, {}
+
+        def tie(row, key):
+            ui["tie"][key] = tk.BooleanVar(master=t, value=False)
+            b = tk.Checkbutton(box, text="Same as pass 1", variable=ui["tie"][key],
+                               command=lambda k=key: self._panel_tie(k), **tick)
+            b.grid(row=row, column=3, sticky="w", padx=(10, 12), pady=(4, 0))
+            b.grid_remove()
+            ui["tie_box"][key] = b
+
+        tie(5, "NRStyle")
+        # the ties' column keeps its width on the first pass's tab too, so the
+        # panel is as wide whichever tab is chosen
+        ui["tie_box"]["NRStyle"].update_idletasks()
+        box.grid_columnconfigure(3, minsize=ui["tie_box"]["NRStyle"].winfo_reqwidth() + 22)
+        row = 6
         for nr_key, text, lo, hi, _default in NR_SLIDERS:
-            rows.append(("slider", nr_key, label(row, text)))
+            ui[nr_key + " word"] = label(row, text)
             scale = tk.Scale(box, from_=lo, to=hi, resolution=0.01, orient="horizontal", showvalue=False,
                              length=240, width=14, sliderlength=22, bg=DIM, troughcolor=FIELD,
                              activebackground=ACCENT, highlightthickness=0, bd=0, sliderrelief="flat",
                              command=lambda v, k=nr_key: self._panel_slider(k, v))
             scale.grid(row=row, column=1, sticky="w", pady=(6, 0))
-            shown = tk.Label(box, text="", bg=BG, fg=FG, font=("Consolas", 10), width=5, anchor="e")
-            shown.grid(row=row, column=2, sticky="e", padx=(8, 12), pady=(4, 0))
+            # the number, and to its right the button that puts the slider at
+            # PANEL_RESET, greyed with the slider, see _panel_reset
+            cell = tk.Frame(box, bg=BG)
+            cell.grid(row=row, column=2, sticky="e", padx=(8, 12), pady=(4, 0))
+            shown = tk.Label(cell, text="", bg=BG, fg=FG, font=("Consolas", 10), width=5, anchor="e")
+            shown.pack(side="left")
+            # no border, so the glyph asks for no more height than the row's
+            # name and the row keeps the height it has without the button
+            reset = tk.Label(cell, text=RESET_GLYPH, bg=BG, fg=FG, disabledforeground=DIM, font=RESET_FONT, bd=0,
+                             padx=3, pady=0)
+            reset.pack(side="left", padx=(6, 0))
+            reset.bind("<Button-1>", lambda e, k=nr_key: self._panel_reset(k))
+            reset.bind("<Enter>", lambda e, b=reset: b.config(bg=BG if str(b.cget("state")) == "disabled"
+                                                              else HOVER))
+            reset.bind("<Leave>", lambda e, b=reset: b.config(bg=BG))
             ui[nr_key] = (scale, shown)
+            ui[nr_key + " reset"] = reset
+            tie(row, nr_key)
             row += 1
         ui["skin_auto"] = tk.BooleanVar(master=t, value=False)
         skin_box = tk.Checkbutton(box, text="Leave skin structure to the model", variable=ui["skin_auto"],
                                   command=self._panel_skin, **tick)
         skin_box.grid(row=row, column=0, columnspan=3, sticky="w", padx=8, pady=(4, 0))
-        rows.append(("switch", "skin_auto", skin_box))
+        ui["skin_box"] = skin_box
         ui["mask"] = tk.BooleanVar(master=t, value=False)
         mask_box = tk.Checkbutton(box, text="Auto mask", variable=ui["mask"],
                                   command=lambda: self.panel_set("NRAutoMask", "1" if ui["mask"].get() else "0"),
                                   **tick)
         mask_box.grid(row=row + 1, column=0, columnspan=3, sticky="w", padx=8)
-        rows.append(("switch", "mask", mask_box))
-        rows.append(("passes", "passes", label(row + 2, "Passes")))
+        ui["mask_box"] = mask_box
+        tie(row + 1, "NRAutoMask")
+        ui["own_words"] = tk.Label(box, text="A value ticked Same as pass 1 follows pass 1. Untick it to give "
+                                             "this pass a value of its own.",
+                                   bg=BG, fg=DIM, font=small, justify="left", wraplength=430)
+        ui["own_words"].grid(row=row + 2, column=0, columnspan=4, sticky="w", padx=12, pady=(6, 0))
+        ui["own_words"].grid_remove()
+        ui["passes_word"] = label(row + 3, "Passes")
+        ui["passes_word"].grid(pady=(10, 0))
         passes = tk.Frame(box, bg=BG)
-        passes.grid(row=row + 2, column=1, columnspan=2, sticky="w", pady=(4, 0))
+        passes.grid(row=row + 3, column=1, columnspan=3, sticky="w", pady=(10, 0))
         ui["minus"] = tk.Label(passes, text=" − ", bg=BG, fg=FG, font=("Segoe UI", 12, "bold"))
         ui["passes"] = tk.Label(passes, text="1", bg=BG, fg=FG, font=("Consolas", 10), width=2)
         ui["plus"] = tk.Label(passes, text=" + ", bg=BG, fg=FG, font=("Segoe UI", 12, "bold"))
@@ -6928,16 +7967,19 @@ class Lens:
                 wdg.bind("<Enter>", lambda e, b=wdg: b.config(bg=HOVER))
                 wdg.bind("<Leave>", lambda e, b=wdg: b.config(bg=BG))
         tk.Label(passes, text="a change restarts the picture", bg=BG, fg=DIM, font=small).pack(side="left", padx=(10, 0))
-        rows.append(("quality", "quality", label(row + 3, "Quality step")))
+        ui["quality_word"] = label(row + 4, "Quality step")
         ui["quality"], ui["quality_name"] = self.quality_control(box, self._panel_quality)
-        ui["quality"].grid(row=row + 3, column=1, sticky="w", pady=(6, 0))
-        ui["quality_name"].grid(row=row + 3, column=2, sticky="w", padx=(8, 12), pady=(4, 0))
+        ui["quality"].grid(row=row + 4, column=1, sticky="w", pady=(6, 0))
+        ui["quality_name"].grid(row=row + 4, column=2, columnspan=2, sticky="w", padx=(8, 12), pady=(4, 0))
         texts = (FAST_QUALITY_WORDS,
-                 "A change shows in the picture at once. It is kept, and the ReShade engine uses it too.",
-                 "The arrow keys pick a setting and change it, and Enter switches a switch.")
+                 "A change shows in the picture at once and is kept. The ReShade engine runs every pass at the "
+                 "first pass's values, apart from the intensity of passes 2 to 4.",
+                 "The arrow keys pick a setting and change it, and Enter switches a switch. A slider moves faster "
+                 "the longer Left or Right is held. The button beside a number puts its slider at %.2f."
+                 % PANEL_RESET)
         for i, text in enumerate(texts):
             tk.Label(box, text=text, bg=BG, fg=DIM, font=small, justify="left", wraplength=430).grid(
-                row=row + 4 + i, column=0, columnspan=3, sticky="w", padx=12,
+                row=row + 5 + i, column=0, columnspan=4, sticky="w", padx=12,
                 pady=(8 if i == 0 else 2, 10 if i == len(texts) - 1 else 0))
         self.load_panel()
 
@@ -6959,6 +8001,7 @@ class Lens:
                 pass
         t.geometry("%dx%d+%d+%d" % (wd, ht, max(mx, min(px, mx + mw - wd)), max(my, min(py, my + mh - ht))))
         self._show_own(t, 0.99)
+        ui["shown"] = True              # from here its size follows its contents, see _panel_fit
         if how:
             self.act("NR settings opened (%s)" % how)
         print("NR settings panel opened", flush=True)
@@ -6966,43 +8009,141 @@ class Lens:
 
     def load_panel(self):
         """Set the panel's controls from what ReShade.ini holds now, which is
-        not a change to write back: when it opens, and when a new engine has
-        started, which read the same file."""
+        not a change to write back: when it opens, when a new engine has
+        started, which read the same file, and when a profile has been loaded
+        in place. Every pass's values are read, see _pass_state, and the
+        controls show the pass whose tab is chosen."""
         if self.panel is None:
             return
         self._panel_flush_now()         # a change still on its way is in the file first
-        ui, vals = self.panel_ui, _read_addon_section()
+        addon, own = _read_addon_section(), _read_pass_section()
+        self.panel_state = {n: _pass_state(n, addon, own) for n in range(1, _pass_limit() + 1)}
+        self.panel_show_pass(min(self.panel_pass, max(1, self.passes)))
+        self.sync_panel()
+
+    def panel_show_pass(self, n, how=None):
+        """Show pass n's values on the panel's controls, and make them set that
+        pass. The tabs follow, and so does the order the arrow keys walk the
+        settings in, with the ties of a pass from the second on among them.
+        how is the way it was asked for, for the log."""
+        if self.panel is None or not self.panel_ui:
+            return
+        ui = self.panel_ui
+        n = max(1, min(max(1, self.passes), int(n)))
+        if how and n != self.panel_pass:
+            self.act("NR settings show pass %d (%s)" % (n, how))
+        self.panel_pass = n
+        self.panel_hold = None          # the values shown anew, so a key held on starts again at a hundredth
+        st = self.panel_state.get(n) or _pass_state(n)
         self.panel_live = False
         try:
-            style = str(vals.get("NRStyle", "0")).strip()
+            # the tabs, one for each pass that runs
+            tabs = ui["tabs"]
+            for tab in self.panel_tabs:
+                tab.destroy()
+            self.panel_tabs = []
+            ui["tabs_words"].pack_forget()
+            for m in range(1, max(1, self.passes) + 1):
+                lbl = tk.Label(tabs, text=" Pass %d " % m, bg=HOVER if m == n else BG, fg=ACCENT if m == n else FG,
+                               font=("Segoe UI", 10, "bold" if m == n else "normal"), padx=6, pady=2)
+                lbl.pack(side="left", padx=(0, 4))
+                lbl.bind("<Button-1>", lambda e, m=m: self.panel_show_pass(m, "click"))
+                self.panel_tabs.append(lbl)
+            ui["tabs_words"].config(text="a pass more gets settings of its own" if self.passes < 2 else "")
+            if self.passes < 2:
+                ui["tabs_words"].pack(side="left", padx=(6, 0))
+            # the style
+            style, own = st["NRStyle"]
             ui["style"].set(style if style in STYLE_NAMES else "0")
-            self.panel_vals, self.panel_pos = {"NRStyle": ui["style"].get()}, {}
-            for key, _text, lo, hi, default in NR_SLIDERS:
-                v = _nr_number(vals, key, default)
+            for b in ui["style_btns"]:
+                b.config(state="normal" if own else "disabled")
+            # the sliders, each greyed where the pass runs at the first pass's value
+            self.panel_pos = {}
+            for key, _text, lo, hi, _default in NR_SLIDERS:
+                text, own = st[key]
+                try:
+                    v = float(text)
+                except (TypeError, ValueError):
+                    v = NR_DEFAULTS[key]
                 scale, shown = ui[key]
                 auto = key == "NRSkinStructure" and v < 0
                 if key == "NRSkinStructure":
                     ui["skin_auto"].set(auto)
+                    ui["skin_box"].config(state="normal" if own else "disabled")
                 at = max(lo, min(hi, 0.0 if auto else v))
                 scale.config(state="normal")
                 scale.set(at)
-                scale.config(state="disabled" if auto else "normal")
-                shown.config(text="auto" if auto else "%.2f" % v, fg=DIM if auto else FG)
+                scale.config(state="disabled" if auto or not own else "normal")
+                shown.config(text="auto" if auto else "%.2f" % v, fg=DIM if auto or not own else FG)
+                self._panel_reset_look(key)
                 self.panel_pos[key] = at
-                self.panel_vals[key] = _nr_text(-1 if auto else v)
-            mask = _nr_number(vals, "NRAutoMask", 0) != 0
-            ui["mask"].set(mask)
-            self.panel_vals["NRAutoMask"] = "1" if mask else "0"
-            self.panel.update_idletasks()
+            text, own = st["NRAutoMask"]
+            ui["mask"].set(_nr_number({"NRAutoMask": text}, "NRAutoMask", 0) != 0)
+            ui["mask_box"].config(state="normal" if own else "disabled")
+            # the ties, on a pass from the second on
+            for key, var in ui["tie"].items():
+                var.set(n >= 2 and not st[key][1])
+                if n >= 2:
+                    ui["tie_box"][key].grid()
+                else:
+                    ui["tie_box"][key].grid_remove()
+            if n >= 2:
+                ui["own_words"].grid()
+            else:
+                ui["own_words"].grid_remove()
+            # the order the arrow keys walk, see panel_key. The row they are on
+            # stays the same setting as the rows come and go, and a tie row that
+            # goes with the first pass's tab gives way to its own setting's row
+            was = None
+            if self.panel_row is not None and self.panel_row < len(self.panel_rows):
+                was = tuple(self.panel_rows[self.panel_row][:2])
+            rows = [("profile", "profile", ui["profile_word"]), ("switch", "auto", ui["auto_box"]),
+                    ("switch", "nr", ui["nr_box"]), ("tabs", "pass", ui["tabs_word"]),
+                    ("choice", "style", ui["style_word"])]
+            if n >= 2:
+                rows.append(("tie", "NRStyle", ui["tie_box"]["NRStyle"]))
+            for key, _text, _lo, _hi, _default in NR_SLIDERS:
+                rows.append(("slider", key, ui[key + " word"]))
+                if n >= 2:
+                    rows.append(("tie", key, ui["tie_box"][key]))
+            rows += [("switch", "skin_auto", ui["skin_box"]), ("switch", "mask", ui["mask_box"])]
+            if n >= 2:
+                rows.append(("tie", "NRAutoMask", ui["tie_box"]["NRAutoMask"]))
+            rows += [("passes", "passes", ui["passes_word"]), ("quality", "quality", ui["quality_word"])]
+            self.panel_rows = rows
+            pairs = [(k, w_) for k, w_, _lit in rows]
+            if was is not None and was not in pairs and was[0] == "tie":
+                was = {"NRStyle": ("choice", "style"), "NRAutoMask": ("switch", "mask")}.get(was[1], ("slider", was[1]))
+            if was is not None:
+                self.panel_row = pairs.index(was) if was in pairs else pairs.index(("passes", "passes"))
+            elif self.panel_row is not None:
+                self.panel_row = None
+            self.panel_light(self.panel_row)
+            self._panel_fit()
         except Exception:
             pass
         self.panel_live = True
-        self.sync_panel()
+
+    def _panel_fit(self):
+        """Give the panel's window the size its contents ask for now, where it
+        is and kept on its monitor: the ties and their words come and go with
+        the pass shown. Nothing until the panel has been shown."""
+        t = self.panel
+        if t is None or not self.panel_ui.get("shown"):
+            return
+        t.update_idletasks()
+        wd, ht = t.winfo_reqwidth(), t.winfo_reqheight()
+        px, py = t.winfo_x(), t.winfo_y()
+        x, y = self.inner()
+        mx, my, mw, mh = monitor_rect(x + self.cw // 2, y + self.ch // 2)
+        t.geometry("%dx%d+%d+%d" % (wd, ht, max(mx, min(px, mx + mw - wd)), max(my, min(py, my + mh - ht))))
 
     def sync_panel(self):
         """The panel's copy of what the lens itself holds: the network on or
-        off, the pass count and the quality step. Called whenever one of them
-        may have changed, by the panel or by anything else."""
+        off, the pass count and the quality step, the profile in use and the
+        program it is tied to, and the auto-load switch. Called whenever one
+        of them may have changed, by the panel or by anything else. A pass
+        count the tabs do not show yet brings the tabs up to date."""
         if self.panel is None or not self.panel_ui:
             return
         ui = self.panel_ui
@@ -7015,6 +8156,16 @@ class Lens:
             if int(float(ui["quality"].get())) != step:
                 ui["quality"].set(step)
             ui["quality_name"].config(text=FAST_QUALITY_NAMES[step])
+            text, colour = self.profile_label()
+            ui["profile"].config(text=text, fg=colour)
+            # the program the profile in use is tied to, by its title or, where
+            # that is empty, its class. A tie without a class is none, see _program
+            tied = _program_name((self.profiles["profiles"].get(self.profile) or {}).get("program")
+                                 if self.profile else None)
+            ui["program"].config(text=("for %s" % _short_title(tied)) if tied else "")
+            ui["auto"].set(bool(AUTO_PROFILE))
+            if len(self.panel_tabs) != max(1, self.passes):
+                self.panel_show_pass(self.panel_pass)
         except Exception:
             pass
 
@@ -7031,7 +8182,7 @@ class Lens:
         except Exception:
             pass
         self.panel_ui, self.panel_drag = {}, None
-        self.panel_rows, self.panel_row = [], None
+        self.panel_rows, self.panel_row, self.panel_tabs = [], None, []
         try:
             t.destroy()
         except Exception:
@@ -7042,15 +8193,24 @@ class Lens:
         self.sync_hotkeys()             # the keys that worked it go back once they are up
 
     def panel_set(self, key, text, how="mouse"):
-        """A value changed on the panel: into ReShade.ini at once, and the engine
-        told to read it, see _panel_flush. how is mouse or keyboard, for the
-        log, which gets one line once the value has held still, see
+        """A value changed on the panel, for the pass whose tab is chosen: into
+        ReShade.ini at once, and the engine told to read it, see _panel_flush.
+        text is the value, or None for a pass from the second on that is to
+        run at the first pass's, see _pass_writes. how is mouse or keyboard,
+        for the log, which gets one line once the value has held still, see
         _panel_said."""
-        if self.panel_vals.get(key) == text:
+        n = self.panel_pass
+        st = self.panel_state.setdefault(n, {})
+        if n <= 1 and text is None:
             return
-        self.panel_vals[key] = text
-        self.panel_pending[key] = text
-        self._panel_said(key, text, how)
+        own = text is not None
+        if st.get(key) == ((text, True) if own else (self.panel_state.get(1, {}).get(key, (None,))[0], False)):
+            return
+        changes = _pass_writes(n, key, text, self.panel_state)
+        for section, vals in changes.items():
+            if vals:
+                self.panel_pending.setdefault(section, {}).update(vals)
+        self._panel_said(_pass_key(n, key), text if own else "same as pass 1", how)
         if self.panel_timer is None:
             self._panel_flush()
 
@@ -7071,6 +8231,63 @@ class Lens:
         if said is not None:
             self.act("NR settings %s %s (%s)" % (key, said[0], said[1]))
 
+    def _panel_tie(self, key, how="mouse"):
+        """Same as pass 1 ticked or unticked for a value of the pass whose tab
+        is chosen: ticked, the pass runs at the first pass's value, and its
+        control is greyed with that value on it. Unticked, the pass keeps the
+        value it shows as its own, to be moved from there."""
+        n, ui = self.panel_pass, self.panel_ui
+        if n < 2 or not self.panel_live or self.panel is None:
+            return
+        tied = bool(ui["tie"][key].get())
+        if tied:
+            self.panel_set(key, None, how)
+        else:
+            self.panel_set(key, self.panel_state.get(n, {}).get(key, (_nr_text(NR_DEFAULTS[key]),))[0], how)
+        self.panel_show_pass(n)
+
+    def _panel_auto(self, how="mouse"):
+        """The auto-load switch on the panel, see check_auto_profile."""
+        on = bool(self.panel_ui["auto"].get())
+        if on != AUTO_PROFILE:
+            self.act("auto profile %s (%s)" % ("on" if on else "off", how))
+            _set_auto_profile(on)
+            print("profiles load by themselves for the program in front" if on
+                  else "profiles no longer load by themselves", flush=True)
+            if on:
+                self.auto_profile_on()
+
+    def panel_profile_menu(self, how="panel"):
+        """The panel's profile list: each profile, which loads it, saving the
+        current settings as a new profile or into the one in use, tying the
+        one in use to the program in front or untying it, and the way to
+        Settings. It is the title bar's list with the ties added, and opens
+        under the picker."""
+        names = sorted(self.profiles["profiles"], key=str.lower)
+        items = []
+        for n in names:
+            items.append(("%s%s" % (n, "   ✓" if n == self.profile else ""), lambda n=n: self.apply_profile(n), True))
+        if names:
+            items.append(None)
+        items.append(("Save the current settings as a new profile...", self.profile_save_as, True))
+        cur = self.profile if self.profile in self.profiles["profiles"] else None
+        if cur:
+            items.append(("Update '%s' with the current settings" % cur, lambda: self.profile_store(cur), True))
+            # each program by its title or, where that is empty, its class. A tie
+            # without a class is none, and a program in front without one is
+            # none to tie to, so its item is greyed, see _program
+            tied = _program_name(self.profiles["profiles"][cur].get("program"))
+            front = _program_name(self.front_program)
+            if tied:
+                items.append(("Untie '%s' from %s" % (cur, _short_title(tied)),
+                              lambda: self.profile_untie(cur, "panel"), True))
+            else:
+                items.append(("Tie '%s' to the program in front%s"
+                              % (cur, ", %s" % _short_title(front) if front else ""),
+                              lambda: self.profile_tie(cur, how="panel"), bool(front)))
+        items.append(("Manage profiles in Settings...", self.settings_dialog, True))
+        self.list_menu(items, "profile list", self.panel_ui.get("profile"), how)
+
     def _panel_said_now(self):
         """Every change still waiting for its line, at once, as the panel closes."""
         for key in list(self.panel_said):
@@ -7084,11 +8301,16 @@ class Lens:
         """An arrow key, Enter or Escape while the panel is open over a
         fullscreen lens, see nav_key. Up and Down move from setting to setting,
         which the panel shows in the accent colour, Left and Right change the
-        style, a slider by 0.05, the pass count or the quality step, Enter
-        switches a switch, and Escape closes the panel."""
+        style, a slider, the pass count or the quality step, load the profile
+        before or after the one in use, or show another pass's values, Enter
+        switches a switch, a tie included, or opens the profile list, and
+        Escape closes the panel. A slider moves a hundredth a press, and
+        further with each repeat of a key held down, see _panel_step."""
         rows = self.panel_rows
         if self.panel is None or not rows:
             return
+        if name not in ("left", "right"):
+            self.panel_hold = None      # any other key ends a hold, see _panel_step
         if name == "escape":
             self.close_panel("Escape")
             return
@@ -7106,15 +8328,42 @@ class Lens:
         if name == "enter":
             if what == "nr":
                 self.toggle_nr("panel")
+            elif what == "auto":
+                ui["auto"].set(not ui["auto"].get())
+                self._panel_auto("keyboard")
+            elif what == "profile":
+                self.panel_profile_menu("keyboard")
+            elif kind == "tie":
+                ui["tie"][what].set(not ui["tie"][what].get())
+                self._panel_tie(what, "keyboard")
             elif what == "skin_auto":
+                if str(ui["skin_box"].cget("state")) == "disabled":
+                    return              # the pass runs at the first pass's skin structure
                 ui["skin_auto"].set(not ui["skin_auto"].get())
                 self._panel_skin("keyboard")
             elif what == "mask":
+                if str(ui["mask_box"].cget("state")) == "disabled":
+                    return              # the pass runs at the first pass's auto mask
                 ui["mask"].set(not ui["mask"].get())
                 self.panel_set("NRAutoMask", "1" if ui["mask"].get() else "0", "keyboard")
             return
         d = -1 if name == "left" else 1
-        if kind == "choice":
+        if kind != "slider":
+            self.panel_hold = None
+        if kind == "profile":
+            # the profile before or after the one in use, by name, loaded. A load
+            # can restart the picture, and the arrow key's repeats that came in
+            # meanwhile are not more profiles asked for, as on the passes row
+            names = sorted(self.profiles["profiles"], key=str.lower)
+            if names and time.perf_counter() - self.panel_profile_at > 0.5:
+                i = (names.index(self.profile) + d) if self.profile in names else (0 if d > 0 else -1)
+                self.apply_profile(names[i % len(names)], "keyboard")
+                self.panel_profile_at = time.perf_counter()
+        elif kind == "tabs":
+            self.panel_show_pass(self.panel_pass + d, "keyboard")
+        elif kind == "choice":
+            if str(ui["style_btns"][0].cget("state")) == "disabled":
+                return                  # the pass runs at the first pass's style
             codes = list(STYLE_NAMES)
             now = ui["style"].get()
             i = max(0, min(len(codes) - 1, (codes.index(now) if now in codes else 0) + d))
@@ -7122,15 +8371,12 @@ class Lens:
                 ui["style"].set(codes[i])
                 self.panel_set("NRStyle", codes[i], "keyboard")
         elif kind == "slider":
-            scale, shown = ui[what]
+            scale = ui[what][0]
             if str(scale.cget("state")) == "disabled":
-                return                  # skin structure left to the model
+                return                  # skin structure left to the model, or the first pass's value
             lo, hi = float(scale.cget("from")), float(scale.cget("to"))
-            v = round(max(lo, min(hi, float(scale.get()) + 0.05 * d)), 2)
-            self.panel_pos[what] = v    # so the slider's own call that follows is no second change
-            scale.set(v)
-            shown.config(text="%.2f" % v, fg=FG)
-            self.panel_set(what, _nr_text(v), "keyboard")
+            v = round(max(lo, min(hi, float(scale.get()) + self._panel_step(what, d) * d)), 2)
+            self._panel_move_to(what, v, "keyboard")
         elif kind == "passes":
             # a pass restarts the picture, and the arrow key's repeats that came
             # in meanwhile are not more passes asked for
@@ -7142,13 +8388,66 @@ class Lens:
             if step != self.quality_now():
                 self.set_quality(step, "panel")
 
+    def _panel_step(self, key, d):
+        """How far Left or Right moves this slider of the pass shown, d the
+        way. A press moves it a hundredth, and each repeat of a key held down
+        a step that grows the longer the key has been held, see
+        PANEL_HOLD_STEPS. A move of another slider or pass, the other way, or
+        after a pause of more than PANEL_HOLD_GAP starts the hold over, and so
+        does the key let go, see _panel_key_up, and the values shown anew, see
+        panel_show_pass."""
+        now = time.perf_counter()
+        which, hold = (self.panel_pass, key, d), self.panel_hold
+        start = hold[1] if hold is not None and hold[0] == which and now - hold[2] <= PANEL_HOLD_GAP else now
+        self.panel_hold = (which, start, now)
+        return [step for after, step in PANEL_HOLD_STEPS if now - start >= after][-1]
+
+    def _panel_key_up(self):
+        """End a hold of Left or Right on a slider once its key is up. A press
+        and a held key's repeat both come as WM_HOTKEY, with nothing to tell
+        them apart, so without this, presses that come quickly one after
+        another would count as a hold, see _panel_step. poll_hotkeys calls it
+        every 50 ms, after the keys that came in. Windows does not show every
+        program the keys while another program is in front, and
+        GetAsyncKeyState then says up while the key is down, so a key read as
+        up counts only once the lens has read it down with the same window in
+        front. Until then the gap between moves decides alone."""
+        hold = self.panel_hold
+        if hold is None:
+            return
+        front = self.front_window()
+        if self.arrow_key_down(hold[0][2]):
+            self.panel_seen = front
+        elif front and front == self.panel_seen:
+            self.panel_hold = None
+
+    def arrow_key_down(self, d):
+        """Whether the arrow key that moves a slider the way d, Right for 1
+        and Left for -1, is down now, as GetAsyncKeyState has it, see
+        _panel_key_up."""
+        return bool(u.GetAsyncKeyState(NAV_VK["nav_right" if d > 0 else "nav_left"]) & 0x8000)
+
+    def _panel_move_to(self, key, v, how):
+        """Put a slider of the pass shown at v and set the value, the way the
+        arrow keys and the reset button both do it. The slider's own call that
+        follows is then no second change, see _panel_slider."""
+        scale, shown = self.panel_ui[key]
+        self.panel_pos[key] = v
+        scale.set(v)
+        shown.config(text="%.2f" % v, fg=FG)
+        self.panel_set(key, _nr_text(v), how)
+
     def panel_light(self, n):
         """Show which setting the arrow keys are on: its name in the accent
-        colour, the rest as they were."""
+        colour, the rest as they were. A tick that is greyed, where the pass
+        runs at the first pass's value, shows in its greyed colour, so that
+        colour takes the accent while it is lit."""
         self.panel_row = n
         for i, (_kind, _what, lit) in enumerate(self.panel_rows):
             try:
                 lit.config(fg=ACCENT if i == n else FG)
+                if lit.winfo_class() in ("Checkbutton", "Radiobutton"):
+                    lit.config(disabledforeground=ACCENT if i == n else DIM)
             except Exception:
                 pass
 
@@ -7166,19 +8465,21 @@ class Lens:
             return
         vals, self.panel_pending = self.panel_pending, {}
         self.panel_sent = time.perf_counter()
-        if _set_addon_values(vals):
+        if _set_ini_values(vals):
             self.panel_tries = 0
             if self.engine == "fast":
                 self.tell_presenter("reload")
+            self.update_profile_label()     # the profile in use is marked changed once a value differs
             return
         self.panel_tries += 1
         if self.panel_tries <= 20:
-            for k, v in vals.items():
-                self.panel_pending.setdefault(k, v)
+            for section, keys in vals.items():
+                for k, v in keys.items():
+                    self.panel_pending.setdefault(section, {}).setdefault(k, v)
             self.panel_timer = self.root.after(100, self._panel_flush)
         else:
             print("ReShade.ini could not be written, so the NR settings kept their old %s"
-                  % ", ".join(sorted(vals)), flush=True)
+                  % ", ".join(sorted(k for keys in vals.values() for k in keys)), flush=True)
 
     def _panel_flush_now(self):
         """The same without the wait, before the panel closes or reads the file."""
@@ -7189,6 +8490,19 @@ class Lens:
                 pass
         self.panel_sent = 0.0
         self._panel_flush()
+
+    def panel_drop(self):
+        """Forget what the panel changed and has not written yet, with the write
+        that waits for its turn, before a profile is loaded, which replaces both
+        sections whole. Writing it first would not do, since a write that fails
+        is put back and tried again later, over the profile."""
+        if self.panel_timer is not None:
+            try:
+                self.root.after_cancel(self.panel_timer)
+            except Exception:
+                pass
+            self.panel_timer = None
+        self.panel_pending, self.panel_tries = {}, 0
 
     def _panel_slider(self, key, value):
         """A slider's own call, which Tk also makes when the panel itself has
@@ -7203,12 +8517,40 @@ class Lens:
         self.panel_ui[key][1].config(text="%.2f" % v, fg=FG)
         self.panel_set(key, _nr_text(v))
 
+    def _panel_reset(self, key, how="reset button"):
+        """The button to the right of a slider's number, which puts the slider
+        at PANEL_RESET for the pass whose tab is chosen. It sets it the way the
+        arrow keys do, so the file, the engine and the log follow as they do
+        for a key. It does nothing while the slider is greyed, where the pass
+        runs at the first pass's value or skin structure is left to the model,
+        and is greyed then too, see _panel_reset_look."""
+        ui = self.panel_ui
+        if not self.panel_live or self.panel is None or key not in ui:
+            return
+        if str(ui[key][0].cget("state")) == "disabled":
+            return
+        self.panel_hold = None
+        self._panel_move_to(key, PANEL_RESET, how)
+
+    def _panel_reset_look(self, key):
+        """The reset button beside a slider, greyed while the slider is greyed
+        and live while it is live."""
+        ui = self.panel_ui
+        reset = ui.get(key + " reset")
+        if reset is None:
+            return
+        if str(ui[key][0].cget("state")) == "disabled":
+            reset.config(state="disabled", bg=BG)
+        else:
+            reset.config(state="normal")
+
     def _panel_skin(self, how="mouse"):
         """Skin structure left to the model, which is -1, or set by its slider."""
         ui = self.panel_ui
         auto = bool(ui["skin_auto"].get())
         scale, shown = ui["NRSkinStructure"]
         scale.config(state="disabled" if auto else "normal")
+        self._panel_reset_look("NRSkinStructure")
         v = float(scale.get())
         shown.config(text="auto" if auto else "%.2f" % v, fg=DIM if auto else FG)
         self.panel_set("NRSkinStructure", "-1" if auto else _nr_text(v), how)
@@ -7251,9 +8593,16 @@ class Lens:
     # comes from the frame around the lens, dragged the way any window is.
     def resize_to(self, x, y, cw, ch):
         """Give the lens this size at this place: the chrome is laid out again
-        and the presenter replaced, since its size is fixed when it starts."""
+        and the presenter replaced, since its size is fixed when it starts. A
+        lens in a window, folded or not, is made no narrower than its bar's
+        controls, see min_width, and kept on its monitor where that widens it.
+        An attached lens takes the size of what it is attached to."""
         if self.closing:
             return
+        if not self.fullscreen and self.attach is None:
+            low = self.min_width()
+            if cw < low:
+                x, y, cw, ch = fit_rect(x, y, low, ch)
         cw, ch = max(2, cw - cw % 2), max(2, ch - ch % 2)
         self.cw, self.ch = cw, ch
         self.layout_chrome(x, y)
@@ -7289,10 +8638,11 @@ class Lens:
         zone = self.rs["zone"]
         x, y, cw, ch = self.rs["start"]
         dx, dy = e.x_root - self.rs["x0"], e.y_root - self.rs["y0"]
+        low = self.min_width()              # no narrower than the bar's controls
         if "e" in zone:
-            cw = max(MIN_W, cw + dx)
+            cw = max(low, cw + dx)
         if "w" in zone:
-            nw = max(MIN_W, cw - dx)
+            nw = max(low, cw - dx)
             x, cw = x + cw - nw, nw
         if "s" in zone:
             ch = max(MIN_H, ch + dy)
@@ -7376,7 +8726,7 @@ class Lens:
                 x, y, cw, ch = fit_rect(mx + EDGE, my + BAR, cw, ch, (mx, my, mw, mh))
                 x = mx + (mw - cw) // 2
                 y = my + BAR + (mh - BAR - EDGE - ch) // 2
-            x, y, cw, ch = fit_rect(x, y, cw, ch)
+            x, y, cw, ch = fit_rect(x, y, max(cw, self.min_width()), ch)
             note = "back to a window ..."
         cw, ch = max(2, cw - cw % 2), max(2, ch - ch % 2)
         if how:
@@ -7678,6 +9028,18 @@ class Lens:
             radio(pic, "Half", md_var, "half", md_why)
             radio(pic, "Quarter, the least power", md_var, "quarter", md_why)
 
+        # the warning of check_hdr, in the warning colour, where it applies as
+        # the dialog opens, since the page is built once
+        hdr_why = ("When Windows HDR is on for the monitor the lens is on while the ReShade engine draws the "
+                   "picture, a warning says so and goes away by itself. A fullscreen lens, one attached to a "
+                   "window and one with its title bar hidden show it at the top of the screen. A lens in a window "
+                   "shows a short sentence on its bar that points to this page. Applies straight away.")
+        heading(pic, "Windows HDR", hdr_why)
+        if self.hdr_up:
+            line(pic, self.hdr_words or HDR_SAID, hdr_why, WARN)
+        hdr_on = tk.BooleanVar(value=HDR_WARN)
+        switch(pic, "Warn when Windows HDR is on", hdr_on, hdr_why)
+
         # ================================================================ power
         pwr = page("Power")
 
@@ -7861,8 +9223,10 @@ class Lens:
         prof = page("Profiles")
 
         prof_why = ("A profile is everything that makes the picture, saved under a name, from the window's place "
-                    "and size to every setting in the Home menu. The selector on the title bar saves and "
-                    "switches them, and the picture restarts when one is applied.")
+                    "and size to every setting in the Home menu, the values each pass has of its own and the "
+                    "quality step. The selector on the title bar and the picker on the NR settings panel save "
+                    "and switch them. The picture restarts when one is applied, unless a fullscreen lens on the "
+                    "fast engine can take it as it runs.")
         heading(prof, "Profiles", prof_why)
         names = sorted(self.profiles["profiles"], key=str.lower)
         plist = tk.Listbox(prof, height=max(4, min(8, len(names))), bg=FIELD, fg=FG, relief="flat",
@@ -7913,17 +9277,52 @@ class Lens:
                                      ("latency" if p.get("latency") else ""),
                                      ("NR style" if p.get("title_style") else ""),
                                      ("intensity" if p.get("title_intensity") else "")) if x]
+            # the program it is tied to, by its title or, where that is empty, its
+            # class. A tie without a class is none, see _program
+            prog = _program_name(p.get("program"))
+            try:
+                step = FAST_QUALITY_NAMES[max(0, min(len(FAST_QUALITY_NAMES) - 1, int(p["quality"])))]
+            except (KeyError, TypeError, ValueError):
+                step = "not saved in this profile"
             lens_rows = [("Passes", str(p.get("passes", ""))),
                          ("Size", "%s x %s" % (p.get("width", "?"), p.get("height", "?"))),
                          ("Place", "%s, %s" % (p.get("x", "?"), p.get("y", "?"))),
                          ("Fullscreen", "yes" if p.get("fullscreen") else "no"),
+                         ("Quality step", step),
                          ("Ready mode", "on" if p.get("ready") else "off"),
                          ("Frame rate limit", ("%d fps" % p["max_fps"]) if p.get("max_fps") else
                           ("none" if "max_fps" in p else "not saved in this profile")),
                          ("Motion detail", p["motion_detail"].capitalize() if p.get("motion_detail")
                           else "not saved in this profile"),
                          ("Cost Scaler", str(p.get("cost_scaler", ""))),
-                         ("Title bar", ", ".join(bar_parts) or "nothing")]
+                         ("Title bar", ", ".join(bar_parts) or "nothing"),
+                         ("Program", prog or "none")]
+            # the values of their own that the passes from the second on have,
+            # of the passes the profile runs, as the engine reads them, see
+            # _pass_state. A value ticked Same as pass 1 is left out
+            own = p.get("per_pass") if isinstance(p.get("per_pass"), dict) else {}
+            words = {"NRStyle": "style", "NRIntensity": "intensity", "NRLocalTone": "local tone",
+                     "NRLocalStructure": "local structure", "NRSkinStructure": "skin structure",
+                     "NRAutoMask": "auto mask"}
+            try:
+                count = max(1, min(_pass_limit(), int(p.get("passes", 1) or 1)))
+            except (TypeError, ValueError):
+                count = 1
+            own_rows = []
+            for n in range(2, count + 1):
+                parts = []
+                for key, (v, mine) in _pass_state(n, a, own).items():
+                    if not mine:
+                        continue
+                    if key == "NRStyle":
+                        v = STYLE_NAMES.get(v, v)
+                    elif key == "NRAutoMask":
+                        v = "on" if _nr_number({key: v}, key, 0) != 0 else "off"
+                    elif key == "NRSkinStructure" and _nr_number({key: v}, key, 0) < 0:
+                        v = "auto"
+                    parts.append("%s %s" % (words[key], v))
+                if parts:
+                    own_rows.append(("Pass %d" % n, ", ".join(parts)))
             nr_rows = [("Neural Rendering", val("NeuralUplift", onoff)),
                        ("NR style", val("NRStyle", {"0": "Default", "1": "Natural", "2": "Cinematic"})),
                        ("Overall intensity", val("NRIntensity")),
@@ -7933,7 +9332,7 @@ class Lens:
                        ("Global tone", val("NRGlobalTone")),
                        ("Local tone", val("NRLocalTone")),
                        ("Auto mask", val("NRAutoMask", onoff)),
-                       ("Upscaling", val("NREnableUpscaling", onoff))]
+                       ("Upscaling", val("NREnableUpscaling", onoff))] + own_rows
             return lens_rows, nr_rows
 
         def show_facts(name):
@@ -7989,6 +9388,7 @@ class Lens:
             b = press(holder, text, command)
             b.pack(**how)
             tip(prof, text, why, b)
+            return b
 
         btns = tk.Frame(side, bg=BG)
         btns.pack(anchor="w", pady=(8, 0))
@@ -7998,6 +9398,51 @@ class Lens:
         act(side, "Save the current settings", save_current,
             "Saves what the lens is now as a profile under the name in the field, and makes it the one in use. "
             "A profile that has that name already is replaced.", anchor="w", pady=(6, 0))
+
+        # a profile tied to a program, the one whose window was in front before
+        # this dialog took the front, named under the buttons so a window that
+        # is not the one meant is seen before the click, and the switch that
+        # loads a profile by itself. The program is named by its title or,
+        # where that is empty, its class, and a program in front without a
+        # class is none to tie to, so the button is greyed, see _program
+        front = _program(self.front_program)
+
+        def tie_front():
+            n = chosen()
+            if n and not front:
+                self.act('profile "%s" not tied, no program in front (Settings)' % n)
+            elif n:
+                self.profile_tie(n, front, "Settings")
+                show_facts(n)
+
+        def untie():
+            n = chosen()
+            if n:
+                self.profile_untie(n, "Settings")
+                show_facts(n)
+
+        ties = tk.Frame(side, bg=BG)
+        ties.pack(anchor="w", pady=(6, 0))
+        tie_btn = act(ties, "Tie to the program last in front", tie_front,
+                      "Ties the profile chosen in the list to the program whose window was in front before this "
+                      "dialog, by that window's title and class. With the switch below on, the lens loads the "
+                      "profile when that program comes to the front.",
+                      side="left", padx=(0, 6))
+        act(ties, "Untie", untie, "Takes the tie to a program off the profile chosen in the list.", side="left")
+        if not front:
+            tie_btn.config(state="disabled")
+        last = tk.Label(side, text=('The program last in front is "%s".' % _short_title(_program_name(front))
+                                    if front else "No other program has been in front yet."),
+                        bg=BG, fg=DIM, font=small, justify="left", anchor="w")
+        ties.update_idletasks()
+        last.config(wraplength=max(200, ties.winfo_reqwidth()))
+        last.pack(anchor="w", pady=(2, 0))
+        auto_opened = bool(AUTO_PROFILE)     # as the dialog opened, see save
+        auto_var = tk.BooleanVar(value=auto_opened)
+        switch(prof, "Load the profile tied to the program in front", auto_var,
+               "With this on, each time the window of a program a profile is tied to comes to the front, the "
+               "lens loads that profile, unless it is the one in use, and says so. The program is known by its "
+               "window's title and class. Applies straight away.")
         # the profile in use starts chosen, with its facts shown
         if self.profile in self.profiles["profiles"]:
             plist.selection_set(names.index(self.profile))
@@ -8029,7 +9474,8 @@ class Lens:
                           "restarts each way. A lens attached to a window stays as it is.",
             "hide_bar": "Folds the title bar and the frame away, leaving a small tab on the picture's top "
                         "edge, and brings them back.",
-            "profile": "Applies the next profile in order of name. The picture restarts.",
+            "profile": "Applies the next profile in order of name. The picture restarts, unless a fullscreen lens "
+                       "on the fast engine can take it as it runs.",
             "ready": "Switches Ready mode, which the Power page explains.",
             "detach": "Lets go of the window the lens is attached to and puts the lens back where it was.",
             "lens_menu": "Opens and closes the lens menu at the pointer. While it is open, the arrow keys move "
@@ -8336,6 +9782,14 @@ class Lens:
                 else:
                     self.notes.pop("behind", None)      # a warning that is up goes at once
                     self.show_notice()
+            if bool(hdr_on.get()) != HDR_WARN:
+                _set_hdr_warn(hdr_on.get())
+                said("hdr_warn", int(HDR_WARN))
+                if HDR_WARN:
+                    self.hdr_up = False         # said again at the next check, where it still applies
+                    self.hdr_next = 0.0
+                else:
+                    self.hdr_quiet()            # a warning that is up goes at once
             # the readout shows its new figures or corner at once, or goes. Its
             # key can show or hide it while the dialog is open, and that stays
             # unless the figures were changed here too
@@ -8350,6 +9804,15 @@ class Lens:
                 _set_fs_readout(items, at_var.get())
                 self.readout_drawn = None
                 self.show_readout()
+            # the same rule for the auto-load switch, which the NR settings panel has too
+            if bool(auto_var.get()) != auto_opened and bool(auto_var.get()) != AUTO_PROFILE:
+                _set_auto_profile(auto_var.get())
+                said("auto_profile", int(AUTO_PROFILE))
+                print("profiles load by themselves for the program in front" if AUTO_PROFILE
+                      else "profiles no longer load by themselves", flush=True)
+                if AUTO_PROFILE:
+                    self.auto_profile_on()      # this dialog is in front, so the program that comes next
+                self.sync_panel()
             if bool(upd.get()) != self.check_updates_on:
                 self.check_updates_on = bool(upd.get())
                 _save_ini("check_updates", "1" if self.check_updates_on else None)

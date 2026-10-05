@@ -5,14 +5,21 @@
 //
 //   mark the watchdog, answer the window's messages, take every command from the lens
 //   a frame is waiting:
+//       the last draw is waited for, so the frame taken is the newest, see take_frame()
 //       Capture::acquire, then Pipeline::ingest, which says whether it differs from the last
 //       unchanged: counted as skipped, nothing more
 //       changed:   Pipeline::render straight into the back buffer, Window::present: "new"
+//       with LENS_FAST_JOIN set, while the frames keep changing the ingest and the render
+//       go to the card as one list and the picture is presented at once, see
+//       Pipeline::render_joined and kJoinAfter below: the answer of the comparison is read
+//       back a turn later
 //   nothing new:
 //       the picture at rest through the network once more while it is still to settle
 //       Pipeline::repaint and a present when the heartbeat is due, or at the display's rate
 //       while live, wake, a screenshot or a probe is on: "repeated"
-//   once a second the stats line, and once the reason when the capture counts as lost
+//   once a second the stats line, the monitor's colour state (the capture starts again when
+//       Windows HDR went on or off for it, see watch_colour()), and once the reason when
+//       the capture counts as lost
 //   wait for a frame, a command, a window message or the moment the next thing is due
 //
 // The wait comes last in a turn, so whatever ends it is acted on at once by the turn that
@@ -100,6 +107,22 @@
 //                                 or realtime, read back and noted, see gpu_class() in gpu.cpp.
 //                                 Both priority switches first take the right to raise
 //                                 priorities, which only a process run as administrator holds
+//   LENS_FAST_SHOT_RAW=1          a screenshot over a monitor with Windows HDR on also writes
+//                                 BASE-raw.npy, the captured frame in 16-bit floats as it came,
+//                                 before the conversion to 8 bits, see Pipeline::keep_raw, and
+//                                 BASE-out.npy, the picture as drawn into the 16-bit swapchain
+//   LENS_FAST_HDR_ABOVE=pass|fade|clip
+//                                 what the HDR composite does with the network's change where
+//                                 the original is brighter than SDR white, see
+//                                 composite_hdr_ps.hlsl. The default is fade
+//   LENS_FAST_JOIN=N              the ingest and the render of a new frame go to the card as
+//                                 one list once N frames in a row were found changed, see
+//                                 kJoinAfter. Unset or 0, every frame goes the way of an
+//                                 ingest that is waited for and a render after it
+//   LENS_FAST_COPY_QUEUE=1        the capture copies the crop out of each frame with a D3D12
+//                                 copy queue, on the card's copy engine, instead of on its
+//                                 D3D11 context, whose copy waits for the 3D engine behind a
+//                                 game in the foreground. See capture.cpp, copy_on_queue()
 #include "capture.h"
 #include "capturetest.h"
 #include "common.h"
@@ -226,9 +249,9 @@ constexpr double kMemoryNoteAfter = 14.0;
 //
 // The swapchain has two buffers. After a present the next back buffer is the one on screen,
 // and it stays on screen until the display takes the picture just presented, at the next
-// refresh. A render into it waits in the GPU's queue until then, and Pipeline::ingest of the
-// frame after it, which waits for the queue, waits behind that render. While each picture is
-// finished before the first refresh after its frame arrived, the buffer is free when the
+// refresh. A render into it waits in the GPU's queue until then, and the loop, which waits
+// for that render before it takes the next frame (take_frame), waits behind it. While each
+// picture is finished before the first refresh after its frame arrived, the buffer is free when the
 // next frame comes and nothing waits. Once one picture is finished after that refresh, the
 // render of the next waits for the buffer and ends a refresh late as well, and so does every
 // one after it, for as long as a frame comes at every refresh. A second slip makes it two
@@ -284,6 +307,43 @@ constexpr double kLateAfter = 0.25;
 constexpr double kLateRoom = 0.2;
 constexpr double kLateSoon = 2.0;
 constexpr double kLateMost = 64.0;
+
+// One list per picture while the source is live, see Pipeline::render_joined.
+//
+// A new frame costs the card two lists: the ingest, which the loop waits for to learn
+// whether the frame differs from the last, and then the render. Over a game that keeps the
+// card busy each list waits for a gap in the game's work, measured at 23 ms for the ingest's
+// own turn and 41 ms from the render's submission to the screen, see docs\NOTES.md. So with
+// LENS_FAST_JOIN=N, once N frames in a row were found changed the two go as one list behind
+// the capture's fence and the present follows at once, without the answer: the frame is
+// drawn whatever it holds. The answer comes back a turn later (Pipeline::take_flag) for the
+// books: a frame that differed counts as a new picture then, with the tiles that changed,
+// and a frame that was the same as the last counts as a repeat and a skipped frame, as the
+// careful way counts it, and the run starts again from nothing, see resolve_joined(). That
+// frame cost a run of the network for nothing, which same= counts in the profile.
+//
+// Off unless the switch is set (kJoinAfter 0). Measured on a test computer with an RTX 5090
+// under a window of a test's own that held the foreground and kept the card busy: the
+// ingest's wait went from 1 to 22 ms to under a millisecond and the present call came 3 to
+// 13 ms sooner, but the one list took as long to get through the card as the two had, or
+// longer, so the delay to the screen was the same at 85 percent of the card and at 60 or 30
+// fps with gaps, and 2 to 10 ms longer under free running frames of 12 to 50 ms, where the
+// network's span inside the one list ran up to twice the span it had in a list of its own.
+// The picture is the same byte for byte either way. The switch stays for a measurement over
+// a game, which may share the card differently.
+//
+// Why the run must start again: the engine's window is excluded from capture, so while the
+// compositor composes its presents each present comes back as a frame equal to the last
+// (see the heartbeat above). Drawn as a new picture, that frame would come back once more,
+// and the engine would feed itself at the display's rate for ever over a still screen. With
+// the run at nothing after one such frame the next goes the careful way, is found the same
+// and is not presented, which ends it: one run of the network and one present for each time
+// a live source goes still on that path, none while the presents are shown directly. A
+// source that changes every other refresh on that path (a game at 60 fps on a 120 Hz
+// display) has an echo between every two of its frames, never reaches a run of two, and
+// keeps the careful way with N of 2 or more, which is right for it: joined, every echo
+// would cost a run, which N of 1 does to it.
+constexpr int kJoinAfter = 0;
 
 // How long the main loop may stand still before the watchdog ends the process.
 constexpr double kWatchdogSeconds = 5.0;
@@ -381,6 +441,8 @@ bool start_thread(LPTHREAD_START_ROUTINE entry, void* arg, HANDLE* keep = nullpt
 // How a picture comes to be drawn.
 enum class Draw {
   New,      // the frame just taken, which differs from the one before: the network runs
+  Joined,   // the frame just taken, not compared yet: its ingest and the network in one
+            // list, see kJoinAfter
   Again,    // the frame on screen through the network once more: after "nr" and "reload"
   Settle,   // the same for a picture that has come to rest, the network's next run on it
   Repaint,  // the last picture as it is, from what the last render left: no network
@@ -396,12 +458,16 @@ struct Profile {
   int draws = 0;
   double present_ms = 0.0;  // CPU time inside Present
   int presents = 0;
-  bool draw_unread = false;   // a draw was submitted and its GPU times are not read yet
-  bool draw_ran_network = false;
   double wake_ms = 0.0;       // from a frame's arrival to the loop starting its ingest
-  double wall_ms = 0.0;       // the ingest call as the clock on the wall has it, waits included
+  double wall_ms = 0.0;       // the ingest call as the clock on the wall has it, waits included,
+                              // or for a joined frame the recording and submission of its list
   double cwait_ms = 0.0;      // of that, the wait for the capture's copy, LENS_FAST_SPLIT_WAIT=1
   int timed = 0;
+  double dwait_ms = 0.0;      // the wait for the last draw before a frame is taken, see take_frame()
+  int dwaits = 0;
+  double conv_ms = 0.0;       // GPU time of the conversion of 16-bit frames, over the ingests
+  int joined = 0;             // new pictures drawn by one list, see kJoinAfter
+  int same = 0;               // of the frames drawn so, the ones found the same as the last
 };
 
 // Every present is followed to the screen. DXGI's frame statistics say which refresh showed
@@ -438,14 +504,40 @@ struct Trace {
   std::vector<CompositorFrame> frames;  // the compositor's frames of the last seconds
   bool frames_known = false;   // the system keeps such statistics
 
-  // LENS_FAST_TRACE=FILE: every present, every answer of the statistics and every
-  // compositor frame as a line of text, for a test to work through afterwards.
+  // LENS_FAST_TRACE=FILE: every present, every answer of the statistics, every compositor
+  // frame and every draw's moments on the card as a line of text, for a test to work through
+  // afterwards.
   //   P id called stamp arrived              a present, stamp and arrived 0 for a repeat
   //   S id refresh sync_refresh sync_s now   the statistics when they changed
   //   C id start target period n, then for each display: source present shown refresh vblank
+  //   G seq kind stamp arrived submitted i0 i1 i2 d0 d1 d2 d3 d4
+  //                                          a draw the card has finished: its number, kind
+  //                                          (new, joined, again, settle or repaint), the
+  //                                          frame's stamp and arrival (0 unless new or
+  //                                          joined), when its list was submitted, the
+  //                                          ingest's three timestamps (start, after the
+  //                                          conversion, end, or 0 for a settle and a repaint,
+  //                                          and for a joined draw the list's own, which d0
+  //                                          to d2 repeat) and the draw's five (the
+  //                                          list's start, after the conversion, the draw's
+  //                                          start, after the network, the end), the card's
+  //                                          clock put on now_s()'s by the queue's calibration
   // All moments in seconds on now_s()'s clock.
   FILE* file = nullptr;
   UINT file_refresh = 0;
+  struct DrawNote {  // a draw submitted, until its times come back
+    UINT64 sequence = 0;
+    const char* kind = "";
+    double stamp = 0.0;
+    double arrived = 0.0;
+    double submitted = 0.0;
+    UINT64 ingest[3] = {};
+  };
+  static constexpr int kDrawNotes = 16;
+  DrawNote draws[kDrawNotes];
+  UINT64 cal_gpu = 0;      // the queue's clock calibration, taken afresh each second
+  double cal_cpu_s = 0.0;
+  double cal_at = 0.0;
 };
 
 struct State {
@@ -458,6 +550,7 @@ struct State {
   Capture capture;
   CommandReader reader;
   HMONITOR monitor = nullptr;
+  MonitorColour colour;          // the monitor's colour state, read whenever the capture starts
   HANDLE frame_event = nullptr;  // the capture sets it for every complete frame. Auto-reset
   HANDLE timer = nullptr;        // ends a wait on time, see wait_turn(). Null: plain timeouts
   int work_w = 0;                // the size the network works at
@@ -502,7 +595,7 @@ struct State {
   ProbeRun probe;                // "probe N": probe.left pictures are still to be read back
   int crop_x = 0;                // "crop X Y"
   int crop_y = 0;
-  NrSettings settings;           // as last read from ReShade.ini
+  NrPasses settings;             // each pass's own, as last read from ReShade.ini
 
   // ---- the picture
   CaptureFrame cur;              // the newest frame taken from the capture
@@ -513,6 +606,18 @@ struct State {
   bool reset_next = false;       // the next render drops the network's history
   bool repaint_once = false;     // after a resume the picture is presented again at the next
                                  // turn, whatever the heartbeat
+
+  // ---- one list per picture, see kJoinAfter
+  int join_after = kJoinAfter;   // changed frames in a row before the joined way is taken, 0
+                                 // never, which it is unless LENS_FAST_JOIN=N says otherwise
+  int changed_run = 0;           // frames in a row found changed, by the answers read back
+  ID3D12Resource* joined_prev = nullptr;  // the frame before the one draw(Joined) draws
+  struct Joined {                // a joined draw whose answer is still to be read
+    CaptureFrame frame;
+    double meter = 0.0;          // its entry in the meter, made once the answer says it was new
+    bool late = false;           // and whether it counts as late then, see cur_was_held
+  };
+  std::vector<Joined> joined;    // oldest first
 
   // ---- the settle
   bool at_rest = true;           // the picture has been judged since it last changed
@@ -555,6 +660,7 @@ struct State {
   bool capturing = false;        // a capture was started and has not been paused away
   bool stopped = false;          // "stop-capture" ended it: reported as closed
   bool lost_said = false;        // "capture lost ..." is said once for each loss
+  std::string said_colour;       // the last "hdr: ..." note, said again only when it changes
   double t_fit = 0.0;            // when a frame that covers the lens was last taken
   double t_recapture = 0.0;      // when a new limit last reached the capture, until the first
                                  // frame after it has been noted
@@ -617,6 +723,12 @@ struct State {
   // ---- the screenshot's writer
   HANDLE shot_thread = nullptr;  // the last one started, kept so the way out can wait for it
   std::vector<uint8_t> sparse;   // the probe's picture, kept so it is not allocated each time
+  bool shot_raw = false;         // LENS_FAST_SHOT_RAW=1: a screenshot keeps the 16-bit frame too
+
+  // ---- the output in HDR
+  bool hdr_out = true;           // the swapchain takes scRGB, so with Windows HDR on for the
+                                 // monitor the picture is drawn in 16-bit floats, see
+                                 // switch_output(). false once the swapchain refused it
 };
 
 // A failure nothing can be done about: the window goes first, so no dead picture stays on
@@ -632,6 +744,8 @@ struct State {
 bool busy(const State& s, double now) {
   return s.live || now < s.wake_until || now < s.burst_until || s.shot_wanted || s.probe.left > 0;
 }
+
+void resolve_joined(State& s);  // the answers of the joined draws, with take_frame() below
 
 // The engine's own heartbeat, no further apart than eight refreshes, see kBeat.
 double own_beat(const State& s) { return std::min(kBeat, kBeatRefreshes / s.refresh_hz); }
@@ -886,13 +1000,102 @@ void apply_limit(State& s) {
                       apart * refresh + std::max(kLimitNewer * refresh, kLimitNewerLeast));
 }
 
+// The monitor's colour state, read whenever the capture starts. With Windows HDR on for the
+// monitor an 8-bit capture would be the desktop clipped at 80 nits, 1.0 in scRGB, so the
+// capture then takes 16-bit floats, the pipeline scales them by the SDR white level into
+// the 8-bit frames the network works on, and the picture is drawn in 16-bit floats again,
+// the original with the network's change on it (pipeline.h). The ready line repeats the
+// state as ", hdr off" or ", hdr on".
+void read_colour(State& s) { s.colour = monitor_colour(s.monitor); }
+
+// The state as a note, "hdr: off" or "hdr: on, sdr white 240 nits, ...", said once the
+// swapchain has followed it, when the capture first starts and whenever the sentence changes.
+// The quiet restarts over a still screen say nothing, as the capture's own session line is
+// said once for them, and a change while the capture runs has its own note, see
+// watch_colour().
+void say_colour(State& s) {
+  std::string said;
+  if (!s.colour.known) {
+    said = "hdr: unknown, the monitor's colour state could not be read";
+  } else if (s.colour.hdr) {
+    said = strf("hdr: on, sdr white %.0f nits, the capture takes 16-bit floats, the network sees them scaled to "
+                "that white, and the picture is %s",
+                s.colour.sdr_white_nits,
+                s.window.hdr() ? "drawn in 16-bit floats"
+                               : "shown in standard range at that white, since the swapchain does not take scRGB");
+  } else {
+    said = "hdr: off";
+  }
+  if (said == s.said_colour) return;
+  note("%s", said.c_str());
+  s.said_colour = std::move(said);
+}
+
+// Whether the capture takes 16-bit frames, from the colour state as last read. The white
+// level is what Windows says, or 80 nits when it could not be read.
+bool wants_fp16(const State& s) { return s.colour.known && s.colour.hdr; }
+
+double sdr_white_units(const State& s) {
+  return s.colour.sdr_white_nits > 0.0 ? s.colour.sdr_white_nits / 80.0 : 1.0;
+}
+
+// The capture is about to start with the other format, and its slots go: every frame the
+// loop was handed goes with them. The GPU finishes what it was drawing from them first, the
+// pipeline forgets them, and the loop is as before its first frame: the window stays as it
+// is, showing the last picture, until the new capture's first frame is drawn, which comes
+// at once with a new session. The note of a missing first frame is not for this.
+void drop_frames(State& s) {
+  note("loop: the capture changes to %s, the frames on hand go and the next one is drawn afresh",
+       wants_fp16(s) ? "16-bit floats" : "8 bits a channel");
+  std::string err;
+  if (!s.gpu.flush(3000, err)) die(s, "wait for the GPU: " + err);
+  resolve_joined(s);  // every joined draw is done now, and its answer is about frames that go
+  s.pipeline.drop_frames();
+  s.have = false;
+  s.have_cur = false;
+  s.changed_run = 0;
+  s.repaint_once = false;
+  s.redraw = false;
+  s.at_rest = true;
+  s.settle_left = 0;
+  s.memory_run = false;
+  s.reset_next = true;
+  s.said_waiting = true;
+}
+
+// The swapchain is about to change its format, with the monitor's HDR state: the GPU
+// finishes what it draws into its buffers, the pipeline lets go of the copies it kept of a
+// target, and the window makes the buffers again. What the window shows then stays until
+// the next present, so a picture is presented at the next turn: the last one again when
+// the frames on hand are still good, the new capture's first frame otherwise.
+void switch_output(State& s, bool hdr) {
+  std::string err;
+  if (!s.gpu.flush(3000, err)) die(s, "wait for the GPU: " + err);
+  s.pipeline.drop_target_copies();
+  if (!s.window.set_hdr(hdr, err)) die(s, "window: " + err);
+  // a swapchain that does not take scRGB stays in 8 bits, and is not asked again
+  if (hdr && !s.window.hdr()) s.hdr_out = false;
+  s.repaint_once = s.have;
+}
+
 // Starts the capture, at the start, after a pause, and for a new limit where the running
-// session would not take the new interval.
+// session would not take the new interval. The monitor's colour state is read afresh each
+// time, so a capture started again after Windows HDR went on or off for the monitor takes
+// the format for it, the swapchain follows (16-bit floats in scRGB with HDR on, see
+// window.h), the SDR white level follows, and the note says the state once the swapchain
+// has followed it, when it is new. A new white level while the capture runs waits for its
+// next start.
 bool start_capture(State& s, std::string& err) {
   s.refresh_hz = s.window.refresh_hz();
+  read_colour(s);
+  if (s.capture.slots_made() && s.capture.slots_fp16() != wants_fp16(s)) drop_frames(s);
+  const bool hdr_out = wants_fp16(s) && s.hdr_out;
+  if (s.window.hdr() != hdr_out) switch_output(s, hdr_out);
+  say_colour(s);
+  s.pipeline.set_sdr_white(sdr_white_units(s));
   apply_limit(s);
-  if (!s.capture.start(s.gpu.device.Get(), s.gpu.luid, s.monitor, s.o.width, s.o.height, s.crop_x,
-                       s.crop_y, wanted_interval(s), s.frame_event, err)) {
+  if (!s.capture.start(s.gpu.device.Get(), s.gpu.luid, s.monitor, s.o.width, s.o.height, wants_fp16(s),
+                       s.crop_x, s.crop_y, wanted_interval(s), s.frame_event, err)) {
     s.capturing = false;
     return false;
   }
@@ -904,6 +1107,39 @@ bool start_capture(State& s, std::string& err) {
   s.t_fit = now_s();
   s.t_check = 0.0;  // a session of its own: whatever was being checked was the old one's
   return true;
+}
+
+// Windows HDR switched on or off for the monitor while the capture runs. Switched on, the
+// session went on delivering frames in the format it was started with (measured on a test
+// computer with an RTX 5090, no "capture lost" came after the switch, and the 8-bit frames
+// of the HDR desktop were clipped at 80 nits, 1.0 in scRGB, 45 of 255 from the right
+// picture on average). HDR switched off while the capture ran was not measured. So the
+// state is read once a second, from report(), and the capture started again when it
+// changed, which takes the new format and the swapchain with it, see start_capture(). A
+// few hundred microseconds a second. A new SDR white level alone is taken without a
+// restart. The next frame is converted and drawn to it, and the picture on screen is drawn
+// again at once.
+void watch_colour(State& s) {
+  if (!s.capturing || s.paused) return;
+  const MonitorColour now = monitor_colour(s.monitor);
+  if (!now.known) return;
+  if (now.hdr != s.colour.hdr || !s.colour.known) {
+    note("hdr: Windows HDR went %s for the monitor while the capture ran, so the capture starts again",
+         now.hdr ? "on" : "off");
+    s.capture.stop();
+    std::string err;
+    if (!start_capture(s, err)) {
+      say("capture lost could not start again: %s", err.c_str());
+      s.lost_said = true;
+    }
+    return;
+  }
+  if (now.hdr && now.sdr_white_nits > 0.0 && now.sdr_white_nits != s.colour.sdr_white_nits) {
+    note("hdr: the SDR white level is now %.0f nits", now.sdr_white_nits);
+    s.colour = now;
+    s.pipeline.set_sdr_white(sdr_white_units(s));
+    if (s.have && s.have_cur) s.redraw = true;
+  }
 }
 
 // "pause": the capture ends and nothing is presented, so nothing runs on the GPU until
@@ -927,6 +1163,7 @@ void do_resume(State& s) {
   if (!s.paused) return;
   s.paused = false;
   s.repaint_once = s.have;
+  s.changed_run = 0;  // what comes next does not follow from the picture before
   mark_turn();
   s.lost_said = false;
   std::string err;
@@ -1025,23 +1262,32 @@ void switch_settle(State& s, bool on) {
   note("loop: the settle is %s", on ? "on" : "off");
 }
 
-// "reload": the lens has written new settings into ReShade.ini.
+// "reload": the lens has written new settings into ReShade.ini, the base in the add-on's
+// section and each pass's own values, see NrPasses. Only the passes in use are read. The note
+// names the base and, for each pass that has values of its own, those values.
 void reload_settings(State& s) {
-  NrSettings fresh;
+  NrPasses fresh;
   std::string err;
-  if (!read_nr_settings(s.o.stack_dir, fresh, err)) {
+  if (!read_nr_passes(s.o.stack_dir, fresh, err, s.o.passes)) {
     note("loop: reload: %s, the settings stay as they are", err.c_str());
     return;
   }
-  if (same_settings(fresh, s.settings)) return;
+  if (same_passes(fresh, s.settings, s.o.passes)) return;
   s.settings = fresh;
   s.pipeline.set_settings(fresh);
   s.redraw = true;
+  const NrSettings& base = fresh.base();
+  std::string own;
+  bool all_zero = base.intensity <= 0.0f;
+  for (int p = 1; p < s.o.passes && p < kNrMaxPasses; ++p) {
+    const std::string text = own_values_text(base, fresh.pass[p]);
+    if (!text.empty()) own += strf(", pass %d: %s", p + 1, text.c_str());
+    if (fresh.pass[p].intensity > 0.0f) all_zero = false;
+  }
   note("loop: settings: style %u, intensity %.2f, local tone %.2f, local structure %.2f, "
-       "skin structure %.2f, auto mask %d%s",
-       fresh.style, fresh.intensity, fresh.local_tone, fresh.local_structure, fresh.skin_structure,
-       fresh.auto_mask,
-       s.network && fresh.intensity <= 0.0f ? ". At an intensity of 0 the network does not run" : "");
+       "skin structure %.2f, auto mask %d%s%s",
+       base.style, base.intensity, base.local_tone, base.local_structure, base.skin_structure, base.auto_mask,
+       own.c_str(), s.network && all_zero ? ". At an intensity of 0 the network does not run" : "");
 }
 
 // "quality N": the network works at another size, and the loop does not stand still for it.
@@ -1123,7 +1369,8 @@ void land_switch(State& s) {
 // network made some ten seconds after the switch, see kSwitchRuns. Over a still screen the
 // loop makes no such run by itself, so kMemoryNoteAfter seconds after a switch a picture at
 // rest goes through the network once more, as a settle's run does. A second later the memory
-// in use is noted, beside the level before the first switch, for whoever reads the log.
+// in use is noted, beside the level before the first switch and the budget the system
+// gives this process, for whoever reads the log.
 void note_memory(State& s) {
   const double now = now_s();
   // With the settle off a picture at rest is left alone, also here.
@@ -1136,8 +1383,9 @@ void note_memory(State& s) {
   }
   s.t_memory = 0.0;
   note("loop: %.0f MiB of video memory in use %.0f s after the last switch of the quality step, %.0f MiB before "
-       "the first%s",
+       "the first, the budget %.0f MiB%s",
        (double)s.gpu.vram_bytes() / 1048576.0, now - s.t_landed, s.memory_before,
+       (double)s.gpu.vram_budget_bytes() / 1048576.0,
        s.memory_asked ? ". The picture was at rest and went through the network once more for it" : "");
   s.memory_asked = false;
 }
@@ -1245,28 +1493,76 @@ void take_commands(State& s) {
 
 // ---------------------------------------------------------------- the profile
 
-// Pipeline::times() gives the GPU times of the newest draw the GPU has finished, so a draw's
-// times are read where the loop knows it has finished: after an ingest, which waits for the
-// queue and with it for the draw submitted before, and after a read back, which waits as
-// well. The ingest's own time is known as soon as it returns, and is counted for every
-// ingest: the ones that find no change are the ones that come back after every present.
+// Pipeline::take_times() gives the GPU times of every draw the GPU has finished, each once,
+// so they are gathered wherever the loop passes: after an ingest, which waits for the queue
+// and with it for the draw submitted before, after a read back, before a draw, at the top of
+// a turn and before the stats line. A joined draw brings its own ingest's time with it. An
+// ingest that was waited for is counted as soon as it returns, the ones that find no change
+// too: those are the ones that come back after every present.
+void trace_draw_done(State& s, const StageTimes& t);
+
 void read_stage_times(State& s, bool after_ingest) {
   if (!s.o.profile) return;
   Profile& p = s.profile;
   if (after_ingest) {
     p.ingest_ms += s.pipeline.last_ingest_ms();
+    p.conv_ms += s.pipeline.last_convert_ms();
     ++p.ingests;
   }
-  if (p.draw_unread) {
-    const StageTimes t = s.pipeline.times();
-    p.draw_unread = false;
+  StageTimes t;
+  while (s.pipeline.take_times(t)) {
     p.composite_ms += t.composite_ms;
     ++p.draws;
-    if (p.draw_ran_network) {
+    if (t.ran_network) {
       p.nr_ms += t.nr_ms;
       ++p.nr_runs;
     }
+    if (t.joined) {
+      p.ingest_ms += t.ingest_ms;
+      p.conv_ms += t.convert_ms;
+      ++p.ingests;
+    }
+    if (s.trace.file) trace_draw_done(s, t);
   }
+}
+
+// A draw was submitted: noted by its number for the G line once its times come back. The
+// ingest's timestamps are the last ingest()'s, which led to a new or an again draw.
+void trace_draw_noted(State& s, const char* kind, bool with_frame, double submitted, bool own_ingest) {
+  Trace& t = s.trace;
+  if (!t.file) return;
+  Trace::DrawNote& n = t.draws[s.pipeline.last_draw_sequence() % Trace::kDrawNotes];
+  n.sequence = s.pipeline.last_draw_sequence();
+  n.kind = kind;
+  n.stamp = with_frame ? s.cur.timestamp_s : 0.0;
+  n.arrived = with_frame ? s.cur.arrived_s : 0.0;
+  n.submitted = submitted;
+  if (own_ingest) {
+    s.pipeline.last_ingest_ticks(n.ingest);
+  } else {
+    n.ingest[0] = n.ingest[1] = n.ingest[2] = 0;
+  }
+}
+
+// The G line of a draw the card has finished, its ticks put on now_s()'s clock.
+void trace_draw_done(State& s, const StageTimes& t) {
+  Trace& tr = s.trace;
+  if (t.sequence == 0) return;
+  const Trace::DrawNote& n = tr.draws[t.sequence % Trace::kDrawNotes];
+  if (n.sequence != t.sequence) return;
+  const double now = now_s();
+  if (tr.cal_at == 0.0 || now - tr.cal_at > 1.0) {
+    if (s.gpu.clock_pair(tr.cal_gpu, tr.cal_cpu_s)) tr.cal_at = now;
+  }
+  if (tr.cal_at == 0.0 || s.gpu.timestamp_hz == 0) return;
+  const auto moment = [&](UINT64 tick) {
+    return tick == 0 ? 0.0 : tr.cal_cpu_s + ((double)tick - (double)tr.cal_gpu) / (double)s.gpu.timestamp_hz;
+  };
+  const UINT64* ingest = t.joined ? t.ticks : n.ingest;
+  fprintf(tr.file, "G %llu %s %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f\n",
+          (unsigned long long)t.sequence, n.kind, n.stamp, n.arrived, n.submitted, moment(ingest[0]),
+          moment(ingest[1]), moment(ingest[2]), moment(t.ticks[0]), moment(t.ticks[1]), moment(t.ticks[2]),
+          moment(t.ticks[3]), moment(t.ticks[4]));
 }
 
 // ---------------------------------------------------------------- where a present went
@@ -1568,6 +1864,9 @@ void take_shot(State& s) {
     note("loop: the screenshot has no after picture: %s", err.c_str());
     shot->after.clear();
   }
+  // LENS_FAST_SHOT_RAW=1: the 16-bit frame as it came, when there is one
+  if (s.shot_raw && !s.pipeline.read_raw(shot->raw, err)) shot->raw.clear();
+  if (s.shot_raw && !s.pipeline.read_target_raw(shot->out, err)) shot->out.clear();
   g_shot_busy.store(true);
   HANDLE thread = nullptr;
   if (!start_thread(shot_thread, shot, &thread)) {
@@ -1622,19 +1921,19 @@ void first_picture(State& s) {
   s.t_present = now_s();
   trace_present(s, false, s.t_present);
   ++s.repeated;
-  s.profile.draw_unread = true;
-  s.profile.draw_ran_network = false;
   s.shown = true;
-  // The line ends with the quality step in use, which the lens takes from there. It is
+  // The quality step in use is one part of the line, which the lens takes by its name. It is
   // "quality N" with nothing after the number. Where an option gave the work size itself
-  // there is no step, and the line says that.
+  // there is no step, and the part says that. The last part is the monitor's colour state,
+  // "hdr off" or "hdr on", see read_colour(). The format is the swapchain's: 87
+  // (B8G8R8A8_UNORM), or 10 (R16G16B16A16_FLOAT) with Windows HDR on for the monitor.
   const std::string quality =
       s.quality >= 0 ? strf("quality %d", s.quality) : std::string("quality none, the work size was given");
   say("presenter ready %dx%d at (%d,%d) on %s, format %d, present mode flip-discard, %u images, "
-      "readback yes, source %s, version " LENS_FAST_VERSION ", engine fast, work %dx%d, passes %d, %s",
-      s.o.width, s.o.height, s.o.x, s.o.y, s.gpu.name.c_str(), (int)Window::kFormat,
+      "readback yes, source %s, version " LENS_FAST_VERSION ", engine fast, work %dx%d, passes %d, %s, hdr %s",
+      s.o.width, s.o.height, s.o.x, s.o.y, s.gpu.name.c_str(), (int)s.window.format(),
       Window::kBuffers, s.o.source.c_str(), s.work_w, s.work_h, s.network ? s.o.passes : 0,
-      quality.c_str());
+      quality.c_str(), s.colour.hdr ? "on" : "off");
   note("loop: the first picture is on screen %.0f ms after the process began",
        (s.t_present - g_born) * 1000.0);
 }
@@ -1652,7 +1951,7 @@ void draw(State& s, Draw how) {
   // use. When there is no memory for them it is the screenshot or the probe that fails, and
   // the picture is drawn all the same.
   bool keep = s.shot_wanted || s.probe.left > 0;
-  if (keep && !s.pipeline.prepare_copies(err)) {
+  if (keep && !s.pipeline.prepare_copies(target.format, err)) {
     note("loop: the picture cannot be read back: %s", err.c_str());
     if (s.shot_wanted) {
       s.shot_wanted = false;
@@ -1665,14 +1964,49 @@ void draw(State& s, Draw how) {
     keep = false;
   }
   double t_sub = now_s();
-  // The draw before this one may still be unread. Over a still screen no ingest follows a new
-  // picture, only this repeat a heartbeat later. 20 ms on, the GPU has long finished it, and
-  // its times are read now, before this draw takes its place.
-  if (s.profile.draw_unread && t_sub - s.t_present > 0.02) read_stage_times(s, false);
+  // whatever draw before this one the GPU has finished is read now, before this one takes
+  // its context
+  read_stage_times(s, false);
   bool ran_network = false;
   if (how == Draw::Repaint) {
     step("repaint");
     if (!s.pipeline.repaint(target, keep, err)) die(s, "repaint: " + err);
+    trace_draw_noted(s, "repaint", false, now_s(), false);
+  } else if (how == Draw::Joined) {
+    // The frame just taken, not compared: its ingest, the network and the composite in one
+    // list, submitted and not waited for, see kJoinAfter. The picture the network starts
+    // without its history is new to it as a whole, as below.
+    if (s.reset_next) {
+      for (uint8_t& tile : s.moved) tile = 1;
+    }
+    step("joined");
+    if (!s.pipeline.render_joined(s.cur.texture, s.joined_prev, s.capture.fence(), s.cur.fence_value, target,
+                                  s.reset_next, keep, err)) {
+      die(s, "joined: " + err);
+    }
+    const double t_done = now_s();
+    trace_draw_noted(s, "joined", true, t_done, false);
+    if (s.o.profile && s.cur.arrived_s > 0.0) {
+      s.profile.wake_ms += (t_sub - s.cur.arrived_s) * 1000.0;
+      s.profile.wall_ms += (t_done - t_sub) * 1000.0;
+      s.profile.cwait_ms += s.pipeline.last_copy_wait_ms();
+      ++s.profile.timed;
+    }
+    ++s.profile.joined;
+    // the list reads both frames: their slots are not written before it is done
+    s.capture.note_read(s.cur, s.gpu.fence_value);
+    if (s.joined_prev) {
+      CaptureFrame before;
+      before.texture = s.joined_prev;
+      s.capture.note_read(before, s.gpu.fence_value);
+    }
+    s.joined.push_back({s.cur, 0.0});
+    if (t_done - t_sub > 0.25) note("loop: a joined draw call took %.0f ms", (t_done - t_sub) * 1000.0);
+    s.reset_next = false;
+    s.redraw = false;
+    s.have = true;
+    ran_network = s.pipeline.network_runs();
+    if (ran_network && s.runs_since_switch < kSwitchRuns) ++s.runs_since_switch;
   } else {
     if (how == Draw::Again) {
       // With no frame to compare it with, ingest prepares the frame on screen as if it
@@ -1702,6 +2036,10 @@ void draw(State& s, Draw how) {
     if (!s.pipeline.render(s.cur.texture, target, s.reset_next, keep, err)) {
       die(s, "render: " + err);
     }
+    trace_draw_noted(s, how == Draw::New ? "new" : how == Draw::Again ? "again" : "settle", how == Draw::New,
+                     now_s(), how != Draw::Settle);
+    // the composite reads the frame: its slot is not written before the list is done
+    s.capture.note_read(s.cur, s.gpu.fence_value);
     // A slow call says so: the first network run at a new size is the suspect, and the
     // watchdog only sees the loop stand still.
     const double took = (now_s() - t_sub) * 1000.0;
@@ -1727,6 +2065,7 @@ void draw(State& s, Draw how) {
   else if (t1 - s.t_run >= kRunSeconds) s.composed = false;
   // A switch of the quality step, from its line to the first picture at the new work size:
   // how many pictures were drawn meanwhile, and the longest any of them stood on screen.
+  const bool fresh = how == Draw::New || how == Draw::Joined;
   if (s.switching || s.switched) {
     s.gap_most = std::max(s.gap_most, t1 - s.t_present);
     if (s.switching && how != Draw::Repaint) ++s.held;
@@ -1742,18 +2081,24 @@ void draw(State& s, Draw how) {
   s.t_present = t1;
   s.progress = true;
   s.repaint_once = false;
-  trace_present(s, how == Draw::New, t1);
+  trace_present(s, fresh, t1);
   s.profile.present_ms += (t1 - t0) * 1000.0;
   ++s.profile.presents;
-  s.profile.draw_unread = true;
-  s.profile.draw_ran_network = ran_network;
 
-  if (how == Draw::New) {
+  if (fresh) {
     // The meter: the present call against the capture's own timestamp, which names the
-    // composition the frame belongs to. Both are on now_s()'s clock.
-    s.meter.push_back((t1 - s.cur.timestamp_s) * 1000.0);
-    ++s.fresh;
-    if (s.cur_was_held) ++s.late;
+    // composition the frame belongs to. Both are on now_s()'s clock. A joined picture's
+    // entry, and its count as new and as late, wait for its answer, see resolve_joined():
+    // they then fall in the line of the second the answer came in, a turn later at most,
+    // and never have to be taken out of a line that has gone out.
+    if (how == Draw::Joined && !s.joined.empty()) {
+      s.joined.back().meter = (t1 - s.cur.timestamp_s) * 1000.0;
+      s.joined.back().late = s.cur_was_held;
+    } else {
+      s.meter.push_back((t1 - s.cur.timestamp_s) * 1000.0);
+      ++s.fresh;
+      if (s.cur_was_held) ++s.late;
+    }
     s.t_new = t1;
     s.t_changed = t1;
     s.echoes = 0;
@@ -1796,14 +2141,87 @@ void draw(State& s, Draw how) {
 }
 
 // Takes the newest frame from the capture and finds out whether it shows anything new.
-// Returns true when it did, and the new picture has then been presented.
+// Returns true when it did, and the new picture has then been presented. While the frames
+// keep changing it is drawn before that is known, see kJoinAfter, and true then means it
+// was presented.
 //
 // Every frame taken goes through ingest, changed or not. The pipeline keeps no copy of the
 // captured picture: it draws repaints from the newest frame it was given, and the capture
 // takes the one before back at the next acquire. A frame acquired and not ingested would
 // leave the pipeline drawing from a slot the capture is about to write.
+//
+// The last draw is waited for before the frame is taken. The ingest waits for the card in
+// any case, and the queue runs in order, so a frame taken while the draw before it still
+// runs waits behind that draw, and the picture made of it is older by as long as the draw
+// took. Over a game that keeps the card busy a draw can take a few refreshes, and frames
+// that arrived meanwhile would then wait their turn behind an older one. Waited for first,
+// the frame taken is the newest one the capture has at the moment the card can start on it,
+// and the ones before it count as dropped. While a draw ends within a refresh, as it does
+// over a free card, the wait finds it done and costs a read of the fence. The limit's rule,
+// the frame it keeps back, the settle and the repeats are as they were: the capture judges
+// frames as they arrive, and this only moves the moment the loop takes one.
+// The answers of the joined draws the GPU has finished, see kJoinAfter: a frame that
+// differed counts as a new picture now, in the meter and the line, with its tiles kept for
+// the settle, and a frame that was the same as the last is counted as the careful way
+// counts it, as a repeat of the picture and a skipped frame, with its turn given back (the
+// frame's own, or the one before it when the echo of its present has taken a turn since,
+// see Capture::turn_back) and the capture's echo bookkeeping of take_frame(). Every turn
+// passes here, so an answer waits a turn at most.
+void resolve_joined(State& s) {
+  bool changed = false;
+  uint8_t tiles[Pipeline::kTiles];
+  for (;;) {
+    for (uint8_t& tile : tiles) tile = 0;
+    if (!s.pipeline.take_flag(changed, tiles)) return;
+    State::Joined done;
+    const bool known = !s.joined.empty();
+    if (known) {
+      done = s.joined.front();
+      s.joined.erase(s.joined.begin());
+    }
+    if (changed) {
+      ++s.changed_run;
+      for (int i = 0; i < Pipeline::kTiles; ++i) {
+        if (tiles[i]) s.moved[i] = 1;
+      }
+      if (known) {
+        s.meter.push_back(done.meter);
+        ++s.fresh;
+        if (done.late) ++s.late;
+      }
+      continue;
+    }
+    s.changed_run = 0;
+    ++s.profile.same;
+    ++s.skipped;
+    ++s.repeated;
+    s.capture.turn_back(done.frame);
+    s.t_back = done.frame.arrived_s;
+    s.echoes = 0;
+    s.repeat_open = false;
+  }
+}
+
+// Whether the frame just taken goes the joined way, see kJoinAfter: the frames before it
+// were found changed often enough in a row, every answer is in, and there is a frame
+// before it to compare with.
+bool join_now(const State& s, ID3D12Resource* before) {
+  return s.join_after > 0 && before != nullptr && s.changed_run >= s.join_after && s.joined.empty();
+}
+
 bool take_frame(State& s) {
   CaptureFrame frame;
+  std::string err;
+  step("wait draw");
+  const double t_wait = now_s();
+  if (!s.pipeline.wait_drawn(err)) die(s, "wait for the draw: " + err);
+  if (s.o.profile) {
+    s.profile.dwait_ms += (now_s() - t_wait) * 1000.0;
+    ++s.profile.dwaits;
+  }
+  // the last draw is done, so the answer of a joined one is in
+  resolve_joined(s);
+  read_stage_times(s, false);
   step("acquire");
   if (!s.capture.acquire(frame)) return false;
   s.progress = true;
@@ -1819,8 +2237,24 @@ bool take_frame(State& s) {
   // The frame handed out before this one stays valid and unchanged through this acquire,
   // so the two can be compared. Null for the first: it is drawn whatever it holds.
   ID3D12Resource* before = s.have_cur ? s.cur.texture : nullptr;
+  if (join_now(s, before)) {
+    // The joined way: drawn and presented at once, compared on the way, see kJoinAfter.
+    // Whatever the settle still had to do for the picture before is over, and where this
+    // frame differs is learned with the answer.
+    s.cur = frame;
+    s.have_cur = true;
+    s.joined_prev = before;
+    s.at_rest = false;
+    s.settle_left = 0;
+    if (s.stall_ms > 0.0 && now_s() >= s.t_stall) {
+      // a test's own hiccup, see LENS_FAST_STALL
+      Sleep((DWORD)s.stall_ms);
+      s.t_stall = now_s() + s.stall_every;
+    }
+    draw(s, Draw::Joined);
+    return true;
+  }
   bool changed = false;
-  std::string err;
   step("ingest");
   const double t_in = now_s();
   if (!s.pipeline.ingest(frame.texture, before, s.capture.fence(), frame.fence_value, changed,
@@ -1842,6 +2276,7 @@ bool take_frame(State& s) {
   // screen the network rests. Under a limit it gives its turn back, so a picture that
   // repeats does not cost the next new one its turn.
   if (!changed) {
+    s.changed_run = 0;
     ++s.skipped;
     s.capture.turn_back(frame);
     // A repeat that comes back like this, within a few refreshes, was composed. A frame like
@@ -1863,6 +2298,7 @@ bool take_frame(State& s) {
   }
   // The picture is changing. Whatever the settle still had to do for the one before is
   // over, and where this frame differs is kept for when the picture next comes to rest.
+  ++s.changed_run;
   s.pipeline.add_changed_tiles(s.moved);
   s.at_rest = false;
   s.settle_left = 0;
@@ -1897,6 +2333,9 @@ bool take_frame(State& s) {
 // at it, and 6 later. "nan" when no new picture's showing was learned.
 void report(State& s, double now) {
   const CaptureCounters c = s.capture.take_counters();
+  // the answers and the times of what the GPU has finished go into this second's line
+  resolve_joined(s);
+  read_stage_times(s, false);
 
   // The median of the second, the upper one of an even count, as the Python loop took it.
   // "nan" is spelled out, since the lens reads the number with Python's float(), which does
@@ -1924,10 +2363,15 @@ void report(State& s, double now) {
     // loop's own latency and the ingest's waits for the card, which ingest= leaves out
     extra += strf(" wake=%.2f iwall=%.2f cwait=%.2f", p.wake_ms / std::max(1, p.timed),
                   p.wall_ms / std::max(1, p.timed), p.cwait_ms / std::max(1, p.timed));
-    Profile next;
-    next.draw_unread = p.draw_unread;  // a draw still on the GPU is read in the next second
-    next.draw_ran_network = p.draw_ran_network;
-    p = next;
+    // dwait: the wait for the last draw before a frame is taken, see take_frame()
+    extra += strf(" dwait=%.2f", p.dwait_ms / std::max(1, p.dwaits));
+    // conv: the conversion of a 16-bit frame to 8 bits on the card, a mean over the ingests,
+    // 0 for a monitor without Windows HDR. ingest= leaves it out
+    extra += strf(" conv=%.2f", p.conv_ms / std::max(1, p.ingests));
+    // joined: new pictures drawn by one list, see kJoinAfter. same: of the frames drawn so,
+    // those found the same as the last afterwards, each a run of the network for nothing
+    extra += strf(" joined=%d same=%d", p.joined, p.same);
+    p = Profile();  // a draw still on the GPU is read in the next second
   } else {
     extra = delay;
   }
@@ -1956,6 +2400,9 @@ void report(State& s, double now) {
     s.lost_said = false;
     s.t_check = 0.0;
   }
+  // Windows HDR on or off for the monitor since the capture started, see watch_colour()
+  watch_colour(s);
+  if (s.lost_said || !s.capturing) return;
   // Windows ends a monitor capture when the displays change. Otherwise it delivers a frame
   // only when what the monitor shows has changed, and the presents of this window do not
   // count when it is excluded from capture: over a still source the first runs on screen
@@ -2083,6 +2530,7 @@ void turn(State& s) {
   double now = now_s();
   bool is_new = false;
   trace_look(s, now);
+  resolve_joined(s);  // the answer of a joined draw the GPU has finished, see kJoinAfter
 
   // Whatever frame the capture has ready is drawn at once. Under a limit the capture has
   // already judged it. Is none ready, the limit may have kept the last frame back, the one
@@ -2260,16 +2708,43 @@ void start(State& s) {
            every);
     }
   }
+  if (const std::wstring join = env_text(L"LENS_FAST_JOIN"); !join.empty()) {
+    s.join_after = std::clamp(_wtoi(join.c_str()), 0, 1000);
+    if (s.join_after > 0) {
+      note("loop: LENS_FAST_JOIN, the ingest and the render go as one list after %d changed frames in a row",
+           s.join_after);
+    } else {
+      note("loop: LENS_FAST_JOIN=0, every new frame's ingest is waited for before its render");
+    }
+  }
   if (const std::wstring path = env_text(L"LENS_FAST_TRACE"); !path.empty()) {
     s.trace.file = _wfopen(path.c_str(), L"w");
     note("loop: LENS_FAST_TRACE, %s", s.trace.file ? "every present is written down" : "the file cannot be written");
   }
   s.stats_note = env_text(L"LENS_FAST_STATS_NOTE") == L"1";
   if (s.stats_note) note("loop: LENS_FAST_STATS_NOTE, every stats line goes to stderr too");
+  s.shot_raw = env_text(L"LENS_FAST_SHOT_RAW") == L"1";
+  if (s.shot_raw) note("loop: LENS_FAST_SHOT_RAW=1, a screenshot of a 16-bit capture writes the raw frame and the picture drawn too");
+  HdrAbove above = HdrAbove::Fade;
+  if (const std::wstring word = env_text(L"LENS_FAST_HDR_ABOVE"); !word.empty()) {
+    if (word == L"pass") {
+      above = HdrAbove::Pass;
+    } else if (word == L"fade") {
+      above = HdrAbove::Fade;
+    } else if (word == L"clip") {
+      above = HdrAbove::Clip;
+    } else {
+      note("loop: LENS_FAST_HDR_ABOVE is not pass, fade or clip, the change fades out above SDR white");
+    }
+    note("loop: LENS_FAST_HDR_ABOVE, above SDR white the network's change %s",
+         above == HdrAbove::Pass ? "passes" : above == HdrAbove::Fade ? "fades out" : "is clipped");
+  }
 
   step("gpu");
   s.monitor = monitor_under(o.x, o.y, o.width, o.height);
   if (!s.gpu.init(s.monitor, err)) die(s, "gpu: " + err);
+  // the slots' guard: the capture never writes a slot a list of this queue still reads
+  s.capture.set_reader_fence(s.gpu.fence.Get());
 
   step("window");
   WindowDesc wd;
@@ -2280,7 +2755,13 @@ void start(State& s) {
   wd.title = o.title;
   wd.exclude = o.exclude;
   wd.path = o.present;
+  // With Windows HDR on for the monitor the swapchain is made in 16-bit floats from the
+  // start. The capture's start reads the state again, with the note, and keeps the two in
+  // step from then on, see start_capture().
+  const MonitorColour first = monitor_colour(s.monitor);
+  wd.hdr = first.known && first.hdr;
   if (!s.window.create(s.gpu, wd, err)) die(s, "window: " + err);
+  if (wd.hdr && !s.window.hdr()) s.hdr_out = false;
   s.refresh_hz = s.window.refresh_hz();
 
   step("pipeline");
@@ -2295,7 +2776,7 @@ void start(State& s) {
   } else {
     note("loop: the work size %dx%d was given by %s, no quality step is in use", plan.w, plan.h, plan.given_by);
   }
-  if (!read_nr_settings(o.stack_dir, s.settings, err)) {
+  if (!read_nr_passes(o.stack_dir, s.settings, err, o.passes)) {
     note("loop: %s, the network runs on its own defaults", err.c_str());
   }
   s.network = env_text(L"LENS_FAST_NO_NETWORK") != L"1";
@@ -2312,6 +2793,10 @@ void start(State& s) {
   pd.nr_on = true;
   pd.load_network = s.network;
   if (!s.pipeline.init(s.gpu, pd, err)) die(s, "pipeline: " + err);
+  // the draws' GPU times are taken by read_stage_times() with the profile on and by nothing else
+  s.pipeline.keep_times(s.o.profile);
+  s.pipeline.keep_raw(s.shot_raw);
+  s.pipeline.set_hdr_above(above);
 
   step("commands");
   if (!s.reader.start(err)) die(s, "commands: " + err);
@@ -2344,10 +2829,10 @@ void start(State& s) {
 
   const int passes = s.network ? o.passes : 0;
   note("loop: %dx%d at (%d,%d) on %s, %.0f Hz, work %dx%d, %d pass%s, limit %g, %.0f MiB of video "
-       "memory in use, %.0f ms after the process began",
+       "memory in use of a budget of %.0f MiB, %.0f ms after the process began",
        o.width, o.height, o.x, o.y, s.gpu.name.c_str(), s.refresh_hz, s.work_w, s.work_h, passes,
        passes == 1 ? "" : "es", s.limit_fps, (double)s.gpu.vram_bytes() / 1048576.0,
-       (now_s() - g_born) * 1000.0);
+       (double)s.gpu.vram_budget_bytes() / 1048576.0, (now_s() - g_born) * 1000.0);
 
   // from here the loop turns, and the watchdog holds it to its five seconds
   mark_turn();

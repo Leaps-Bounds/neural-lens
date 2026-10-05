@@ -330,6 +330,21 @@ bool Gpu::alive(std::string& err) const {
   return false;
 }
 
+bool Gpu::clock_pair(UINT64& gpu_tick, double& cpu_s) const {
+  if (!queue || timestamp_hz == 0) return false;
+  UINT64 gpu = 0, cpu = 0;
+  if (FAILED(queue->GetClockCalibration(&gpu, &cpu))) return false;
+  // the CPU's value is QueryPerformanceCounter's, which now_s() divides by its frequency
+  static const double seconds_per_tick = [] {
+    LARGE_INTEGER f;
+    QueryPerformanceFrequency(&f);
+    return 1.0 / (double)f.QuadPart;
+  }();
+  gpu_tick = gpu;
+  cpu_s = (double)cpu * seconds_per_tick;
+  return true;
+}
+
 bool Gpu::make_texture(DXGI_FORMAT format, UINT width, UINT height, D3D12_RESOURCE_FLAGS flags,
                        D3D12_RESOURCE_STATES state, const wchar_t* name_w, ComPtr<ID3D12Resource>& out,
                        std::string& err, const D3D12_CLEAR_VALUE* clear) {
@@ -399,6 +414,13 @@ UINT64 Gpu::vram_bytes() const {
   DXGI_QUERY_VIDEO_MEMORY_INFO info = {};
   if (adapter && SUCCEEDED(adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info)))
     return info.CurrentUsage;
+  return 0;
+}
+
+UINT64 Gpu::vram_budget_bytes() const {
+  DXGI_QUERY_VIDEO_MEMORY_INFO info = {};
+  if (adapter && SUCCEEDED(adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info)))
+    return info.Budget;
   return 0;
 }
 

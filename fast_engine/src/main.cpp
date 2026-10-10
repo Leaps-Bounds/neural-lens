@@ -123,6 +123,11 @@
 //                                 copy queue, on the card's copy engine, instead of on its
 //                                 D3D11 context, whose copy waits for the 3D engine behind a
 //                                 game in the foreground. See capture.cpp, copy_on_queue()
+//   LENS_FAST_ONE_FEATURE=1       the shared mode on with two passes or more whatever
+//                                 ReShade.ini says: every pass runs the first pass's
+//                                 feature and so one history, each pass with its own
+//                                 values, as SharedNetwork=1 in [NeuralLens.Passes] does.
+//                                 See NrPasses in common.h and read_nr_passes
 #include "capture.h"
 #include "capturetest.h"
 #include "common.h"
@@ -448,7 +453,8 @@ enum class Draw {
   Repaint,  // the last picture as it is, from what the last render left: no network
 };
 
-// The per stage figures of LENS_PRESENTER_PROFILE=1, summed over a second.
+// The per stage figures, summed over a second: the network's for the stats line always, the
+// rest for LENS_PRESENTER_PROFILE=1.
 struct Profile {
   double ingest_ms = 0.0;
   int ingests = 0;
@@ -555,7 +561,7 @@ struct State {
   HANDLE timer = nullptr;        // ends a wait on time, see wait_turn(). Null: plain timeouts
   int work_w = 0;                // the size the network works at
   int work_h = 0;
-  int quality = -1;              // the quality step in use, 0 to 4. -1 while an option gave
+  int quality = -1;              // the quality step in use, 0 to 5. -1 while an option gave
                                  // the work size itself, until a "quality N" comes
   bool network = true;           // false with LENS_FAST_NO_NETWORK=1
 
@@ -570,7 +576,12 @@ struct State {
   double limit_fps = 0.0;        // "cap N" and --max-fps: new pictures a second, 0 no limit
   bool want_recapture = false;   // the limit changed: the capture starts again
   int want_quality = -1;         // the step a "quality N" line asked for, -1 for none
+  bool want_remake = false;      // a reload changed the preset or the shared state, which the
+                                 // features are made with: they are made again at the size in
+                                 // use, as for a new step, see reload_settings()
   bool switching = false;        // the network for another step is being made, see switch_quality()
+  bool switch_asked = false;     // by a "quality N" line, which is answered when it lands. A
+                                 // remake alone is not
   int switch_to = -1;            // that step, and its work size
   int switch_w = 0;
   int switch_h = 0;
@@ -1264,7 +1275,10 @@ void switch_settle(State& s, bool on) {
 
 // "reload": the lens has written new settings into ReShade.ini, the base in the add-on's
 // section and each pass's own values, see NrPasses. Only the passes in use are read. The note
-// names the base and, for each pass that has values of its own, those values.
+// names the base and, for each pass that has values of its own, those values. A new preset
+// or shared state is not read by the runtime at an evaluate: the features are made with it,
+// so they are made again, at the size in use, the way a new quality step makes them, while
+// the pictures go on, see switch_quality().
 void reload_settings(State& s) {
   NrPasses fresh;
   std::string err;
@@ -1273,9 +1287,11 @@ void reload_settings(State& s) {
     return;
   }
   if (same_passes(fresh, s.settings, s.o.passes)) return;
+  const bool remake = s.network && (fresh.preset != s.settings.preset || fresh.shared != s.settings.shared);
   s.settings = fresh;
   s.pipeline.set_settings(fresh);
   s.redraw = true;
+  if (remake) s.want_remake = true;
   const NrSettings& base = fresh.base();
   std::string own;
   bool all_zero = base.intensity <= 0.0f;
@@ -1284,16 +1300,24 @@ void reload_settings(State& s) {
     if (!text.empty()) own += strf(", pass %d: %s", p + 1, text.c_str());
     if (fresh.pass[p].intensity > 0.0f) all_zero = false;
   }
+  // the strength, see NrPasses: off, or the factor the change the passes made together is
+  // scaled by
+  const std::string strength = fresh.strength > 1.0f ? strf("strength %.2f, the change times it", fresh.strength)
+                                                     : std::string("strength off");
   note("loop: settings: style %u, intensity %.2f, local tone %.2f, local structure %.2f, "
-       "skin structure %.2f, auto mask %d%s%s",
+       "skin structure %.2f, auto mask %d, ui correction %d, preset %u, shared %s, %s%s%s%s",
        base.style, base.intensity, base.local_tone, base.local_structure, base.skin_structure, base.auto_mask,
-       own.c_str(), s.network && all_zero ? ". At an intensity of 0 the network does not run" : "");
+       base.ui_correction, fresh.preset, fresh.shared ? "on" : "off", strength.c_str(), own.c_str(),
+       s.network && all_zero ? ". At an intensity of 0 the network does not run" : "",
+       remake ? ". The features are made again for the preset or the shared state" : "");
 }
 
 // "quality N": the network works at another size, and the loop does not stand still for it.
 //
-// The network for the new size takes 118 to 135 ms a pass to make on an RTX 5090. Made on
-// this thread, that held the loop. Measured over a moving picture at 120 Hz, the picture
+// The network for the new size takes 118 to 135 ms a pass to make on an RTX 5090 at a work
+// size up to 2560x1440, 143 to 154 ms a pass at Full at 6144x2560, and once 226 ms a pass
+// for Balanced right after Full there, which made that switch 0.46 s. Made on this thread,
+// that held the loop. Measured over a moving picture at 120 Hz, the picture
 // before the first one at the new size stood for 112 to 157 ms, 13 to 19 refreshes. So it is
 // made on a thread of the pipeline's own (Pipeline::begin_work), beside the network in use.
 // Two calls into the runtime must never run at once, so while that thread works this one
@@ -1320,15 +1344,26 @@ void answer_quality(const State& s) {
   else say("engine quality none work %dx%d", s.work_w, s.work_h);
 }
 
-// The switch could not be made. The old network stays, and the picture is drawn afresh.
+// The switch could not be made. The old network stays, and the picture is drawn afresh. A remake
+// that a reload asked for, see reload_settings(), is said on stdout as well as in the note, since
+// the lens has no answer to that reload otherwise and shows the person the state the file asked
+// for. The line names the state the network runs in, as the stats line goes on doing.
 void switch_failed(State& s, const std::string& err) {
   std::string alive;
   if (!s.gpu.alive(alive)) die(s, "quality: " + err);
-  note("loop: quality %d, the network for %dx%d could not be made, %s. The work size stays %dx%d", s.switch_to,
-       s.switch_w, s.switch_h, err.c_str(), s.work_w, s.work_h);
+  if (s.switch_asked) {
+    note("loop: quality %d, the network for %dx%d could not be made, %s. The work size stays %dx%d", s.switch_to,
+         s.switch_w, s.switch_h, err.c_str(), s.work_w, s.work_h);
+  } else {
+    note("loop: the network could not be made again at %dx%d for the new preset or shared state, %s. It runs as "
+         "it was made, preset %u, shared %s",
+         s.switch_w, s.switch_h, err.c_str(), s.pipeline.preset(), s.pipeline.shared_network() ? "on" : "off");
+    say("engine remake failed, shared %s, preset %u, %s", s.pipeline.shared_network() ? "on" : "off",
+        s.pipeline.preset(), err.c_str());
+  }
   s.switching = false;
   s.redraw = true;
-  answer_quality(s);
+  if (s.switch_asked) answer_quality(s);
 }
 
 // The new network is made. It takes the old one's place, and the next picture is its first.
@@ -1345,11 +1380,19 @@ void land_switch(State& s) {
   if (!s.pipeline.commit_work(err)) die(s, "quality: " + err);
   const double t2 = now_s();
   step("commands");
-  note("loop: quality %d %s, the network works at %dx%d, it was %dx%d. Made in %.0f ms beside the old one "
-       "(%.0f ms of it the creation on the CPU), put in use in %.1f ms, %.0f MiB of video memory in use",
-       s.switch_to, quality_name(s.switch_to), s.switch_w, s.switch_h, s.work_w, s.work_h,
-       (t1 - s.t_asked) * 1000.0, s.pipeline.prepare_ms(), (t2 - t1) * 1000.0,
-       (double)s.gpu.vram_bytes() / 1048576.0);
+  if (s.switch_asked) {
+    note("loop: quality %d %s, the network works at %dx%d, it was %dx%d. Made in %.0f ms beside the old one "
+         "(%.0f ms of it the creation on the CPU), put in use in %.1f ms, %.0f MiB of video memory in use",
+         s.switch_to, quality_name(s.switch_to), s.switch_w, s.switch_h, s.work_w, s.work_h,
+         (t1 - s.t_asked) * 1000.0, s.pipeline.prepare_ms(), (t2 - t1) * 1000.0,
+         (double)s.gpu.vram_bytes() / 1048576.0);
+  } else {
+    note("loop: the network was made again at %dx%d, preset %u, shared %s. Made in %.0f ms beside the old one "
+         "(%.0f ms of it the creation on the CPU), put in use in %.1f ms, %.0f MiB of video memory in use",
+         s.switch_w, s.switch_h, s.pipeline.preset(), s.pipeline.shared_network() ? "on" : "off",
+         (t1 - s.t_asked) * 1000.0, s.pipeline.prepare_ms(), (t2 - t1) * 1000.0,
+         (double)s.gpu.vram_bytes() / 1048576.0);
+  }
   s.switching = false;
   s.quality = s.switch_to;
   s.work_w = s.switch_w;
@@ -1362,7 +1405,7 @@ void land_switch(State& s) {
   s.memory_asked = false;
   s.memory_run = false;
   s.runs_since_switch = 0;
-  answer_quality(s);
+  if (s.switch_asked) answer_quality(s);
 }
 
 // The memory of the network that a switch replaced comes back only from inside a run of the
@@ -1390,17 +1433,34 @@ void note_memory(State& s) {
   s.memory_asked = false;
 }
 
+// A "quality N" line, and the remake a reload asks for (want_remake), which makes the
+// features again at the size in use the same way, with the new preset or shared state and
+// without an answer on stdout. A line and a remake that come together are one switch, since
+// the features are made anew with the new state either way.
 void switch_quality(State& s) {
-  const int quality = s.want_quality;
+  const bool asked = s.want_quality >= 0;
+  const bool remake = s.want_remake;
+  int quality = asked ? s.want_quality : s.quality;
   s.want_quality = -1;
-  int w = 0, h = 0;
-  quality_work_size(s.o.width, s.o.height, quality, w, h);
-  if (w == s.work_w && h == s.work_h) {
+  s.want_remake = false;
+  if (asked && quality == kQualityFull && !full_fits(s.o.width, s.o.height)) {
+    // the runtime would refuse a feature at the picture's size, see kFullMostTexels: the
+    // step in use is Quality, which the answer and the ready line name
+    quality = kQualityFull - 1;
+    note("loop: quality %d %s was asked for a picture of %dx%d, above the %lld megapixels the network makes a "
+         "feature for, so quality %d %s is used",
+         kQualityFull, quality_name(kQualityFull), s.o.width, s.o.height, kFullMostTexels / 1000000, quality,
+         quality_name(quality));
+  }
+  int w = s.work_w, h = s.work_h;
+  if (asked) quality_work_size(s.o.width, s.o.height, quality, w, h);
+  if (!remake && w == s.work_w && h == s.work_h) {
     s.quality = quality;
     answer_quality(s);
     return;
   }
   step("quality");
+  s.switch_asked = asked;
   s.switch_to = quality;
   s.switch_w = w;
   s.switch_h = h;
@@ -1498,11 +1558,11 @@ void take_commands(State& s) {
 // and with it for the draw submitted before, after a read back, before a draw, at the top of
 // a turn and before the stats line. A joined draw brings its own ingest's time with it. An
 // ingest that was waited for is counted as soon as it returns, the ones that find no change
-// too: those are the ones that come back after every present.
+// too: those are the ones that come back after every present. Always, not only with the
+// profile on, since the stats line says the network's time either way.
 void trace_draw_done(State& s, const StageTimes& t);
 
 void read_stage_times(State& s, bool after_ingest) {
-  if (!s.o.profile) return;
   Profile& p = s.profile;
   if (after_ingest) {
     p.ingest_ms += s.pipeline.last_ingest_ms();
@@ -1924,16 +1984,20 @@ void first_picture(State& s) {
   s.shown = true;
   // The quality step in use is one part of the line, which the lens takes by its name. It is
   // "quality N" with nothing after the number. Where an option gave the work size itself
-  // there is no step, and the part says that. The last part is the monitor's colour state,
-  // "hdr off" or "hdr on", see read_colour(). The format is the swapchain's: 87
-  // (B8G8R8A8_UNORM), or 10 (R16G16B16A16_FLOAT) with Windows HDR on for the monitor.
+  // there is no step, and the part says that. After it comes "shared on" or "shared off",
+  // whether the passes run through the first pass's feature, see NrPasses, which is on only
+  // with two passes or more. The last part is the monitor's colour state, "hdr off" or "hdr
+  // on", see read_colour(), and stays last: tests look for it there. The format is the
+  // swapchain's: 87 (B8G8R8A8_UNORM), or 10 (R16G16B16A16_FLOAT) with Windows HDR on for
+  // the monitor.
   const std::string quality =
       s.quality >= 0 ? strf("quality %d", s.quality) : std::string("quality none, the work size was given");
   say("presenter ready %dx%d at (%d,%d) on %s, format %d, present mode flip-discard, %u images, "
-      "readback yes, source %s, version " LENS_FAST_VERSION ", engine fast, work %dx%d, passes %d, %s, hdr %s",
+      "readback yes, source %s, version " LENS_FAST_VERSION ", engine fast, work %dx%d, passes %d, %s, shared %s, "
+      "hdr %s",
       s.o.width, s.o.height, s.o.x, s.o.y, s.gpu.name.c_str(), (int)s.window.format(),
       Window::kBuffers, s.o.source.c_str(), s.work_w, s.work_h, s.network ? s.o.passes : 0,
-      quality.c_str(), s.colour.hdr ? "on" : "off");
+      quality.c_str(), s.pipeline.shared_network() ? "on" : "off", s.colour.hdr ? "on" : "off");
   note("loop: the first picture is on screen %.0f ms after the process began",
        (s.t_present - g_born) * 1000.0);
 }
@@ -2313,10 +2377,10 @@ bool take_frame(State& s) {
 
 // ---------------------------------------------------------------- the stats line
 
-// "stats new=N arrived=N repeated=N dropped=N skipped=N meter=MS delay=MS", once a second,
-// and the counters start again. Then, once for each loss, the reason when the capture counts
-// as lost. The loop goes on showing its last picture and the lens starts a new presenter,
-// unless frames have come back by then.
+// "stats new=N arrived=N repeated=N dropped=N skipped=N meter=MS delay=MS shared=on|off
+// network=MS", once a second, and the counters start again. Then, once for each loss, the
+// reason when the capture counts as lost. The loop goes on showing its last picture and the
+// lens starts a new presenter, unless frames have come back by then.
 //
 // meter is the present call against the captured frame's timestamp, as lens_presenter.py
 // reports it. It is negative here. The timestamp is the refresh the compositor made the
@@ -2348,9 +2412,12 @@ void report(State& s, double now) {
   // New keys only ever go at the end of the line, behind whatever was there before. The lens
   // takes the pairs it knows by name and skips the rest.
   const std::string delay = " delay=" + number_text(median_of(s.trace.delay));
+  // the network's GPU time a picture, the mean over the second's runs, which the lens's
+  // warning that it runs behind goes by at the Full step, see docs\NOTES.md
+  Profile& p = s.profile;
+  const std::string network = p.nr_runs > 0 ? strf("%.2f", p.nr_ms / p.nr_runs) : std::string("nan");
   std::string extra;
   if (s.o.profile) {
-    Profile& p = s.profile;
     extra = strf(" capture=%.2f ingest=%.2f nr=%.2f composite=%.2f present=%.2f",
                  c.callback_ms / (double)std::max(1u, c.callbacks),
                  p.ingest_ms / std::max(1, p.ingests), p.nr_ms / std::max(1, p.nr_runs),
@@ -2371,10 +2438,14 @@ void report(State& s, double now) {
     // joined: new pictures drawn by one list, see kJoinAfter. same: of the frames drawn so,
     // those found the same as the last afterwards, each a run of the network for nothing
     extra += strf(" joined=%d same=%d", p.joined, p.same);
-    p = Profile();  // a draw still on the GPU is read in the next second
   } else {
     extra = delay;
   }
+  p = Profile();  // a draw still on the GPU is read in the next second
+  // shared: whether the passes run through the first pass's feature, as on the ready line,
+  // so the lens learns the state a reload gave, once the features were made again for it
+  extra += s.pipeline.shared_network() ? " shared=on" : " shared=off";
+  extra += " network=" + network;
   const std::string line = strf("stats new=%d arrived=%u repeated=%d dropped=%u skipped=%d meter=%s%s", s.fresh,
                                 c.arrived, s.repeated, c.dropped, s.skipped, meter.c_str(), extra.c_str());
   say("%s", line.c_str());
@@ -2635,7 +2706,7 @@ void turn(State& s) {
     // it would hold the network before the new one had made anything to hold, and the
     // pictures drawn meanwhile would have no network's change at all. Paused, nothing is
     // drawn, and nothing has to be waited for.
-    if (s.want_quality >= 0 && !s.switching && (!s.switched || s.paused)) switch_quality(s);
+    if ((s.want_quality >= 0 || s.want_remake) && !s.switching && (!s.switched || s.paused)) switch_quality(s);
     if (s.t_memory > 0.0 && !s.switching && now_s() >= s.t_memory) note_memory(s);
     if (s.want_recapture) recapture(s);
     if (s.paused) paused_turn(s);
@@ -2769,10 +2840,16 @@ void start(State& s) {
   s.work_w = plan.w;
   s.work_h = plan.h;
   s.quality = plan.quality;
-  if (plan.quality >= 0) {
+  if (plan.held) {
+    note("loop: quality %d %s was asked for a picture of %dx%d, above the %lld megapixels the network makes a "
+         "feature for, so quality %d %s is used, work %dx%d",
+         kQualityFull, quality_name(kQualityFull), o.width, o.height, kFullMostTexels / 1000000, plan.quality,
+         quality_name(plan.quality), plan.w, plan.h);
+  } else if (plan.quality >= 0) {
     note("loop: quality %d %s, %s, work %dx%d, %s for a picture of %dx%d", plan.quality,
          quality_name(plan.quality), plan.chosen ? "as asked" : "the default for this size", plan.w, plan.h,
-         plan.measured ? "a measured size" : "by the rule", o.width, o.height);
+         plan.measured ? "a measured size" : (plan.quality == kQualityFull ? "the picture's own size" : "by the rule"),
+         o.width, o.height);
   } else {
     note("loop: the work size %dx%d was given by %s, no quality step is in use", plan.w, plan.h, plan.given_by);
   }
@@ -2793,8 +2870,9 @@ void start(State& s) {
   pd.nr_on = true;
   pd.load_network = s.network;
   if (!s.pipeline.init(s.gpu, pd, err)) die(s, "pipeline: " + err);
-  // the draws' GPU times are taken by read_stage_times() with the profile on and by nothing else
-  s.pipeline.keep_times(s.o.profile);
+  // the draws' GPU times are taken by read_stage_times() every turn, for the network's time
+  // on the stats line and the rest of the profile
+  s.pipeline.keep_times(true);
   s.pipeline.keep_raw(s.shot_raw);
   s.pipeline.set_hdr_above(above);
 
@@ -2828,11 +2906,16 @@ void start(State& s) {
   if (!start_capture(s, err)) die(s, "capture: " + err);
 
   const int passes = s.network ? o.passes : 0;
-  note("loop: %dx%d at (%d,%d) on %s, %.0f Hz, work %dx%d, %d pass%s, limit %g, %.0f MiB of video "
+  // the strength, see NrPasses, named where it is above 1
+  const std::string strength = s.network && s.settings.strength > 1.0f
+                                   ? strf(", strength %.2f, the change times it", s.settings.strength)
+                                   : std::string();
+  note("loop: %dx%d at (%d,%d) on %s, %.0f Hz, work %dx%d, %d pass%s%s%s, limit %g, %.0f MiB of video "
        "memory in use of a budget of %.0f MiB, %.0f ms after the process began",
        o.width, o.height, o.x, o.y, s.gpu.name.c_str(), s.refresh_hz, s.work_w, s.work_h, passes,
-       passes == 1 ? "" : "es", s.limit_fps, (double)s.gpu.vram_bytes() / 1048576.0,
-       (double)s.gpu.vram_budget_bytes() / 1048576.0, (now_s() - g_born) * 1000.0);
+       passes == 1 ? "" : "es", s.pipeline.shared_network() ? " through one feature" : "", strength.c_str(),
+       s.limit_fps, (double)s.gpu.vram_bytes() / 1048576.0, (double)s.gpu.vram_budget_bytes() / 1048576.0,
+       (now_s() - g_born) * 1000.0);
 
   // from here the loop turns, and the watchdog holds it to its five seconds
   mark_turn();

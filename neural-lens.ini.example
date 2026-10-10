@@ -204,15 +204,20 @@
 # the lens uses stack by itself and says so. The Settings dialog has this too.
 # fullscreen_engine = fast
 
-# The fast engine's quality step, from 0 to 4: 4 Quality, 3 Balanced,
+# The fast engine's quality step, from 0 to 5: 5 Full, 4 Quality, 3 Balanced,
 # 2 Performance, 1 Low power, 0 Lowest power. A lower step has the network work
 # on a smaller copy of the picture, which costs less power and loses some of
 # the fine detail the network adds. The original's own detail is always kept.
-# With no step set here, a fullscreen picture larger than 2560x1440 runs at
-# Balanced, where no loss was seen, and a smaller one at Quality. A profile
-# keeps the step it was saved with and sets it when it is loaded, and one
-# saved before 0.6.1, which has none, leaves the step as it is. The Settings
-# dialog and the NR settings panel have this too.
+# At Full the network works on the picture at its own size, however large the
+# screen, which on a large screen costs it several times what Balanced does.
+# Quality does the same for a picture up to 2560x1440. With no step set here, a
+# fullscreen picture larger than 2560x1440 runs at Balanced and a smaller one
+# at Quality. A profile keeps the step it was saved with and sets it when it is
+# loaded, and one saved before 0.6.1, which has none, leaves the step as it is.
+# Where the fast engine cannot run a step, as with too little video memory for
+# Full, the lens writes the step it runs here instead, or takes the key out
+# where that step is the default. A lens before 0.7.0 takes 5 as 4. The
+# Settings dialog and the NR settings panel have this too.
 # fast_quality = 3
 
 # Load a profile by itself when the program it is tied to comes to the front.

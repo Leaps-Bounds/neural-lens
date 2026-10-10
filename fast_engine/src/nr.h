@@ -49,9 +49,12 @@ class Nr {
   //   data_dir   a writable folder for the runtime's logs. It is created when missing.
   //   passes     1 to kNrMaxPasses. Each pass has its own feature, so each keeps its own
   //              history, and the passes are chained by the caller: the output of one is
-  //              the input of the next.
+  //              the input of the next. With settings.shared, and two passes or more,
+  //              only the first pass's feature is made and every pass evaluates it, each
+  //              with its own values, so one history serves them all, see NrPasses.
   //   settings   each pass's own, used from the first evaluate on: pass p evaluates with
-  //              settings.pass[p].
+  //              settings.pass[p]. settings.preset is the model preset the features are
+  //              created with (DLSSNR.Hint.Render.Preset).
   //
   // The private proxy ini: before the DLL is loaded, init makes sure that
   // <folder of this exe>\nvngx_dlssnr.ini exists and holds EnableProxy = 0 and
@@ -82,7 +85,8 @@ class Nr {
   // Records one pass on the caller's list. Nothing runs until the caller executes the list.
   //
   //   list    open, a direct list of gpu's device, to be run on gpu's queue.
-  //   pass    0 to passes - 1: which feature.
+  //   pass    0 to passes - 1: which feature, and which pass's values. In the shared mode
+  //           the features in use were made with, every pass runs the first feature.
   //   input   work_w x work_h, kNrFormat, in NON_PIXEL_SHADER_RESOURCE. Left in that state.
   //   output  work_w x work_h, kNrFormat, created with ALLOW_UNORDERED_ACCESS, in
   //           UNORDERED_ACCESS. Left in that state. It must not be the input.
@@ -100,19 +104,33 @@ class Nr {
                 ID3D12Resource* output, bool reset, std::string& err);
 
   // New settings, each pass's own, used from the next evaluate on. Nothing is created
-  // again: the six settings are read by the runtime at every evaluate. It does not reset
-  // the history itself, the caller passes reset when it wants a clean start.
+  // again: the values a pass is steered by are read by the runtime at every evaluate. It
+  // does not reset the history itself, the caller passes reset when it wants a clean
+  // start. The preset and the shared state are taken when features are next made, by
+  // prepare(): until then the features in use run as they were made, so a caller that
+  // changes either follows with a prepare() at the work size in use and use_prepared().
+  // needs_remake() says whether the features in use differ from the settings in that.
   void set_settings(const NrPasses& settings);
+  bool needs_remake() const;
+
+  // The state the features in use were made with: whether every pass runs the first
+  // pass's feature, and the model preset. false and 0 before init.
+  bool shared() const;
+  unsigned preset() const;
 
   // Another work size, in two steps, so that the features in use go on working until the
-  // new ones are there.
+  // new ones are there. The same size as the one in use is allowed: that makes the
+  // features again with the settings' preset and shared state.
   //
-  // prepare() creates one feature for each pass at work_w x work_h, beside the ones in use.
-  // It blocks for the creation, 118 to 135 ms a pass on an RTX 5090 once a process has made
-  // its first, and waits for the GPU through a fence of its own, so it may run on a thread
-  // that is not the drawing one. Until it returns the caller makes no other call into this
-  // object. The features in use are not touched, and evaluate() keeps using them afterwards.
-  // A second prepare() before use_prepared() releases what the first one made.
+  // prepare() creates one feature for each pass at work_w x work_h, or the first pass's
+  // alone in the shared mode, beside the ones in use. It blocks for the creation, on an
+  // RTX 5090 once a process has made its first 118 to 135 ms a pass at a work size up to
+  // 2560x1440, 143 to 154 ms a pass at Full at 6144x2560, and once 226 ms a pass for
+  // Balanced right after Full there, and waits for the GPU through a fence of its own, so
+  // it may run on a thread that is not the drawing one.
+  // Until it returns the caller makes no other call into this object. The features in use
+  // are not touched, and evaluate() keeps using them afterwards. A second prepare() before
+  // use_prepared() releases what the first one made.
   // false with err, as init. The features in use then stay as they are and nothing is
   // prepared.
   bool prepare(UINT work_w, UINT work_h, std::string& err);

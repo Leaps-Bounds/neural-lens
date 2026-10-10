@@ -191,9 +191,9 @@ ngx::Result __cdecl scaling_ratio(ngx::Params* params) {
   return ngx::kSuccess;
 }
 
-// What the probe ran with and the reference picture was made with: preset 0 (the stack's
-// NRPreset) and openNR's default performance mode.
-constexpr unsigned kRenderPreset = 0;
+// What the probe ran with and the reference picture was made with: openNR's default
+// performance mode. The preset was 0 there, the stack's NRPreset, and is now the
+// settings' at each creation.
 constexpr int kPerfQualityValue = 2;
 
 void sizes(ngx::Params* p, unsigned w, unsigned h) {
@@ -211,11 +211,11 @@ void sizes(ngx::Params* p, unsigned w, unsigned h) {
   p->Set("DLSSNR.Output.Height", h);
 }
 
-void create_params(ngx::Params* p, unsigned w, unsigned h) {
+void create_params(ngx::Params* p, unsigned w, unsigned h, unsigned preset) {
   p->Set("CreationNodeMask", 1u);
   p->Set("VisibilityNodeMask", 1u);
   sizes(p, w, h);
-  p->Set("DLSSNR.Hint.Render.Preset", kRenderPreset);
+  p->Set("DLSSNR.Hint.Render.Preset", preset);
   p->Set("PerfQualityValue", kPerfQualityValue);
   p->Set("DLSSNRComputeScalingRatioCallback", reinterpret_cast<void*>(&scaling_ratio));
   p->Set("DLSSNR.ScalingRatio", 1.0f);
@@ -271,13 +271,15 @@ void eval_params(ngx::Params* p, ID3D12Resource* in, ID3D12Resource* out, ID3D12
   p->Set("DLSSNR.DepthInverted", 0);
   p->Set("DLSSNR.Enabled", 1);
   p->Set("DLSSNR.Reset", reset ? 1 : 0);
+  // as the file gives it. The runtime holds its own at 1, and a stronger picture is the
+  // strength, see NrPasses in common.h
   p->Set("DLSSNR.Intensity", s.intensity);
   p->Set("DLSSNR.LocalToneStrength", s.local_tone);
   p->Set("DLSSNR.LocalStructureStrength", s.local_structure);
   p->Set("DLSSNR.UseAutoMask", s.auto_mask);
   p->Set("DLSSNR.SkinStructureStrength", s.skin_structure);
   p->Set("DLSSNR.Style", s.style);
-  p->Set("DLSSNR.UICorrection", 0);
+  p->Set("DLSSNR.UICorrection", s.ui_correction);
   p->Set("DLSS.Indicator.Invert.X.Axis", 0);
   p->Set("DLSS.Indicator.Invert.Y.Axis", 0);
 }
@@ -434,9 +436,15 @@ bool g_started_once = false;
 // because every wait in this process has one.
 constexpr DWORD kCreateWaitMs = 20000;
 
-// The features of one work size, one for each pass.
+// The features of one work size, one for each pass, or the first pass's alone in the
+// shared mode. A set remembers what it was made with, and evaluate() goes by that, never
+// by the settings as they stand: so a changed preset or shared state can never name a
+// feature that was not made, and takes effect with the next set, see Nr::prepare.
 struct Features {
   UINT w = 0, h = 0;
+  bool shared = false;      // every pass runs feature[0], see NrPasses
+  unsigned preset = 0;      // DLSSNR.Hint.Render.Preset the features were created with
+  int count = 0;            // features made: 1 when shared, else the passes
   ngx::Handle* feature[kNrMaxPasses] = {};
   // One parameter object for each feature, so that what one pass was told can never be
   // read by another: when the runtime reads is its own business.
@@ -520,15 +528,23 @@ struct Nr::Impl {
     set.made = false;
   }
 
-  // One feature for each pass at w x h, each created on a list of its own as the probe did,
-  // run and waited for. false with err, and whatever was created is released again.
+  // Whether the settings ask for the shared mode: with one pass it changes nothing, so the
+  // set is a plain one there.
+  bool shared_wanted() const { return settings.shared && passes > 1; }
+
+  // One feature for each pass at w x h, or the first pass's alone in the shared mode, each
+  // created on a list of its own as the probe did, run and waited for, with the preset the
+  // settings hold now. false with err, and whatever was created is released again.
   bool create_set(UINT w, UINT h, Features& set, std::string& err) {
     set = Features();
     set.w = w;
     set.h = h;
-    for (int i = 0; i < passes; ++i) {
+    set.shared = shared_wanted();
+    set.preset = settings.preset;
+    set.count = set.shared ? 1 : passes;
+    for (int i = 0; i < set.count; ++i) {
       set.params[i] = new Store();
-      create_params(set.params[i], w, h);
+      create_params(set.params[i], w, h, set.preset);
       if (FAILED(allocator->Reset()) || FAILED(list->Reset(allocator.Get(), nullptr))) {
         err = "resetting the list the features are created on failed";
         release_set(set);
@@ -542,7 +558,8 @@ struct Nr::Impl {
         list->Close();
         err = good(r) ? std::string("CreateFeature gave no feature") : outcome("CreateFeature", r);
         err += strf(" at %ux%u", w, h);
-        if (passes > 1) err += strf(" (pass %d of %d)", i + 1, passes);
+        if (set.preset != 0) err += strf(" with preset %u", set.preset);
+        if (set.count > 1) err += strf(" (pass %d of %d)", i + 1, set.count);
         set.feature[i] = nullptr;
         release_set(set);
         return false;
@@ -713,10 +730,11 @@ bool Nr::init(Gpu& gpu, const std::wstring& stack_dir, const std::wstring& data_
 
   m.ready = true;
   const NrSettings& base = settings.base();
-  note("nr: %ux%u, %d pass%s, created in %.0f ms on the CPU, style %u intensity %.2f tone %.2f structure %.2f "
-       "skin %.2f mask %d",
-       work_w, work_h, passes, passes == 1 ? "" : "es", m.create_ms, base.style, base.intensity, base.local_tone,
-       base.local_structure, base.skin_structure, base.auto_mask);
+  note("nr: %ux%u, %d pass%s%s, created in %.0f ms on the CPU, style %u intensity %.2f tone %.2f structure %.2f "
+       "skin %.2f mask %d ui %d preset %u",
+       work_w, work_h, passes, passes == 1 ? "" : "es", m.now.shared ? " through one feature" : "", m.create_ms,
+       base.style, base.intensity, base.local_tone, base.local_structure, base.skin_structure, base.auto_mask,
+       base.ui_correction, m.now.preset);
   for (int p = 1; p < passes; ++p) {
     const std::string own = own_values_text(base, settings.pass[p]);
     if (!own.empty()) note("nr: pass %d has its own %s", p + 1, own.c_str());
@@ -739,8 +757,9 @@ bool Nr::prepare(UINT work_w, UINT work_h, std::string& err) {
   drop_prepared();
   if (!m.create_set(work_w, work_h, m.next, err)) return false;
   m.prepare_ms = m.next.create_ms;
-  note("nr: %ux%u made beside %ux%u, %d pass%s, created in %.0f ms on the CPU", work_w, work_h, m.now.w, m.now.h,
-       m.passes, m.passes == 1 ? "" : "es", m.next.create_ms);
+  note("nr: %ux%u made beside %ux%u, %d pass%s%s, preset %u, created in %.0f ms on the CPU", work_w, work_h,
+       m.now.w, m.now.h, m.passes, m.passes == 1 ? "" : "es", m.next.shared ? " through one feature" : "",
+       m.next.preset, m.next.create_ms);
   return true;
 }
 
@@ -770,9 +789,16 @@ bool Nr::evaluate(ID3D12GraphicsCommandList* list, int pass, ID3D12Resource* inp
     err = "evaluate was given a bad pass or bad textures";
     return false;
   }
-  eval_params(m.now.params[pass], input, output, m.motion.Get(), m.depth.Get(), m.now.w, m.now.h, reset,
+  // the feature, and with it the history, this pass runs: its own, or the first pass's in
+  // the shared mode the set in use was made with
+  const int f = m.now.shared ? 0 : pass;
+  if (f >= m.now.count || !m.now.feature[f]) {
+    err = strf("no feature for pass %d", pass + 1);
+    return false;
+  }
+  eval_params(m.now.params[f], input, output, m.motion.Get(), m.depth.Get(), m.now.w, m.now.h, reset,
               m.settings.pass[pass]);
-  const ngx::Result r = call_evaluate(m.evaluate, list, m.now.feature[pass], m.now.params[pass]);
+  const ngx::Result r = call_evaluate(m.evaluate, list, m.now.feature[f], m.now.params[f]);
   if (!good(r)) {
     err = outcome("EvaluateFeature", r);
     return false;
@@ -783,6 +809,16 @@ bool Nr::evaluate(ID3D12GraphicsCommandList* list, int pass, ID3D12Resource* inp
 void Nr::set_settings(const NrPasses& settings) {
   if (impl_) impl_->settings = settings;
 }
+
+bool Nr::needs_remake() const {
+  if (!ready()) return false;
+  const Impl& m = *impl_;
+  return m.now.shared != m.shared_wanted() || m.now.preset != m.settings.preset;
+}
+
+bool Nr::shared() const { return ready() && impl_->now.shared; }
+
+unsigned Nr::preset() const { return ready() ? impl_->now.preset : 0u; }
 
 UINT Nr::work_width() const { return impl_ ? impl_->now.w : 0; }
 

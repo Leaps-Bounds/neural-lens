@@ -74,7 +74,9 @@ How it works. Every piece below was measured before it was built:
      figures in a corner that Settings sets up. While the menu, the NR
      settings panel or the note is up, the arrow keys, Enter and Escape work
      it, so nothing needs the mouse or the taskbar while a game has the
-     keyboard. Under the fast engine the NR settings are a panel of the
+     keyboard, and with the panel up F1 says what the setting the arrow keys
+     are on does, as the pointer at rest on a setting does, see PANEL_WHY.
+     Under the fast engine the NR settings are a panel of the
      lens's own, which writes the add-on's section of ReShade.ini and has
      the engine read it again, so the picture follows a value as it moves.
      The panel has a tab for each pass. A pass from the second on runs at
@@ -980,6 +982,83 @@ PASS_SECTION = "NeuralLens.Passes"
 PASS_NAMES = {"NRStyle": "Style", "NRIntensity": "Intensity", "NRLocalTone": "LocalTone",
               "NRLocalStructure": "LocalStructure", "NRSkinStructure": "SkinStructure", "NRAutoMask": "AutoMask"}
 ADDON_PASS_INTENSITIES = 4              # NRPass2Intensity to NRPass4Intensity
+# The one key of the lens's section that is not a pass's value: SharedNetwork=1
+# has the fast engine run every pass after the first through the first pass's
+# network, with its history, instead of a network of its own, each pass at its
+# own values, and the change comes out stronger, about twice the size of one
+# pass's on the stills measured. Whether it brightens or darkens goes with the
+# values, as one pass's change does, so the texts say neither. The engine reads
+# it with two passes or more, and with one pass runs as it did. Missing or 0 it
+# is off, so a profile from before the switch, whose section lacks the key,
+# loads as off. The switch is on the NR settings panel on the tab of pass 2,
+# with the ties, see open_panel. The key is one for every pass after the first,
+# so passes 3 and 4 follow pass 2, and their tabs show the switch greyed with a
+# note that says so. The first pass's tab has none, so a lens at one pass shows
+# no switch, and the key stays in the file for when a second pass comes, see
+# _panel_shared_look. A profile carries it with the section, see
+# capture_profile. The ReShade engine never reads the key. What the engine
+# runs is on its ready line and its stats line, see _read_presenter, which the
+# readout goes by, and the row says when the key is not in effect, see
+# _panel_shared_look.
+SHARED_KEY = "SharedNetwork"
+SHARED_LABEL = "Runs through pass 1's network"
+SHARED_FOLLOW_NOTE = "follows pass 2"
+SHARED_FAILED_NOTE = "not in effect, the fast engine could not make its network again"
+SHARED_WHY = ("This pass runs through pass 1's network, with its history, instead of a network of its own. The "
+              "change comes out stronger. Passes 3 and 4 do the same.")
+SHARED_FOLLOW_WHY = "This pass runs through pass 1's network when pass 2 does, as set on the tab of pass 2."
+# The other two keys of the lens's section that are not a pass's value: the
+# strength, the lens's own scaling of the network's change. The network itself
+# does no more above an intensity of 1, on either engine, so an intensity above
+# 1 draws the picture of 1. With ScaleChange=1 the fast engine multiplies the
+# change the passes made together, the last pass's output against the first
+# pass's input, by Strength, from 1 to 2, once the last pass has run, so the
+# picture is the picture at 1 with its change that many times larger. The
+# switch is on the NR settings panel under the pass count, with a slider of
+# its own for the strength that shows while the switch is on, see open_panel;
+# the slider's value stays in the file while the switch is off, so switching
+# it on again brings it back. Missing or 0 the switch is off, and a profile
+# from before it, whose section lacks the keys, loads with it off. A profile
+# carries both with the section, see capture_profile. The ReShade engine never
+# reads them. The engine reads them at any pass count, holds a value outside
+# the range at the nearer end with a note, and says the strength in its
+# settings note on reload.
+STRENGTH_SWITCH_KEY = "ScaleChange"
+STRENGTH_KEY = "Strength"
+STRENGTH_SWITCH_LABEL = "Scale the change"
+STRENGTH_LABEL = "Strength"
+STRENGTH_LEAST, STRENGTH_MOST = 1.0, 2.0
+STRENGTH_SWITCH_WHY = ("Multiplies the change the network makes, all passes together, by the strength below, "
+                       "which shows while this is on. The network itself does no more above an intensity of 1.")
+STRENGTH_WHY = "How many times the network's change the picture gets, from 1, the change as the network made it, to 2."
+
+
+def _shared_on(own=None):
+    """Whether the passes after the first run through the first pass's
+    network, as the lens's section of ReShade.ini has it, see SHARED_KEY: on
+    with a number other than 0, off where the key is missing or is not a
+    number. own is the section as _read_pass_section gives it, read here when
+    not given."""
+    own = _read_pass_section() if own is None else own
+    return _nr_number(own, SHARED_KEY, 0) != 0
+
+
+def _strength_on(own=None):
+    """Whether the change is scaled, as the lens's section of ReShade.ini has
+    it, see STRENGTH_SWITCH_KEY: on with a number other than 0, off where the
+    key is missing or is not a number. own as for _shared_on."""
+    own = _read_pass_section() if own is None else own
+    return _nr_number(own, STRENGTH_SWITCH_KEY, 0) != 0
+
+
+def _strength_value(own=None):
+    """The strength as the lens's section has it, see STRENGTH_KEY, held
+    within STRENGTH_LEAST and STRENGTH_MOST as the engine holds it, and
+    STRENGTH_LEAST where the key is missing or is not a number, which is the
+    change as it is. own as for _shared_on."""
+    own = _read_pass_section() if own is None else own
+    v = _nr_number(own, STRENGTH_KEY, STRENGTH_LEAST)
+    return max(STRENGTH_LEAST, min(STRENGTH_MOST, v))
 
 
 def _pass_key(n, key):
@@ -1121,7 +1200,9 @@ def _profile_changes(p):
     out, apart from ADDON_KEEP, with the ties kept at the first pass's
     intensity, see _tie_sync. A profile with no add-on's section leaves that
     section as it is, and one from before the passes had values of their own
-    empties the lens's."""
+    empties the lens's, so the switch that runs the passes after the first
+    through the first pass's network and the one that scales the change go off
+    with it, see SHARED_KEY and STRENGTH_SWITCH_KEY."""
     changes = {ADDON_SECTION: {}, PASS_SECTION: {}}
     keep = {k.lower() for k in ADDON_KEEP}
     addon = _read_addon_section()
@@ -1388,7 +1469,7 @@ def _write_proxy(enabled, scale):
 # process's id, so two lenses at once, one per monitor say, never pick up each
 # other's presenter.
 TITLE = "LensNR %d" % os.getpid()
-__version__ = "0.6.1"        # beta; see CHANGELOG.md
+__version__ = "0.7.0"        # beta; see CHANGELOG.md
 
 DATA_DIR = (os.environ.get("NEURAL_LENS_DATA") or _INI.get("data_dir")
             or os.path.join(_script_dir(), "data"))
@@ -1664,22 +1745,44 @@ def _set_fullscreen_engine(mode):
     _save_ini("fullscreen_engine", None if mode == "fast" else mode)
 
 
-# The fast engine's quality steps, from 0 to 4. Toward the lower steps the
+# The fast engine's quality steps, from 0 to 5. Toward the lower steps the
 # network works on a smaller copy of the picture, which costs less power and
 # loses some of the fine detail the network adds. The original's own detail is
 # kept at every step, since the engine puts the network's change onto the
-# full-size original. It is fast_quality in the ini. With that set, the step
-# goes to the engine as --quality N when it starts. With none set the engine is
-# given no --quality and takes its own default, _default_quality, which it
-# names in its ready line. A step chosen while it runs is said as "quality N".
-FAST_QUALITY_NAMES = ("Lowest power", "Low power", "Performance", "Balanced", "Quality")
+# full-size original. Full, the highest, has the network work on the picture at
+# its own size whatever its size, where Quality fits a larger picture into
+# 2560x1440, so for a picture within 2560x1440 the two are one size. It is a
+# choice and never the default: on a large screen it costs the network several
+# times what Balanced does, see docs/NOTES.md, The quality steps. It is
+# fast_quality in the ini. With that set, the step goes to the engine as
+# --quality N when it starts. With none set the engine is given no --quality
+# and takes its own default, _default_quality, which it names in its ready
+# line. A step chosen while it runs is said as "quality N", which the engine
+# answers with the step it runs, see check_quality.
+FAST_QUALITY_NAMES = ("Lowest power", "Low power", "Performance", "Balanced", "Quality", "Full")
+FAST_QUALITY_FULL = 5
 # What the step does, for Settings and the NR settings panel. Like every text in
 # Settings it says what the setting does and no more: the watts of each step and
 # the pictures it was measured over are in docs/NOTES.md, Frames a second and
 # power at each step.
 FAST_QUALITY_WORDS = ("A lower step has the network work on a smaller copy of the picture, which saves power and "
-                      "gives up some of the fine detail it adds. Until you choose a step, a picture larger than "
-                      "2560x1440 starts at Balanced and a smaller one at Quality.")
+                      "gives up some of the fine detail it adds. At Full it works on the picture at its own size, "
+                      "however large the screen, which gives its strongest change and its slowest run, so on a "
+                      "large screen Full suits a video or a still more than a game. Quality does the same for a "
+                      "picture up to 2560x1440. Until you "
+                      "choose a step, a picture larger than 2560x1440 starts at Balanced and a smaller one at "
+                      "Quality.")
+# Said on the notice when the fast engine answers a step the lens told it with
+# another step, see Lens.check_quality: the step asked for and the step it runs
+QUALITY_REFUSED_WORDS = "The fast engine could not run the %s step, so it runs at %s."
+# How long an answer that differs from the step told has to stand, with no
+# other answer after it, before the lens takes it as the step not taken. The
+# engine takes the last of several steps told together and answers each switch
+# it makes, so a dragged slider's earlier answer is followed by the last one
+# within a switch's time, 0.1 to 0.5 s, the longest measured 0.46 s from Full
+# at 6144x2560 with two passes back to Balanced, see docs/NOTES.md, The
+# quality steps.
+QUALITY_SETTLE = 3.0
 
 
 def _default_quality(cw, ch):
@@ -1730,7 +1833,10 @@ STYLE_NAMES = {"0": "Default", "1": "Natural", "2": "Cinematic"}     # the add-o
 # the panel, the lowest and the highest value, and the model's own default, which
 # stands where the section has no value. The ranges are the ones the Cost
 # Scaler's ini gives for the model's settings. Skin structure also takes -1,
-# its default, which leaves it to the model.
+# its default, which leaves it to the model. The model's own intensity does no
+# more above 1, so the intensity's slider above 1 draws the picture of 1 on
+# either engine. A stronger picture on the fast engine is the strength, the
+# lens's own scaling of the change, see STRENGTH_SWITCH_KEY.
 NR_SLIDERS = (
     ("NRIntensity", "Intensity", 0.0, 2.0, 1.0),
     ("NRLocalTone", "Local tone", 0.0, 2.0, 1.0),
@@ -1740,6 +1846,37 @@ NR_SLIDERS = (
 # the six values a pass has, each with the model's own default, see PASS_NAMES
 NR_DEFAULTS = {"NRStyle": 0.0, "NRIntensity": 1.0, "NRLocalTone": 1.0, "NRLocalStructure": 1.0,
                "NRSkinStructure": -1.0, "NRAutoMask": 0.0}
+# What each control of the NR settings panel does, shown by the pointer at rest
+# on it and by F1 with it picked by the arrow keys, see open_panel, Hints and
+# panel_key, as Settings explains its settings. The six values of a pass are
+# the model's own, and their texts say what each sets and no more. The line at
+# the panel's foot says how the texts come up, see PANEL_HELP.
+PANEL_WHY = {
+    "profile": "The profile in use, with a star once the lens differs from it. A click, or Enter on the row, opens "
+               "the list that loads, saves and ties profiles.",
+    "auto": "With this on, each time the window of a program a profile is tied to comes to the front, the lens "
+            "loads that profile, unless it is the one in use, and says so.",
+    "nr": "Neural Rendering on or off. Off shows what is under the lens as it is.",
+    "tabs": "Which pass the values below show and set. Each pass runs on the result of the one before.",
+    "NRStyle": "The network's style for this pass. Default is the network's own choice.",
+    "NRIntensity": "How strongly the network changes the picture in this pass. At 0 it leaves the picture as it is. "
+                   "The network itself does no more above 1.",
+    "NRLocalTone": "The strength of the network's local tone in this pass.",
+    "NRLocalStructure": "The strength of the network's local structure in this pass.",
+    "NRSkinStructure": "The strength of the network's skin structure in this pass.",
+    "skin_auto": "The network chooses the skin structure for this pass itself.",
+    "NRAutoMask": "The network's auto mask for this pass, which finds the people in the picture.",
+    "tie": "Ticked, this pass runs at the first pass's value, shown greyed. Unticked, the value is this pass's own.",
+    "passes": "How many passes the network runs, each on the result of the one before, at the values of its own "
+              "tab. A change restarts the picture.",
+    "shared": SHARED_WHY,
+    "scale_change": STRENGTH_SWITCH_WHY,
+    "strength": STRENGTH_WHY,
+    "quality": FAST_QUALITY_WORDS,
+}
+# the panel's foot line, with F1 where no hotkey of Settings has it, see _f1_free
+PANEL_HELP = "Rest the pointer on a setting%s for what it does."
+PANEL_HELP_F1 = ", or press F1 with one picked,"
 # Left and Right move a slider on the panel by a hundredth a press, so a single
 # press is always the finest step. A key held down moves it further with each
 # repeat the longer it is held, which at Windows' default repeat rate crosses
@@ -1850,6 +1987,15 @@ EXCLUSIVE_WORDS = ("A program is in exclusive fullscreen, and the lens cannot dr
 BEHIND_WORDS = ("The lens is running about %.0f ms behind the program in front, most likely because that program "
                 "keeps the graphics card fully busy. A frame rate limit in that program, set a little below the "
                 "rate it reaches, lets the lens keep up. This warning can be switched off in Settings, Fullscreen.")
+# The same at the Full step where the network's own time a picture, as the
+# engine reports it, with one refresh more reaches the line, see check_behind.
+# The delay stays close to that with no program in front, so the lens would be
+# behind with none, a frame rate limit in the program in front could not bring
+# it under the line, and a lower step would. Where the network takes less, the
+# words above apply at Full as at any step
+BEHIND_FULL_WORDS = ("The lens is running about %.0f ms behind the program in front. At the Full quality step the "
+                     "network's own work on this screen holds the lens back by itself, and a lower step lets it "
+                     "keep up. This warning can be switched off in Settings, Fullscreen.")
 FS_BEHIND_WARN = str(_INI.get("fs_behind_warn", "1")).strip().lower() not in ("0", "no", "off", "false")
 
 
@@ -2179,11 +2325,21 @@ HOTKEY_LABELS = dict(HOTKEY_ACTIONS)
 # The keys that work the lens menu, the NR settings panel and the note while one
 # of them is up over a fullscreen lens, held only then, see Lens.nav_wanted. They
 # are the lens's own, never set in Settings, so they are the one place a key
-# with no modifier that is not a function key is registered.
+# with no modifier that is not a function key is registered. F1, which shows
+# what the setting the arrow keys are on does, as it does in Settings, is held
+# for the panel alone, see Lens.panel_key, and not where Settings has given F1
+# to an action, which comes first in the mapping and keeps it, see _f1_free.
 NAV_KEYS = {"nav_up": "Up", "nav_down": "Down", "nav_left": "Left", "nav_right": "Right", "nav_enter": "Enter",
-            "nav_escape": "Escape"}
+            "nav_escape": "Escape", "nav_help": "F1"}
 NAV_VK = {a: _parse_hotkey(text)[1] for a, text in NAV_KEYS.items()}
 NAV_REPEAT = ("nav_up", "nav_down", "nav_left", "nav_right")     # these repeat while held, see Hotkeys
+NAV_PANEL_ONLY = ("nav_help",)                                   # held for the panel, not for the menu or the note
+
+
+def _f1_free():
+    """Whether no action of Settings has F1 on its own, so the NR settings
+    panel's F1 is the lens's to hold while the panel is open."""
+    return not any(_parse_hotkey(text) == _parse_hotkey("F1") for text in HOTKEYS.values() if text)
 
 
 class Hotkeys:
@@ -3142,10 +3298,17 @@ class Hints:
     setting under the pointer, and it goes the same ways. The window is one of
     the lens's own: out of the picture, never taking the keyboard or a click,
     and kept on the pointer's monitor.
+
+    With own the dialog is itself a window of the lens's own that never takes
+    the keyboard, the NR settings panel over a fullscreen picture: the
+    explanation's window is then shown as such a window is, see _show_own, so
+    it can never take the foreground from the program in front, a click gives
+    nothing the keyboard, and the keys that work the panel, which never reach
+    Tk, hide it through the panel's own key handling, see Lens.panel_key.
     """
 
-    def __init__(self, lens, dialog):
-        self.lens, self.dialog = lens, dialog
+    def __init__(self, lens, dialog, own=False):
+        self.lens, self.dialog, self.own = lens, dialog, own
         self.texts = {}             # {widget: its explanation}
         self.listed = []            # (page, label, explanation) in the dialog's order, see settings_dialog
         self.at = None              # where the pointer was at its last move, on the screen
@@ -3207,6 +3370,8 @@ class Hints:
         in a binding of its own, which would outrank this one and keep a text
         up."""
         self.hide()
+        if self.own:
+            return                  # a window that never takes the keyboard gives it to nothing
         if getattr(event, "num", None) == 1 and isinstance(event.widget, (tk.Checkbutton, tk.Radiobutton,
                                                                           tk.Button, tk.Scale)):
             event.widget.focus_set()
@@ -3220,6 +3385,15 @@ class Hints:
             at = self.dialog.focus_get()
         except Exception:
             at = None
+        return self.explain(at)
+
+    def explain(self, at):
+        """The explanation of this widget, or of the one with a text it is
+        inside, below it, as F1 gives it in Settings, see key. With None, or
+        a widget with no text around it, the setting under the pointer gets
+        it, beside the pointer. The NR settings panel, which never has the
+        keyboard, asks it for the setting its arrow keys are on, see
+        Lens.panel_key."""
         while at is not None and at not in self.texts:
             at = None if at is self.dialog else at.master
         self.hide()
@@ -3263,6 +3437,8 @@ class Hints:
             return None
         px, py = at or self.at or self.dialog.winfo_pointerxy()
         t = self.win = tk.Toplevel(self.dialog)
+        if self.own:
+            t.withdraw()                    # before Tk first maps it, see _show_own
         t.overrideredirect(True)
         t.attributes("-topmost", True)
         t.attributes("-alpha", 0.0)         # unseen until it is out of the picture, see below
@@ -3279,6 +3455,11 @@ class Hints:
         if y + ht > my + mh:
             y = (py if top is None else top) - 12 - ht
         t.geometry("%dx%d+%d+%d" % (wd, ht, max(mx, min(x, mx + mw - wd)), max(my, min(y, my + mh - ht))))
+        if self.own:
+            # shown as the panel itself was: its styles go on while it is still
+            # withdrawn, so it is never seen in the picture and never active
+            self.lens._show_own(t, 1.0, through=True)
+            return t
         t.update_idletasks()
         self.lens._own_styles(t, through=True)
         t.attributes("-alpha", 1.0)
@@ -3323,12 +3504,20 @@ class Lens:
         self.exclusive = False      # a program in exclusive fullscreen, as last seen, see check_exclusive
         self.quality_set = FAST_QUALITY     # the quality step the ini names, or None for the default
         self.engine_quality = None      # the step the fast engine that runs is at, by its own word
+        self.quality_asked = None       # (step, when): the step last told it, until its answer, see check_quality
+        self.quality_heard = None       # (step, when, pid): its last answer, "engine quality N work WxH"
         self.engine_default = None      # (width, height, step): the step a fast engine took by itself
         self.engine_asked = None        # whether the fast engine that runs was given a step
+        self.engine_shared = None       # whether its passes run through one network, by its own word, see _read_presenter
+        self.shared_failed = False      # it could not make its network again for the key, see remake_failed
         self.panel = None           # the NR settings panel's window while it is open, see open_panel
         self.panel_ui = {}          # its controls, by name
         self.panel_vals = {}        # what ReShade.ini holds for each of its keys, as the panel knows it
+        self.panel_shared = False   # the switch on the tab of pass 2 as the panel last read it, see _panel_shared
+        self.panel_scale = False    # the switch that scales the change, as the panel last read it, see _panel_scale_change
+        self.panel_strength = STRENGTH_LEAST    # and the strength, which its slider shows while the switch is on
         self.panel_pos = {}         # where the panel itself put each slider, see _panel_slider
+        self.engine_network = None  # the network's GPU ms a picture, by the fast engine's last stats line
         self.panel_pending = {}     # changes made on it that are not written yet
         self.panel_sent = 0.0       # when its last write went out
         self.panel_timer = None     # the write that waits for its turn
@@ -3655,6 +3844,12 @@ class Lens:
         stack presenter then stands in, and the fast engine is started again once
         the stand-in gets pictures, see _recover and stats. Only a fast engine
         that gets none where the stand-in just had them is ruled out.
+
+        A fast engine that fails in its pipeline at a start at the Full step on
+        a picture larger than 2560x1440, where that step's network is made at
+        the picture's own size and may want more video memory than the card has
+        free, is not ruled out either: the lens goes by the default step, says
+        so and starts it once more, see check_quality for the same at a switch.
         """
         fast = self.engine == "fast"
         retry, self.fast_retry = self.fast_retry, False
@@ -3676,6 +3871,11 @@ class Lens:
             cmd = [FAST_EXE] + args + ["--stack", STACK_DIR, "--data", data, "--passes", str(self.passes)] + (
                 ["--quality", str(self.quality_set)] if self.quality_set is not None else [])
             self.engine_quality, self.engine_asked = None, self.quality_set is not None
+            # a step given at the start is answered by the ready line, which
+            # names the step the engine runs, see check_quality
+            self.quality_asked = None if self.quality_set is None else (self.quality_set, time.perf_counter())
+            self.quality_heard = None
+            self.engine_shared, self.shared_failed = None, False     # the new engine says for itself
         else:
             cmd = [PRESENTER_EXE] + ([PRESENTER_SCRIPT] if PRESENTER_SCRIPT else []) + args
         errlog = os.path.join(LOGDIR, "presenter-stderr.log")
@@ -3752,6 +3952,29 @@ class Lens:
                 if self.engine_stage.get(proc.pid) == "capture":
                     blind = self.engine_words.get(proc.pid) or "the capture did not start"
                 how = self._engine_end(proc, code, False)
+                if (blind is None and self.engine_stage.get(proc.pid) == "pipeline"
+                        and self.quality_set == FAST_QUALITY_FULL and (self.cw > 2560 or self.ch > 1440)):
+                    # The engine could not make its pipeline at the Full step, where
+                    # the network is made at the picture's own size, as with too
+                    # little video memory for it. The lens goes by the default step
+                    # for the picture, as check_quality does for a switch the engine
+                    # did not take, keeps it in the ini, says so, and starts the
+                    # engine once more. That start asks for the default step, so a
+                    # second failure goes to fast_out as any failed start does
+                    step = self.default_quality()
+                    print("the fast engine did not start at quality step %d %s, saying \"%s\", so the lens goes by "
+                          "the default step %d %s and starts it again"
+                          % (FAST_QUALITY_FULL, FAST_QUALITY_NAMES[FAST_QUALITY_FULL],
+                             self.engine_words.get(proc.pid) or "nothing", step, FAST_QUALITY_NAMES[step]),
+                          flush=True)
+                    self.quality_set = None
+                    _set_fast_quality(None)
+                    self.engine_quality = None
+                    self.hold_note(QUALITY_REFUSED_WORDS % (FAST_QUALITY_NAMES[FAST_QUALITY_FULL],
+                                                            FAST_QUALITY_NAMES[step]))
+                    self.sync_panel()
+                    self.update_profile_label()
+                    return self.spawn_presenter(title, x, y, source, cx, cy)
             # The add-on's settings and the motion detail are written before every
             # start, whichever the engine, so for the stack presenter that now
             # starts only the Cost Scaler is still to set, which apply_proxy left
@@ -3810,6 +4033,18 @@ class Lens:
         that showed the picture, and that is what the lens shows for it, see
         _whole_delay. It reads nan while the engine has learned of no refresh,
         and the last reading stays until it has.
+
+        The fast engine's line has shared=on or shared=off, whether its
+        passes after the first run through the first pass's network, see
+        SHARED_KEY, as its features were last made, and its ready line says
+        the same. That is what the engine runs, which the file's key becomes
+        once the engine has made its network again for it, so the readout
+        goes by it, see readout_text. An engine
+        that could not make its network again for the key says so in a line
+        of its own, see remake_failed. The line ends with network=MS, the
+        network's GPU time a picture, the mean over the second's runs, nan
+        where it did not run, which the summary and the warning that the lens
+        runs behind go by, see summarise and check_behind.
         """
         for line in proc.stdout:
             line = line.strip()
@@ -3820,17 +4055,26 @@ class Lens:
                     meter = float(kv["meter"])
                 except (ValueError, KeyError):
                     continue
+                if kv.get("shared") in ("on", "off"):
+                    self.engine_shared = kv["shared"] == "on"
                 shown = None            # the fast engine's delay, which the stack presenter does not report
                 if "delay" in kv:
                     try:
                         shown = float(kv["delay"])
                     except ValueError:
                         shown = float("nan")
+                network = None          # the network's time a picture, the fast engine's alone
+                if "network" in kv:
+                    try:
+                        network = float(kv["network"])
+                    except ValueError:
+                        network = float("nan")
+                    self.engine_network = network
                 try:
                     # the fast engine's second, for the summary in the log, under the
                     # process's id, so the summary keeps to the engine that runs, see summarise
                     self.fast_seconds.append((proc.pid, new, arrived, int(kv.get("repeated", 0)),
-                                              int(kv.get("dropped", 0)), int(kv.get("skipped", 0)), shown))
+                                              int(kv.get("dropped", 0)), int(kv.get("skipped", 0)), shown, network))
                 except ValueError:
                     pass
                 if self.t_first is None:
@@ -3878,6 +4122,29 @@ class Lens:
                 # for the Tk thread, which may itself be in spawn_presenter
                 # waiting for this thread to finish
                 print(line, flush=True)
+                m = re.match(r"engine quality (\d+) work \d+x\d+$", line)
+                if m:
+                    # the answer to "quality N": the step the engine runs now,
+                    # which check_quality holds against the step told, on the
+                    # Tk thread, with the process it came from, so an answer
+                    # of an engine being replaced counts for nothing
+                    heard = int(m.group(1))
+                    if self.stages and self.stages[0]["proc"] is proc:
+                        self.engine_quality = heard
+                    self.quality_heard = (heard, time.perf_counter(), proc.pid)
+                if line.startswith("engine remake failed"):
+                    # "engine remake failed, shared on|off, preset N, REASON": the
+                    # network could not be made again for a reload's new preset or
+                    # shared state, see SHARED_KEY, and runs as it was made, in the
+                    # state named. The notice and the panel say so, on the Tk
+                    # thread, with that state, which tells the two apart
+                    m = re.match(r"engine remake failed, shared (on|off), preset \d+, (.*)$", line)
+                    if m:
+                        runs = self.engine_shared = m.group(1) == "on"
+                        try:
+                            self.root.after(0, self.remake_failed, m.group(2), runs)
+                        except Exception:
+                            pass
                 if line.startswith("engine failed"):
                     # "engine failed pipeline: REASON": the part of the engine that
                     # failed comes first, for whoever reads the log. Settings and
@@ -3893,14 +4160,20 @@ class Lens:
                     self.engine_words[proc.pid] = said
             elif line.startswith("presenter ready") or line in ("paused", "resumed"):
                 if line.startswith("presenter ready"):
-                    # the fast engine ends its ready line with the quality step it
-                    # runs at, which is its own default where the lens gave it none
+                    # the fast engine's ready line has the quality step it runs
+                    # at, which is its own default where the lens gave it none,
+                    # and whether its passes run through one network, see SHARED_KEY
                     for part in line.split(", "):
                         if part.startswith("quality ") and part[8:].strip().isdigit():
                             self.engine_quality = int(part[8:])
                             if self.engine_asked is False:
                                 # with the picture's size, which the default goes by
                                 self.engine_default = (self.cw, self.ch, self.engine_quality)
+                            else:
+                                # the answer to the step given at the start, see check_quality
+                                self.quality_heard = (self.engine_quality, time.perf_counter(), proc.pid)
+                        elif part.strip() in ("shared on", "shared off"):
+                            self.engine_shared = part.strip() == "shared on"
                 print(line, flush=True)
 
     def tell_presenter(self, text):
@@ -5097,28 +5370,33 @@ class Lens:
 
     def nav_wanted(self):
         """Which of NAV_KEYS the lens holds right now. While the lens menu or
-        the NR settings panel is open over a fullscreen lens in view, all six,
-        so both can be worked from the keyboard while the game keeps the
-        foreground and gets none of those keys. While only the note on going
-        fullscreen is up, Enter and Escape, which close it. Else none, and a
-        windowed lens never holds them. Nor does a lens with a dialog of its
-        own in front, Settings say, which takes those keys itself, see
-        dialog_in_front, and watch_filter looks at that five times a second.
-        Nor does a lens over a program in exclusive fullscreen, where nothing
-        of the lens can be seen, see check_exclusive."""
+        the NR settings panel is open over a fullscreen lens in view, the
+        arrow keys, Enter and Escape, so both can be worked from the keyboard
+        while the game keeps the foreground and gets none of those keys, and
+        with the panel open F1 as well, which explains the setting the arrow
+        keys are on, see panel_key, unless Settings has given F1 to an action,
+        see _f1_free. While only the note on going fullscreen is up, Enter and
+        Escape, which close it. Else none, and a windowed lens never holds
+        them. Nor does a lens with a dialog of its own in front, Settings say,
+        which takes those keys itself, see dialog_in_front, and watch_filter
+        looks at that five times a second. Nor does a lens over a program in
+        exclusive fullscreen, where nothing of the lens can be seen, see
+        check_exclusive."""
         if not self.fullscreen or self.minimized or self.closing or self.exclusive:
             return ()
         if self.dialog_in_front():
             return ()
         if self.popup.win is not None or self.panel is not None:
-            return tuple(NAV_KEYS)
+            if self.panel is not None and _f1_free():
+                return tuple(NAV_KEYS)
+            return tuple(a for a in NAV_KEYS if a not in NAV_PANEL_ONLY)
         if self.note_win is not None:
             return ("nav_enter", "nav_escape")
         return ()
 
     def nav_key(self, name):
-        """up, down, left, right, enter or escape, from NAV_KEYS. The menu takes
-        them first, then the NR settings panel, then the note, which only
+        """up, down, left, right, enter, escape or help, from NAV_KEYS. The menu
+        takes them first, then the NR settings panel, then the note, which only
         Enter and Escape close."""
         if self.popup.win is not None:
             self.popup.key(name)
@@ -5506,7 +5784,10 @@ class Lens:
         """Whether the lens is what this profile says, in what the bar, Settings
         and the NR settings panel hold: the lens's own settings, and the values
         of the network for every pass the lens can run, as the file has them
-        against the profile's, number by number, the quality step too."""
+        against the profile's, number by number, the quality step too, whether
+        the passes after the first run through the first pass's network, see
+        SHARED_KEY, and whether the change is scaled and by how much, see
+        STRENGTH_SWITCH_KEY."""
         try:
             same = (p.get("passes") == self.passes and p.get("cost_scaler") == COST_SCALER
                     and bool(p.get("ready")) == self.ready and p.get("readout") == self.readout
@@ -5528,7 +5809,11 @@ class Lens:
                 for key in PASS_NAMES:
                     if now[key] != then[key]:
                         return False
-            return True
+            # a profile from before the switches has no key for them, which is off,
+            # and the strength counts only while its switch is on
+            if _shared_on(own) != _shared_on(theirs_own) or _strength_on(own) != _strength_on(theirs_own):
+                return False
+            return not _strength_on(own) or abs(_strength_value(own) - _strength_value(theirs_own)) < 0.005
         except Exception:
             return False
 
@@ -5973,6 +6258,7 @@ class Lens:
             if self.engine_quality != step:
                 self.tell_presenter("quality %d" % step)
                 self.engine_quality = step
+                self.quality_asked = (step, time.perf_counter())    # see check_quality
             if nr_changed:
                 self.tell_presenter("nr %d" % (1 if nr else 0))
             print("profile %r loaded in place, the picture goes on" % name, flush=True)
@@ -6756,6 +7042,7 @@ class Lens:
         self.check_exclusive()
         self.show_notice()
         self.show_readout()
+        self.check_quality()            # the engine's answer to the step told, which it may not have taken
         self.sync_panel()               # the engine's own quality step arrives with its ready line
         self.mirror_addon()
         self.summarise()
@@ -6767,8 +7054,12 @@ class Lens:
         Fullscreen switches on, see FS_READOUT, in their own order. The frame
         rate and the latency are the ones the menu's readout line has, the
         quality step is the fast engine's alone, the passes read NR off while
-        Neural Rendering is off, and the style is the add-on's. Nothing while
-        the lens is windowed or minimised."""
+        Neural Rendering is off and say shared where the fast engine runs two
+        or more through the first pass's network, by the engine's own word and
+        not the file's key, see SHARED_KEY and _read_presenter, so it says shared
+        once the engine has made its network again for the key, and not after
+        the engine could not. The style is the add-on's. Nothing while the
+        lens is windowed or minimised."""
         parts = []
         if self.fullscreen and not self.minimized and not self.closing and self.stages:
             idle = self.idle_now
@@ -6779,8 +7070,12 @@ class Lens:
             if "step" in FS_READOUT and self.engine == "fast":
                 parts.append("step " + FAST_QUALITY_NAMES[self.quality_now()])
             if "passes" in FS_READOUT:
-                parts.append("%d pass%s" % (self.passes, "" if self.passes == 1 else "es") if self.nr_on
-                             else "NR off")
+                if not self.nr_on:
+                    parts.append("NR off")
+                else:
+                    shared = self.passes >= 2 and self.engine == "fast" and self.engine_shared is True
+                    parts.append("%d pass%s%s" % (self.passes, "" if self.passes == 1 else "es",
+                                                  ", shared" if shared else ""))
             if "style" in FS_READOUT:
                 code = str(_read_addon_section().get("NRStyle", "0")).strip()
                 parts.append("style " + STYLE_NAMES.get(code, "Default"))
@@ -6956,30 +7251,40 @@ class Lens:
                 self.check_behind(None, since)
             return
         n = len(got)
-        delays = sorted(g[5] for g in got if g[5] is not None and g[5] == g[5])
-        mid = None
-        if delays:
-            half = len(delays) // 2
-            mid = delays[half] if len(delays) % 2 else (delays[half - 1] + delays[half]) / 2.0
+
+        def median_of(values):
+            values = sorted(v for v in values if v is not None and v == v)
+            if not values:
+                return None
+            half = len(values) // 2
+            return values[half] if len(values) % 2 else (values[half - 1] + values[half]) / 2.0
+
+        mid = median_of(g[5] for g in got)
         median = "unknown" if mid is None else "%.1f ms" % mid
+        # the network's time a picture, the median of the seconds it ran in, which
+        # the warning that the lens runs behind goes by at the Full step
+        network = median_of(g[6] for g in got)
         step = self.quality_now()
         print("fast engine, last %d s: %.1f new and %.1f arrived pictures a second, %d repeated, %d dropped, "
-              "%d skipped, median delay %s, quality step %d %s, %d pass%s, NR %s, %s"
+              "%d skipped, median delay %s, quality step %d %s, %d pass%s, NR %s, %s, network %s"
               % (n, sum(g[0] for g in got) / float(n), sum(g[1] for g in got) / float(n),
                  sum(g[2] for g in got), sum(g[3] for g in got), sum(g[4] for g in got), median, step,
                  FAST_QUALITY_NAMES[step], self.passes, "" if self.passes == 1 else "es",
                  "on" if self.nr_on else "off",
-                 "frame rate limit %d fps" % self.max_fps if self.max_fps else "no frame rate limit"), flush=True)
+                 "frame rate limit %d fps" % self.max_fps if self.max_fps else "no frame rate limit",
+                 "unknown" if network is None else "%.1f ms" % network), flush=True)
         if not now:
-            self.check_behind(mid, since)
+            self.check_behind(mid, since, network)
 
-    def check_behind(self, median, since):
+    def check_behind(self, median, since, network=None):
         """Whether a fullscreen lens on the fast engine has fallen behind the
         program in front, from the median delay of the seconds summarise has
-        just summed up, None where it had none, and since, when those seconds
-        began. It counts as behind from three refreshes of the lens's monitor
-        less a tenth of one, and from 25 ms less 0.8 ms where the rate cannot
-        be read, while no program has the lens's monitor in exclusive
+        just summed up, None where it had none, since, when those seconds
+        began, and network, the median over those seconds of the network's
+        own time a picture as the engine reports it, None where it had none.
+        It counts as behind from three refreshes of the lens's monitor less a
+        tenth of one, and from 25 ms less 0.8 ms where the rate cannot be
+        read, while no program has the lens's monitor in exclusive
         fullscreen, where the lens draws nothing, see check_exclusive, and one
         window that is neither one of the lens's own nor the desktop or the
         taskbar has been in front for all those seconds, as log_foreground
@@ -6987,7 +7292,13 @@ class Lens:
         in a row and the notice says so for twelve seconds, see BEHIND_WORDS,
         unless Settings, Fullscreen has it off, and the log says so either
         way. Then neither comes again for ten minutes, unless Settings
-        switches the warning on.
+        switches the warning on. At the Full step, where the network's own
+        time a picture with one refresh more reaches that line, the warning
+        names the step as the cause instead, see BEHIND_FULL_WORDS. The delay
+        stays close to the network's time and one refresh with no program in
+        front, so the lens would be behind with none then, and no limit in the
+        program in front could bring it under the line. Where the network
+        takes less, the program in front is the likely cause as at any step.
 
         Why a program in front that keeps the card fully busy holds the lens
         back, and what helps, is in the README, under A game in front that
@@ -7012,7 +7323,8 @@ class Lens:
         # too, since Windows gives a rate such as 119.88 Hz as 119, which puts
         # the line at 25.2 ms where three refreshes read 25.0
         line = round(3000.0 / hz, 1) if hz else 25.0
-        if median < line - (100.0 / hz if hz else 0.8):
+        tenth = 100.0 / hz if hz else 0.8
+        if median < line - tenth:
             self.behind_run = 0
             return
         self.behind_run += 1
@@ -7020,11 +7332,23 @@ class Lens:
         if self.behind_run < 2 or at < self.behind_next:
             return
         self.behind_next = at + 600.0
+        # at the Full step the network's own work is the cause where its time a
+        # picture with one refresh more reaches the line, with the same tenth of a
+        # refresh allowed, see BEHIND_FULL_WORDS. A picture is shown at a refresh
+        # once the network has run on it, and with the engine by itself over a
+        # picture that changed at every refresh the median delay came within
+        # about 4 ms of the network's time and one refresh at Balanced and at
+        # Full, with one pass and with two, see docs/NOTES.md, The quality steps
+        refresh = 1000.0 / hz if hz else line / 3.0
+        full = (self.quality_now() == FAST_QUALITY_FULL and network is not None and network == network
+                and network + refresh >= line - tenth)
         print("the lens is running behind the program in front, median delay %.1f ms, %d summaries in a row at "
-              "%.1f ms or more, and the warning is %s"
-              % (median, self.behind_run, line, "shown" if FS_BEHIND_WARN else "off in Settings"), flush=True)
+              "%.1f ms or more, and the warning is %s%s"
+              % (median, self.behind_run, line, "shown" if FS_BEHIND_WARN else "off in Settings",
+                 ", at the Full quality step with the network at %.1f ms a picture" % network if full else ""),
+              flush=True)
         if FS_BEHIND_WARN:
-            self.say(BEHIND_WORDS % median, seconds=12.0, slot="behind", bar=False)
+            self.say((BEHIND_FULL_WORDS if full else BEHIND_WORDS) % median, seconds=12.0, slot="behind", bar=False)
 
     def check_hdr(self):
         """Whether Windows HDR is on for the lens's monitor while the ReShade
@@ -7741,7 +8065,7 @@ class Lens:
             self.open_panel(how)
 
     def quality_control(self, parent, command=None, font=("Segoe UI", 10)):
-        """The fast engine's quality step as a slider with five positions, and
+        """The fast engine's quality step as a slider with six positions, and
         a label that names the step it is on, for Settings and for the NR
         settings panel. command, when given, is called with a step the slider
         is moved to. Returns the slider and the label, for the caller to place."""
@@ -7801,7 +8125,47 @@ class Lens:
         if self.engine == "fast":
             self.tell_presenter("quality %d" % step)
             self.engine_quality = step
+            self.quality_asked = (step, time.perf_counter())       # its answer is held against it, see check_quality
         self.sync_panel()
+
+    def check_quality(self):
+        """Whether the fast engine runs the quality step the lens last told
+        it, by its answer, "engine quality N work WxH", or by its ready line
+        for a step given at its start, see _read_presenter. The engine takes
+        the last of several steps told close together and answers each switch
+        it makes, so an answer that differs from the step told counts only
+        once it has stood QUALITY_SETTLE seconds with no other after it. Then
+        the engine did not take the step: the network for it could not be
+        made, as with too little video memory for Full on a large screen, or
+        the picture is too large for Full, and the engine runs the step it
+        answered. The lens goes by that step from then on, in the ini too, so
+        the next engine is not given a step it could not take, tells the
+        engine that step, so the two agree whatever comes after, and says so
+        on the notice and in the log. The engine's own note in its log says
+        why. On the Tk thread, once a second from stats."""
+        asked, heard = self.quality_asked, self.quality_heard
+        if asked is None or heard is None or self.engine != "fast" or not self.stages or self.closing:
+            return
+        if heard[2] != self.stages[0]["proc"].pid or heard[1] < asked[1]:
+            return                      # an engine being replaced, or an answer from before the step was told
+        if heard[0] == asked[0]:
+            self.quality_asked = None   # taken
+            return
+        if time.perf_counter() - heard[1] < QUALITY_SETTLE:
+            return
+        self.quality_asked = None
+        step = max(0, min(len(FAST_QUALITY_NAMES) - 1, heard[0]))
+        want = max(0, min(len(FAST_QUALITY_NAMES) - 1, asked[0]))
+        print("the fast engine did not take quality step %d %s and runs at %d %s, so the lens goes by that step"
+              % (want, FAST_QUALITY_NAMES[want], step, FAST_QUALITY_NAMES[step]), flush=True)
+        self.quality_set = None if step == self.default_quality() else step
+        _set_fast_quality(self.quality_set)
+        self.engine_quality = step
+        self.tell_presenter("quality %d" % step)
+        self.say(QUALITY_REFUSED_WORDS % (FAST_QUALITY_NAMES[want], FAST_QUALITY_NAMES[step]), WARN, 8.0,
+                 bar=False)
+        self.sync_panel()
+        self.update_profile_label()
 
     def open_panel(self, how=None):
         """Open the NR settings panel on what ReShade.ini holds. Only under the
@@ -7822,6 +8186,15 @@ class Lens:
         font, small = ("Segoe UI", 10), ("Segoe UI", 9)
         tick = dict(bg=BG, fg=FG, selectcolor=FIELD, activebackground=BG, activeforeground=FG,
                     disabledforeground=DIM, font=font)
+        # the explanations that show by the pointer once it has rested on a
+        # control, and by F1 for the setting the arrow keys are on, as Settings
+        # has them, see Hints, PANEL_WHY and panel_key; a test reaches them as
+        # the panel's hints
+        hints = t.hints = Hints(self, t, own=True)
+
+        def why(name, *widgets):
+            for wdg in widgets:
+                hints.add(wdg, PANEL_WHY[name])
 
         # the head, which the panel is dragged by, with the cross that closes it
         head = tk.Frame(box, bg=CAP)
@@ -7861,11 +8234,13 @@ class Lens:
         ui["profile"].bind("<Leave>", lambda e: ui["profile"].config(bg=FIELD))
         ui["program"] = tk.Label(prow, text="", bg=BG, fg=DIM, font=small)
         ui["program"].pack(side="left", padx=(10, 0))
+        why("profile", prow)
         ui["auto"] = tk.BooleanVar(master=t, value=bool(AUTO_PROFILE))
         auto_box = tk.Checkbutton(box, text="Load the profile tied to the program in front",
                                   variable=ui["auto"], command=self._panel_auto, **tick)
         auto_box.grid(row=2, column=0, columnspan=4, sticky="w", padx=8, pady=(2, 0))
         ui["auto_box"] = auto_box
+        why("auto", auto_box)
 
         ui["nr"] = tk.BooleanVar(master=t, value=bool(self.nr_on))
         nr_keys = _either(self.nr_keys())
@@ -7873,6 +8248,7 @@ class Lens:
                                 variable=ui["nr"], command=self._panel_nr, **tick)
         nr_box.grid(row=3, column=0, columnspan=4, sticky="w", padx=8, pady=(6, 0))
         ui["nr_box"] = nr_box
+        why("nr", nr_box)
 
         # the tabs: one for each pass, and the controls below show and set the
         # values of the pass whose tab is chosen, see panel_show_pass
@@ -7881,6 +8257,7 @@ class Lens:
         tabs = ui["tabs"] = tk.Frame(box, bg=BG)
         tabs.grid(row=4, column=1, columnspan=3, sticky="w", pady=(10, 0))
         ui["tabs_words"] = tk.Label(tabs, text="", bg=BG, fg=DIM, font=small)
+        why("tabs", ui["tabs_word"], tabs)
 
         ui["style_word"] = label(5, "Style")
         styles = tk.Frame(box, bg=BG)
@@ -7892,6 +8269,7 @@ class Lens:
                                command=lambda: self.panel_set("NRStyle", ui["style"].get()), **tick)
             b.pack(side="left", padx=(0, 8))
             ui["style_btns"].append(b)
+        why("NRStyle", ui["style_word"], styles)
         # a pass from the second on has, beside each value, whether it is the
         # first pass's or its own, see _panel_tie: shown on those passes alone
         ui["tie"], ui["tie_box"] = {}, {}
@@ -7903,6 +8281,7 @@ class Lens:
             b.grid(row=row, column=3, sticky="w", padx=(10, 12), pady=(4, 0))
             b.grid_remove()
             ui["tie_box"][key] = b
+            why("tie", b)
 
         tie(5, "NRStyle")
         # the ties' column keeps its width on the first pass's tab too, so the
@@ -7935,28 +8314,46 @@ class Lens:
             ui[nr_key] = (scale, shown)
             ui[nr_key + " reset"] = reset
             tie(row, nr_key)
+            why(nr_key, ui[nr_key + " word"], scale, cell)
             row += 1
         ui["skin_auto"] = tk.BooleanVar(master=t, value=False)
         skin_box = tk.Checkbutton(box, text="Leave skin structure to the model", variable=ui["skin_auto"],
                                   command=self._panel_skin, **tick)
         skin_box.grid(row=row, column=0, columnspan=3, sticky="w", padx=8, pady=(4, 0))
         ui["skin_box"] = skin_box
+        why("skin_auto", skin_box)
         ui["mask"] = tk.BooleanVar(master=t, value=False)
         mask_box = tk.Checkbutton(box, text="Auto mask", variable=ui["mask"],
                                   command=lambda: self.panel_set("NRAutoMask", "1" if ui["mask"].get() else "0"),
                                   **tick)
         mask_box.grid(row=row + 1, column=0, columnspan=3, sticky="w", padx=8)
         ui["mask_box"] = mask_box
+        why("NRAutoMask", mask_box)
         tie(row + 1, "NRAutoMask")
+        # under the values, with the ties, the switch that has the pass run
+        # through the first pass's network, see SHARED_KEY: on the tabs of
+        # passes 2 to 4 alone, live on the tab of pass 2, which sets it, and
+        # greyed on those of passes 3 and 4, which follow it, with the note
+        # beside it that says so, or that it is not in effect, see
+        # _panel_shared_look. Its explanation shows by the pointer, see Hints
+        shared = ui["shared_row"] = tk.Frame(box, bg=BG)
+        shared.grid(row=row + 2, column=0, columnspan=4, sticky="w", padx=8, pady=(2, 0))
+        ui["shared"] = tk.BooleanVar(master=t, value=False)
+        ui["shared_box"] = tk.Checkbutton(shared, text=SHARED_LABEL, variable=ui["shared"],
+                                          command=self._panel_shared, **tick)
+        ui["shared_box"].pack(side="left")
+        ui["shared_words"] = tk.Label(shared, text="", bg=BG, fg=DIM, font=small)
+        why("shared", ui["shared_box"])
+        shared.grid_remove()
         ui["own_words"] = tk.Label(box, text="A value ticked Same as pass 1 follows pass 1. Untick it to give "
                                              "this pass a value of its own.",
                                    bg=BG, fg=DIM, font=small, justify="left", wraplength=430)
-        ui["own_words"].grid(row=row + 2, column=0, columnspan=4, sticky="w", padx=12, pady=(6, 0))
+        ui["own_words"].grid(row=row + 3, column=0, columnspan=4, sticky="w", padx=12, pady=(6, 0))
         ui["own_words"].grid_remove()
-        ui["passes_word"] = label(row + 3, "Passes")
+        ui["passes_word"] = label(row + 4, "Passes")
         ui["passes_word"].grid(pady=(10, 0))
         passes = tk.Frame(box, bg=BG)
-        passes.grid(row=row + 3, column=1, columnspan=3, sticky="w", pady=(10, 0))
+        passes.grid(row=row + 4, column=1, columnspan=3, sticky="w", pady=(10, 0))
         ui["minus"] = tk.Label(passes, text=" − ", bg=BG, fg=FG, font=("Segoe UI", 12, "bold"))
         ui["passes"] = tk.Label(passes, text="1", bg=BG, fg=FG, font=("Consolas", 10), width=2)
         ui["plus"] = tk.Label(passes, text=" + ", bg=BG, fg=FG, font=("Segoe UI", 12, "bold"))
@@ -7967,20 +8364,56 @@ class Lens:
                 wdg.bind("<Enter>", lambda e, b=wdg: b.config(bg=HOVER))
                 wdg.bind("<Leave>", lambda e, b=wdg: b.config(bg=BG))
         tk.Label(passes, text="a change restarts the picture", bg=BG, fg=DIM, font=small).pack(side="left", padx=(10, 0))
-        ui["quality_word"] = label(row + 4, "Quality step")
+        why("passes", ui["passes_word"], passes)
+        # under the pass count, the switch that scales the change, see
+        # STRENGTH_SWITCH_KEY, and below that the strength's own slider, which
+        # shows while the switch is on, see _panel_strength_look. The slider
+        # has no reset button: the switch off is the change as it is
+        ui["scale"] = tk.BooleanVar(master=t, value=False)
+        ui["scale_box"] = tk.Checkbutton(box, text=STRENGTH_SWITCH_LABEL, variable=ui["scale"],
+                                         command=self._panel_scale_change, **tick)
+        ui["scale_box"].grid(row=row + 5, column=0, columnspan=4, sticky="w", padx=8, pady=(4, 0))
+        why("scale_change", ui["scale_box"])
+        ui["strength_word"] = label(row + 6, STRENGTH_LABEL)
+        ui["strength_word"].grid(padx=(32, 10))
+        strength = tk.Scale(box, from_=STRENGTH_LEAST, to=STRENGTH_MOST, resolution=0.01, orient="horizontal",
+                            showvalue=False, length=240, width=14, sliderlength=22, bg=DIM, troughcolor=FIELD,
+                            activebackground=ACCENT, highlightthickness=0, bd=0, sliderrelief="flat",
+                            command=self._panel_strength)
+        strength.grid(row=row + 6, column=1, sticky="w", pady=(6, 0))
+        strength_shown = tk.Label(box, text="", bg=BG, fg=FG, font=("Consolas", 10), width=5, anchor="e")
+        strength_shown.grid(row=row + 6, column=2, sticky="e", padx=(8, 12), pady=(4, 0))
+        ui["strength"] = (strength, strength_shown)
+        why("strength", ui["strength_word"], strength, strength_shown)
+        for wdg in (ui["strength_word"], strength, strength_shown):
+            wdg.grid_remove()
+        ui["quality_word"] = label(row + 7, "Quality step")
         ui["quality"], ui["quality_name"] = self.quality_control(box, self._panel_quality)
-        ui["quality"].grid(row=row + 4, column=1, sticky="w", pady=(6, 0))
-        ui["quality_name"].grid(row=row + 4, column=2, columnspan=2, sticky="w", padx=(8, 12), pady=(4, 0))
+        ui["quality"].grid(row=row + 7, column=1, sticky="w", pady=(6, 0))
+        ui["quality_name"].grid(row=row + 7, column=2, columnspan=2, sticky="w", padx=(8, 12), pady=(4, 0))
+        why("quality", ui["quality_word"], ui["quality"], ui["quality_name"])
+        # the foot: the quality step's words, what the ReShade engine does with
+        # these settings, the keys, and how a setting's explanation comes up,
+        # see PANEL_HELP. The switch on the tab of pass 2 and the one under the
+        # pass count are the fast engine's alone, see SHARED_KEY and
+        # STRENGTH_SWITCH_KEY, and the line names them by their labels. The
+        # ReShade engine gives the first one's look with the add-on's Denoise
+        # before upscaling, see docs/NOTES.md, so the line says only that the
+        # switches do nothing there
         texts = (FAST_QUALITY_WORDS,
-                 "A change shows in the picture at once and is kept. The ReShade engine runs every pass at the "
-                 "first pass's values, apart from the intensity of passes 2 to 4.",
+                 "A change shows in the picture at once and is kept. On the ReShade engine every pass runs at the "
+                 "first pass's values, apart from the intensity of passes 2 to 4, and the switches %s and %s do "
+                 "nothing." % (SHARED_LABEL, STRENGTH_SWITCH_LABEL),
                  "The arrow keys pick a setting and change it, and Enter switches a switch. A slider moves faster "
                  "the longer Left or Right is held. The button beside a number puts its slider at %.2f."
-                 % PANEL_RESET)
+                 % PANEL_RESET,
+                 PANEL_HELP % (PANEL_HELP_F1 if _f1_free() else ""))
+        ui["foot"] = []                 # the foot's lines, for a test to read
         for i, text in enumerate(texts):
-            tk.Label(box, text=text, bg=BG, fg=DIM, font=small, justify="left", wraplength=430).grid(
-                row=row + 5 + i, column=0, columnspan=4, sticky="w", padx=12,
-                pady=(8 if i == 0 else 2, 10 if i == len(texts) - 1 else 0))
+            foot = tk.Label(box, text=text, bg=BG, fg=DIM, font=small, justify="left", wraplength=430)
+            foot.grid(row=row + 8 + i, column=0, columnspan=4, sticky="w", padx=12,
+                      pady=(8 if i == 0 else 2, 10 if i == len(texts) - 1 else 0))
+            ui["foot"].append(foot)
         self.load_panel()
 
         t.update_idletasks()
@@ -8018,14 +8451,28 @@ class Lens:
         self._panel_flush_now()         # a change still on its way is in the file first
         addon, own = _read_addon_section(), _read_pass_section()
         self.panel_state = {n: _pass_state(n, addon, own) for n in range(1, _pass_limit() + 1)}
+        # the switch on the tab of pass 2 and the one under the pass count,
+        # which the file holds whatever the pass count, see SHARED_KEY and
+        # STRENGTH_SWITCH_KEY, and the strength
+        self.panel_shared = _shared_on(own)
+        self.panel_scale = _strength_on(own)
+        self.panel_strength = _strength_value(own)
+        try:
+            self.panel_ui["shared"].set(self.panel_shared)
+            self.panel_ui["scale"].set(self.panel_scale)
+            self._panel_strength_look()
+        except Exception:
+            pass
         self.panel_show_pass(min(self.panel_pass, max(1, self.passes)))
         self.sync_panel()
 
     def panel_show_pass(self, n, how=None):
         """Show pass n's values on the panel's controls, and make them set that
         pass. The tabs follow, and so does the order the arrow keys walk the
-        settings in, with the ties of a pass from the second on among them.
-        how is the way it was asked for, for the log."""
+        settings in, with the ties of a pass from the second on among them,
+        and on the tabs of passes 2 to 4 the switch that has the pass run
+        through the first pass's network, see _panel_shared_look. how is the
+        way it was asked for, for the log."""
         if self.panel is None or not self.panel_ui:
             return
         ui = self.panel_ui
@@ -8091,9 +8538,13 @@ class Lens:
                 ui["own_words"].grid()
             else:
                 ui["own_words"].grid_remove()
+            # the switch that has the pass run through the first pass's
+            # network, on the tabs of passes 2 to 4, see _panel_shared_look
+            self._panel_shared_look()
             # the order the arrow keys walk, see panel_key. The row they are on
-            # stays the same setting as the rows come and go, and a tie row that
-            # goes with the first pass's tab gives way to its own setting's row
+            # stays the same setting as the rows come and go, a tie row that
+            # goes with the first pass's tab gives way to its own setting's row,
+            # and the switch's row, which goes with it too, to the passes below
             was = None
             if self.panel_row is not None and self.panel_row < len(self.panel_rows):
                 was = tuple(self.panel_rows[self.panel_row][:2])
@@ -8109,11 +8560,19 @@ class Lens:
             rows += [("switch", "skin_auto", ui["skin_box"]), ("switch", "mask", ui["mask_box"])]
             if n >= 2:
                 rows.append(("tie", "NRAutoMask", ui["tie_box"]["NRAutoMask"]))
-            rows += [("passes", "passes", ui["passes_word"]), ("quality", "quality", ui["quality_word"])]
+                # the switch of the tab of pass 2, greyed on the tabs of passes 3 and 4
+                rows.append(("switch", "shared", ui["shared_box"]))
+            rows += [("passes", "passes", ui["passes_word"]), ("switch", "scale_change", ui["scale_box"])]
+            if self.panel_scale:
+                # the strength's slider is on the walk while it shows, see _panel_strength_look
+                rows.append(("strength", "strength", ui["strength_word"]))
+            rows.append(("quality", "quality", ui["quality_word"]))
             self.panel_rows = rows
             pairs = [(k, w_) for k, w_, _lit in rows]
             if was is not None and was not in pairs and was[0] == "tie":
                 was = {"NRStyle": ("choice", "style"), "NRAutoMask": ("switch", "mask")}.get(was[1], ("slider", was[1]))
+            elif was == ("strength", "strength") and was not in pairs:
+                was = ("switch", "scale_change")     # the slider went with its switch, which stays lit
             if was is not None:
                 self.panel_row = pairs.index(was) if was in pairs else pairs.index(("passes", "passes"))
             elif self.panel_row is not None:
@@ -8126,8 +8585,9 @@ class Lens:
 
     def _panel_fit(self):
         """Give the panel's window the size its contents ask for now, where it
-        is and kept on its monitor: the ties and their words come and go with
-        the pass shown. Nothing until the panel has been shown."""
+        is and kept on its monitor: the ties, their words and the switch's row
+        come and go with the pass shown. Nothing until the panel has been
+        shown."""
         t = self.panel
         if t is None or not self.panel_ui.get("shown"):
             return
@@ -8143,7 +8603,11 @@ class Lens:
         off, the pass count and the quality step, the profile in use and the
         program it is tied to, and the auto-load switch. Called whenever one
         of them may have changed, by the panel or by anything else. A pass
-        count the tabs do not show yet brings the tabs up to date."""
+        count the tabs do not show yet brings the tabs up to date, and the
+        switch on the tabs of passes 2 to 4 says that it is not in effect
+        while the engine could not make its network again for it, see
+        remake_failed, until the engine says it runs as the key has it, see
+        _panel_shared_look."""
         if self.panel is None or not self.panel_ui:
             return
         ui = self.panel_ui
@@ -8164,10 +8628,64 @@ class Lens:
                                  if self.profile else None)
             ui["program"].config(text=("for %s" % _short_title(tied)) if tied else "")
             ui["auto"].set(bool(AUTO_PROFILE))
+            # the note beside the switch comes and goes with the key being in
+            # effect, and the panel's window takes the size its contents ask
+            # for then. A new pass count shows the tabs anew, the switch's row
+            # with them
             if len(self.panel_tabs) != max(1, self.passes):
                 self.panel_show_pass(self.panel_pass)
+            elif self._panel_shared_look():
+                self._panel_fit()
         except Exception:
             pass
+
+    def _panel_shared_look(self):
+        """The switch that has a pass run through the first pass's network,
+        see SHARED_KEY, as the tab shown has it. On the tab of pass 2, which
+        sets it, it is live. On the tabs of passes 3 and 4, which follow pass
+        2, it shows the key's state greyed, with SHARED_FOLLOW_NOTE beside it
+        and its own explanation. On the first pass's tab its row is not there,
+        nor among the arrow keys' rows, see panel_show_pass, and the switch is
+        greyed, so nothing can tick it there. While the fast engine could not
+        make its network again for the key, see remake_failed, the note beside
+        it says that it is not in effect, ahead of the other, until the engine
+        says it runs as the key has it, by its stats line. Returns whether the
+        row or its note came, went or changed, so that the panel's window can
+        take the size its contents ask for."""
+        ui = self.panel_ui
+        if self.panel is None or "shared_row" not in ui:
+            return False
+        n = self.panel_pass
+        row, box, words = ui["shared_row"], ui["shared_box"], ui["shared_words"]
+        if self.shared_failed and self.engine_shared == self.panel_shared:
+            self.shared_failed = False
+        changed = False
+        ui["shared"].set(self.panel_shared)
+        box.config(state="normal" if n == 2 else "disabled")
+        if n < 2:
+            if row.winfo_manager():
+                row.grid_remove()
+                changed = True
+            return changed
+        try:
+            self.panel.hints.add(box, SHARED_WHY if n == 2 else SHARED_FOLLOW_WHY)
+        except Exception:
+            pass
+        if not row.winfo_manager():
+            row.grid()
+            changed = True
+        note = (SHARED_FAILED_NOTE if self.shared_failed and self.engine == "fast" else
+                SHARED_FOLLOW_NOTE if n > 2 else None)
+        up = bool(words.winfo_manager())
+        if note is not None and (not up or str(words.cget("text")) != note):
+            words.config(text=note)
+            if not up:
+                words.pack(side="left", padx=(10, 0))
+            changed = True
+        elif note is None and up:
+            words.pack_forget()
+            changed = True
+        return changed
 
     def close_panel(self, how=None):
         """Close the NR settings panel. how is the way the person at the lens
@@ -8246,6 +8764,134 @@ class Lens:
             self.panel_set(key, self.panel_state.get(n, {}).get(key, (_nr_text(NR_DEFAULTS[key]),))[0], how)
         self.panel_show_pass(n)
 
+    def _panel_shared(self, how="mouse"):
+        """The switch on the tab of pass 2, Runs through pass 1's network, see
+        SHARED_KEY: the key into the lens's section at once, 1 or 0, and the
+        engine told to read it, the way a value of a pass goes, see
+        _panel_flush. It is the file's and the profile's whatever the pass
+        count: with one pass the engine runs as it did, and the panel shows
+        no switch, see _panel_shared_look, which greys it on every tab but
+        that of pass 2, so that only there can it be switched. how is mouse
+        or keyboard, for the log."""
+        ui = self.panel_ui
+        if self.panel is None or "shared" not in ui:
+            return
+        on = bool(ui["shared"].get())
+        if on == self.panel_shared:
+            return
+        self.panel_shared = on
+        self.panel_pending.setdefault(PASS_SECTION, {})[SHARED_KEY] = "1" if on else "0"
+        self._panel_said(SHARED_KEY, "1" if on else "0", how)
+        if self.panel_timer is None:
+            self._panel_flush()
+
+    def _panel_scale_change(self, how="mouse"):
+        """The switch that scales the change, see STRENGTH_SWITCH_KEY: the key
+        into the lens's section at once, 1 or 0, with the strength's key
+        beside it so the engine has a value to go by, and the engine told to
+        read them, the way a value of a pass goes, see _panel_flush. The
+        strength's slider shows while the switch is on, see
+        _panel_strength_look. how is mouse or keyboard, for the log."""
+        ui = self.panel_ui
+        if self.panel is None or "scale" not in ui or not self.panel_live:
+            return
+        on = bool(ui["scale"].get())
+        if on == self.panel_scale:
+            return
+        self.panel_scale = on
+        pending = self.panel_pending.setdefault(PASS_SECTION, {})
+        pending[STRENGTH_SWITCH_KEY] = "1" if on else "0"
+        if on:
+            pending[STRENGTH_KEY] = _nr_text(self.panel_strength)
+        self._panel_said(STRENGTH_SWITCH_KEY, "1" if on else "0", how)
+        if self.panel_timer is None:
+            self._panel_flush()
+        self._panel_strength_look()
+        self.panel_show_pass(self.panel_pass)      # the slider joins or leaves the arrow keys' walk
+
+    def _panel_strength_look(self):
+        """The strength's slider and its number, shown under the switch while
+        the switch is on and taken away while it is off, at the value the file
+        holds, see _panel_scale_change, and the panel's window at the size its
+        contents ask for then."""
+        ui = self.panel_ui
+        if self.panel is None or "strength" not in ui:
+            return
+        scale, shown = ui["strength"]
+        live, self.panel_live = self.panel_live, False
+        try:
+            scale.set(self.panel_strength)
+            shown.config(text="%.2f" % self.panel_strength, fg=FG)
+            for wdg in (ui["strength_word"], scale, shown):
+                if self.panel_scale:
+                    wdg.grid()
+                else:
+                    wdg.grid_remove()
+        finally:
+            self.panel_live = live
+        self._panel_fit()
+
+    def _panel_strength(self, value):
+        """The strength slider's own call, which Tk also makes when the panel
+        itself has put the slider somewhere: only a place it was not put at is
+        a change, as for a value's slider, see _panel_slider."""
+        try:
+            v = float(value)
+        except ValueError:
+            return
+        if not self.panel_live or self.panel is None or abs(v - self.panel_strength) < 0.004:
+            return
+        self._panel_strength_to(v, "mouse")
+
+    def _panel_strength_to(self, v, how):
+        """Put the strength's slider at v and write the strength, see
+        STRENGTH_KEY, the way a value's slider is set, see _panel_move_to: the
+        number follows, the key goes into the lens's section at once and the
+        engine is told to read it. The slider's own call that follows is then
+        no second change."""
+        ui = self.panel_ui
+        v = round(max(STRENGTH_LEAST, min(STRENGTH_MOST, float(v))), 2)
+        self.panel_strength = v
+        scale, shown = ui["strength"]
+        scale.set(v)
+        shown.config(text="%.2f" % v, fg=FG)
+        self.panel_pending.setdefault(PASS_SECTION, {})[STRENGTH_KEY] = _nr_text(v)
+        self._panel_said(STRENGTH_KEY, _nr_text(v), how)
+        if self.panel_timer is None:
+            self._panel_flush()
+
+    def remake_failed(self, reason, runs=None):
+        """The fast engine could not make its network again for a reload and
+        runs as it was made, which its own line said, see _read_presenter,
+        with runs, whether its passes run through the first pass's network
+        then. On the Tk thread. A reload makes the network again for the key
+        that has the passes after the first run through the first pass's
+        network, see SHARED_KEY, which the engine reads at two passes or more,
+        and for a new preset in the add-on's section, which a profile carries.
+        Where the engine runs as the key has it, the switch was not what
+        failed, so the log and the notice say that the network could not be
+        made for the new settings, and the switch's row stays as it is.
+        Otherwise the log and the notice say so for the switch, the switch's
+        row on the panel says that the key is not in effect until the engine
+        runs as the key says, see _panel_shared_look, and the readout goes by
+        the engine, see readout_text. A switch again asks the engine again.
+        runs None, as a caller without the engine's state gives it, counts as
+        the switch."""
+        if self.closing:
+            return
+        if runs is not None and bool(runs) == (self.passes >= 2 and _shared_on()):
+            print("the fast engine could not make its network again for the new settings, saying \"%s\", so it runs on "
+                  "with the network it had" % reason, flush=True)
+            self.say("The fast engine could not make its network again for the new settings, so it runs on with the "
+                     "network it had.", WARN, 8.0, bar=False)
+            return
+        self.shared_failed = True
+        print("the fast engine could not make its network again for \"%s\", saying \"%s\", so the passes run as "
+              "they did before the switch" % (SHARED_LABEL, reason), flush=True)
+        self.say("The fast engine could not make its network again, so the passes run as they did before the "
+                 "switch.", WARN, 8.0, bar=False)
+        self.sync_panel()
+
     def _panel_auto(self, how="mouse"):
         """The auto-load switch on the panel, see check_auto_profile."""
         on = bool(self.panel_ui["auto"].get())
@@ -8298,21 +8944,34 @@ class Lens:
             self._panel_say(key)
 
     def panel_key(self, name):
-        """An arrow key, Enter or Escape while the panel is open over a
+        """An arrow key, Enter, Escape or F1 while the panel is open over a
         fullscreen lens, see nav_key. Up and Down move from setting to setting,
         which the panel shows in the accent colour, Left and Right change the
         style, a slider, the pass count or the quality step, load the profile
         before or after the one in use, or show another pass's values, Enter
-        switches a switch, a tie included, or opens the profile list, and
-        Escape closes the panel. A slider moves a hundredth a press, and
+        switches a switch, a tie included, or opens the profile list, F1 shows
+        what the setting the arrow keys are on does, below it, or with none
+        picked what the one under the pointer does, as in Settings, see Hints,
+        and Escape closes the panel. A slider moves a hundredth a press, and
         further with each repeat of a key held down, see _panel_step."""
         rows = self.panel_rows
         if self.panel is None or not rows:
             return
         if name not in ("left", "right"):
             self.panel_hold = None      # any other key ends a hold, see _panel_step
+        try:
+            self.panel.hints.hide()     # a key takes an explanation away, as in Settings, see Hints
+        except Exception:
+            pass
         if name == "escape":
             self.close_panel("Escape")
+            return
+        if name == "help":
+            lit = rows[self.panel_row][2] if self.panel_row is not None and self.panel_row < len(rows) else None
+            try:
+                self.panel.hints.explain(lit)
+            except Exception:
+                pass
             return
         if name in ("up", "down"):
             d = -1 if name == "up" else 1
@@ -8331,6 +8990,14 @@ class Lens:
             elif what == "auto":
                 ui["auto"].set(not ui["auto"].get())
                 self._panel_auto("keyboard")
+            elif what == "shared":
+                if str(ui["shared_box"].cget("state")) == "disabled":
+                    return              # passes 3 and 4 follow pass 2, whose tab has the switch
+                ui["shared"].set(not ui["shared"].get())
+                self._panel_shared("keyboard")
+            elif what == "scale_change":
+                ui["scale"].set(not ui["scale"].get())
+                self._panel_scale_change("keyboard")
             elif what == "profile":
                 self.panel_profile_menu("keyboard")
             elif kind == "tie":
@@ -8348,7 +9015,7 @@ class Lens:
                 self.panel_set("NRAutoMask", "1" if ui["mask"].get() else "0", "keyboard")
             return
         d = -1 if name == "left" else 1
-        if kind != "slider":
+        if kind not in ("slider", "strength"):
             self.panel_hold = None
         if kind == "profile":
             # the profile before or after the one in use, by name, loaded. A load
@@ -8377,6 +9044,11 @@ class Lens:
             lo, hi = float(scale.cget("from")), float(scale.cget("to"))
             v = round(max(lo, min(hi, float(scale.get()) + self._panel_step(what, d) * d)), 2)
             self._panel_move_to(what, v, "keyboard")
+        elif kind == "strength":
+            # the strength's own slider, a hundredth a press and further held, as a value's
+            scale = ui["strength"][0]
+            v = round(max(STRENGTH_LEAST, min(STRENGTH_MOST, float(scale.get()) + self._panel_step(what, d) * d)), 2)
+            self._panel_strength_to(v, "keyboard")
         elif kind == "passes":
             # a pass restarts the picture, and the arrow key's repeats that came
             # in meanwhile are not more passes asked for
@@ -9172,7 +9844,8 @@ class Lens:
                 ("latency", "Latency", "How far the lens's picture runs behind what is under it."),
                 ("step", "Quality step", "The fast engine's quality step. It shows only while the fast engine "
                                          "draws the picture."),
-                ("passes", "Passes", "How many neural passes run, or NR off while Neural Rendering is off."),
+                ("passes", "Passes", "How many neural passes run, with shared where the passes after the first "
+                                     "run through pass 1's network, or NR off while Neural Rendering is off."),
                 ("style", "Style", "The NR style in use, Default, Natural or Cinematic.")):
             ro_vars[item] = tk.BooleanVar(master=t, value=item in FS_READOUT)
             b = tk.Checkbutton(ro_row, text=text, variable=ro_vars[item], bg=BG, fg=FG, selectcolor=FIELD,
@@ -9223,8 +9896,9 @@ class Lens:
         prof = page("Profiles")
 
         prof_why = ("A profile is everything that makes the picture, saved under a name, from the window's place "
-                    "and size to every setting in the Home menu, the values each pass has of its own and the "
-                    "quality step. The selector on the title bar and the picker on the NR settings panel save "
+                    "and size to every setting in the Home menu, the values each pass has of its own, whether "
+                    "the passes after the first run through pass 1's network, whether the change is scaled and "
+                    "the quality step. The selector on the title bar and the picker on the NR settings panel save "
                     "and switch them. The picture restarts when one is applied, unless a fullscreen lens on the "
                     "fast engine can take it as it runs.")
         heading(prof, "Profiles", prof_why)
@@ -9284,7 +9958,21 @@ class Lens:
                 step = FAST_QUALITY_NAMES[max(0, min(len(FAST_QUALITY_NAMES) - 1, int(p["quality"])))]
             except (KeyError, TypeError, ValueError):
                 step = "not saved in this profile"
+            # the lens's own section, with the values the passes have of their
+            # own, the switch of the tab of pass 2, by the panel's label, and
+            # the one under the pass count, which a profile from before them
+            # has no key for, so off, see SHARED_KEY and STRENGTH_SWITCH_KEY,
+            # the second with its strength while it is on. The first is a
+            # setting of two passes or more, as the panel shows it, so a
+            # profile at one pass has no row for it, whatever its key says
+            own = p.get("per_pass") if isinstance(p.get("per_pass"), dict) else {}
+            try:
+                count = max(1, min(_pass_limit(), int(p.get("passes", 1) or 1)))
+            except (TypeError, ValueError):
+                count = 1
             lens_rows = [("Passes", str(p.get("passes", ""))),
+                         (STRENGTH_SWITCH_LABEL, ("on, %s %.2f" % (STRENGTH_LABEL.lower(), _strength_value(own)))
+                          if _strength_on(own) else "off"),
                          ("Size", "%s x %s" % (p.get("width", "?"), p.get("height", "?"))),
                          ("Place", "%s, %s" % (p.get("x", "?"), p.get("y", "?"))),
                          ("Fullscreen", "yes" if p.get("fullscreen") else "no"),
@@ -9297,17 +9985,14 @@ class Lens:
                          ("Cost Scaler", str(p.get("cost_scaler", ""))),
                          ("Title bar", ", ".join(bar_parts) or "nothing"),
                          ("Program", prog or "none")]
+            if count >= 2:
+                lens_rows.insert(1, (SHARED_LABEL, "on" if _shared_on(own) else "off"))
             # the values of their own that the passes from the second on have,
             # of the passes the profile runs, as the engine reads them, see
             # _pass_state. A value ticked Same as pass 1 is left out
-            own = p.get("per_pass") if isinstance(p.get("per_pass"), dict) else {}
             words = {"NRStyle": "style", "NRIntensity": "intensity", "NRLocalTone": "local tone",
                      "NRLocalStructure": "local structure", "NRSkinStructure": "skin structure",
                      "NRAutoMask": "auto mask"}
-            try:
-                count = max(1, min(_pass_limit(), int(p.get("passes", 1) or 1)))
-            except (TypeError, ValueError):
-                count = 1
             own_rows = []
             for n in range(2, count + 1):
                 parts = []
@@ -9329,7 +10014,6 @@ class Lens:
                        ("NR passes", val("NRPasses")),
                        ("Chained temporal history", val("NRChainedHistory", onoff)),
                        ("Codec", val("NRCodecMode", {"0": "Classic", "1": "Anchored"})),
-                       ("Global tone", val("NRGlobalTone")),
                        ("Local tone", val("NRLocalTone")),
                        ("Auto mask", val("NRAutoMask", onoff)),
                        ("Upscaling", val("NREnableUpscaling", onoff))] + own_rows
@@ -9464,7 +10148,7 @@ class Lens:
                           "side, as Save before and after in the menu does.",
             "add_pass": "Adds a neural pass, up to four. The picture restarts.",
             "drop_pass": "Takes a neural pass away. The picture restarts.",
-            "quality_up": "Moves the fast engine's quality step one step up, toward Quality.",
+            "quality_up": "Moves the fast engine's quality step one step up, toward Full.",
             "quality_down": "Moves the fast engine's quality step one step down, toward Lowest power.",
             "split": "Puts a divider across the lens that can be dragged, with Neural Rendering on its left "
                      "and the untouched picture on its right.",

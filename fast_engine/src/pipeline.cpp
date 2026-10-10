@@ -1,10 +1,13 @@
 // pipeline.cpp: the GPU work for one captured frame. See pipeline.h for the contract.
 //
-// Five shaders do it all (src\shaders):
+// Six shaders do it all (src\shaders):
 //   convert_cs     a frame in 16-bit floats to 8 bits, scaled by the SDR white level, before
 //                  anything else, see pipeline.h. Never for an 8-bit frame
 //   ingest_cs      the area downscale into the network's input and the exact comparison
 //                  with the frame before, in one pass over the frame
+//   scale_cs       after the last pass, with the strength above 1, the change the passes
+//                  made together scaled in place on that pass's output, see NrPasses in
+//                  common.h. Never at a strength of 1
 //   fullscreen_vs  one triangle over the whole target
 //   composite_ps   native + upsample(network output - network input), or native alone,
 //                  into an 8-bit target
@@ -41,6 +44,7 @@
 #include "convert_cs.h"
 #include "fullscreen_vs.h"
 #include "ingest_cs.h"
+#include "scale_cs.h"
 
 #include <algorithm>
 #include <atomic>
@@ -100,7 +104,17 @@ constexpr UINT kSlotConv0 = kSlotIngest0 + kSlotsPerIngest * kIngestTables;
 // the 16-bit frame behind the native one. The 8-bit composite's table is the first three.
 constexpr UINT kSlotsPerDraw = 4;
 constexpr UINT kSlotDraw0 = kSlotConv0 + kSlotsPerConv * kIngestTables;
-constexpr UINT kSlotCount = kSlotDraw0 + kSlotsPerDraw * kDrawContexts;
+// The scale shader's tables, one for each output the last pass may write: SRV the network's
+// input, which the first pass read, UAV that output. The passes take turns on the two
+// outputs, so two pairs serve any pass count, see scale_pair(). They name the work set in
+// use and are written with its other descriptors, so no draw context needs tables of its own.
+constexpr UINT kSlotsPerScale = 2;
+constexpr UINT kScalePairs = 2;
+constexpr UINT kSlotScale0 = kSlotDraw0 + kSlotsPerDraw * kDrawContexts;
+constexpr UINT kSlotCount = kSlotScale0 + kSlotsPerScale * kScalePairs;
+
+// The scale shader's table for the last of this many passes, see kSlotScale0.
+constexpr UINT scale_pair(int passes) { return (UINT)((passes - 1) % 2); }
 
 // The timestamps: three for the ingest (start, after the conversion of a 16-bit frame,
 // end), five for each draw context (the same three for the ingest a joined list holds,
@@ -119,6 +133,11 @@ struct IngestConstants {
 struct ConvertConstants {
   UINT w, h;
   float scale;  // 1 / the SDR white level in units of 80 nits
+  UINT unused;
+};
+struct ScaleConstants {
+  UINT w, h;    // the work size
+  float scale;  // the strength, the factor the change is scaled by, above 1
   UINT unused;
 };
 struct DrawConstants {
@@ -309,12 +328,18 @@ struct Pipeline::Impl {
   bool reset_next = true;   // the next render drops the network's history
   bool run_at_zero = false; // the self test's switch, see set_run_at_zero()
   NrPasses settings;        // each pass's own, see common.h
+  bool settings_pending = false;  // nr has not been given them yet, see set_settings()
 
-  ComPtr<ID3D12RootSignature> ingest_root, draw_root, draw_hdr_root, convert_root;
-  ComPtr<ID3D12PipelineState> ingest_pso, draw_pso, draw_hdr_pso, convert_pso;
+  ComPtr<ID3D12RootSignature> ingest_root, draw_root, draw_hdr_root, convert_root, scale_root;
+  ComPtr<ID3D12PipelineState> ingest_pso, draw_pso, draw_hdr_pso, convert_pso, scale_pso;
   ComPtr<ID3D12DescriptorHeap> heap;
   UINT heap_step = 0;
   HdrAbove hdr_above = HdrAbove::Fade;  // see set_hdr_above()
+  // The scale shader reads the last pass's output through a typed unordered access view,
+  // which the device has to be able to load R8G8B8A8_UNORM through. Without that the
+  // strength counts as 1, said once in a note when the settings first ask for more.
+  bool scale_loads = false;
+  bool scale_refused_said = false;
 
   // Frames in 16-bit floats, see pipeline.h. conv holds the 8-bit frames made of them, in
   // turns: conv[conv_index] is the conversion of conv_slot, the 16-bit frame last given to
@@ -543,9 +568,13 @@ struct Pipeline::Impl {
   }
 
   // The maker thread has ended, or there was none. It is joined, so nr is the main thread's
-  // again.
+  // again, and settings that came while it ran are handed over now, see set_settings().
   void join_maker() {
     if (maker.joinable()) maker.join();
+    if (settings_pending) {
+      settings_pending = false;
+      if (network) nr.set_settings(settings);
+    }
   }
 
   // A view of a 2D texture, or a null view when there is no texture: a table may not hold
@@ -654,6 +683,73 @@ struct Pipeline::Impl {
       srv(work.in.Get(), kNrFormat, slot + 1);
       srv(network ? last_out() : nullptr, kNrFormat, slot + 2);
     }
+    // the scale shader's two pairs: the network's input and each of the outputs, see
+    // scale_pair(). A null view for an output that does not exist, with one pass, where the
+    // shader never names it
+    for (UINT k = 0; k < kScalePairs; ++k) {
+      const UINT slot = kSlotScale0 + kSlotsPerScale * k;
+      srv(work.in.Get(), kNrFormat, slot);
+      gpu->device->CreateUnorderedAccessView(work.out[k].Get(), nullptr, &uav, cpu_slot(slot + 1));
+    }
+  }
+
+  // The strength in effect, see NrPasses in common.h: the settings' strength, 1 where it is
+  // 1, and 1 all the same on a device that cannot load the output.
+  float strength_now() {
+    const float scale = settings.strength;
+    if (scale > 1.0f && !scale_loads) {
+      if (!scale_refused_said) {
+        note("pipeline: the strength counts as 1 here, the device cannot load the network's output");
+        scale_refused_said = true;
+      }
+      return 1.0f;
+    }
+    return scale;
+  }
+
+  // Records the scale shader on the last pass's output, once the network has written it, see
+  // scale_cs.hlsl. The output is in UNORDERED_ACCESS and the network's input readable, as the
+  // runtime leaves them, and so they stay. The stores are made visible to the composite, which
+  // reads the output next, by its own transition out of UNORDERED_ACCESS.
+  void record_scale(ID3D12GraphicsCommandList* l, ID3D12Resource* out, float scale) {
+    // the network's own stores to the output come first
+    D3D12_RESOURCE_BARRIER done = {};
+    done.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+    done.UAV.pResource = out;
+    l->ResourceBarrier(1, &done);
+    // everything set afresh: the runtime leaves the list's heaps and state as it pleases
+    ID3D12DescriptorHeap* heaps[] = {heap.Get()};
+    l->SetDescriptorHeaps(1, heaps);
+    l->SetComputeRootSignature(scale_root.Get());
+    l->SetPipelineState(scale_pso.Get());
+    ScaleConstants k = {};
+    k.w = work.w;
+    k.h = work.h;
+    k.scale = scale;
+    l->SetComputeRoot32BitConstants(0, sizeof(k) / 4, &k, 0);
+    l->SetComputeRootDescriptorTable(1, gpu_slot(kSlotScale0 + kSlotsPerScale * scale_pair(desc.passes)));
+    l->Dispatch((work.w + 7) / 8, (work.h + 7) / 8, 1);
+  }
+
+  // Records the network's passes on the list, chained: a pass reads what the pass before it
+  // wrote. With the strength above 1 the last pass is followed by the scale shader on its
+  // output, so the composite sees the change the passes made together scaled. drop tells the
+  // network to forget its history. false with err from the runtime: the list may then hold
+  // part of its commands, so the caller closes it and never runs it.
+  bool record_passes(ID3D12GraphicsCommandList* l, bool drop, std::string& err) {
+    const D3D12_RESOURCE_STATES kRead = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    const D3D12_RESOURCE_STATES kWrite = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    ID3D12Resource* in = work.in.Get();
+    for (int pass = 0; pass < desc.passes; ++pass) {
+      ID3D12Resource* out = work.out[pass % 2].Get();
+      if (pass > 0) transition(l, in, kWrite, kRead);
+      if (!nr.evaluate(l, pass, in, out, drop, err)) return false;
+      if (pass > 0) transition(l, in, kRead, kWrite);
+      in = out;
+    }
+    const float scale = strength_now();
+    if (scale > 1.0f) record_scale(l, last_out(), scale);
+    return true;
   }
 
   // Makes the context ready to record: waits until the GPU has finished what was last
@@ -1163,6 +1259,50 @@ bool Pipeline::init(Gpu& gpu, const PipelineDesc& desc, std::string& err) {
     }
   }
 
+  // ---- the scale: constants, and a table of the network's input and the last pass's
+  // output, which it reads and writes through one typed view, see scale_cs.hlsl. Whether the
+  // device can load the output's format through such a view decides whether the shader ever
+  // runs.
+  {
+    D3D12_FEATURE_DATA_D3D12_OPTIONS options = {};
+    D3D12_FEATURE_DATA_FORMAT_SUPPORT support = {};
+    support.Format = kNrFormat;
+    m.scale_loads = SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options))) &&
+                    options.TypedUAVLoadAdditionalFormats &&
+                    SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support, sizeof(support))) &&
+                    (support.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD) != 0;
+    if (!m.scale_loads) {
+      note("pipeline: the device cannot load R8G8B8A8_UNORM through an unordered access view, so the strength "
+           "will count as 1");
+    }
+    D3D12_DESCRIPTOR_RANGE ranges[2] = {};
+    ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    ranges[0].NumDescriptors = 1;
+    ranges[0].OffsetInDescriptorsFromTableStart = 0;
+    ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+    ranges[1].NumDescriptors = 1;
+    ranges[1].OffsetInDescriptorsFromTableStart = 1;
+    D3D12_ROOT_PARAMETER params[2] = {};
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[0].Constants.Num32BitValues = sizeof(ScaleConstants) / 4;
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[1].DescriptorTable.NumDescriptorRanges = 2;
+    params[1].DescriptorTable.pDescriptorRanges = ranges;
+    if (!make_root(device, params, 2, "scale", m.scale_root, err)) {
+      shutdown();
+      return false;
+    }
+    D3D12_COMPUTE_PIPELINE_STATE_DESC d = {};
+    d.pRootSignature = m.scale_root.Get();
+    d.CS = {g_scale_cs, sizeof(g_scale_cs)};
+    hr = device->CreateComputePipelineState(&d, IID_PPV_ARGS(&m.scale_pso));
+    if (FAILED(hr)) {
+      err = "the scale pipeline state failed " + hr_text(hr);
+      shutdown();
+      return false;
+    }
+  }
+
   // ---- the composite: constants and a table of three textures, for the pixel shader
   {
     D3D12_DESCRIPTOR_RANGE range = {};
@@ -1433,21 +1573,9 @@ bool Pipeline::render_joined(ID3D12Resource* cur, ID3D12Resource* prev, ID3D12Fe
   // ---- the render, as render() records it. The ingest's last mark is the draw's start.
   const bool evaluate = m.runs() && !m.hold;
   const bool residual = m.hold ? (m.runs() && m.pair) : evaluate;
-  if (evaluate) {
-    const bool drop = reset || m.reset_next;
-    const D3D12_RESOURCE_STATES kRead = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-    const D3D12_RESOURCE_STATES kWrite = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    ID3D12Resource* in = m.work.in.Get();
-    for (int pass = 0; pass < m.desc.passes; ++pass) {
-      ID3D12Resource* out = m.work.out[pass % 2].Get();
-      if (pass > 0) transition(l, in, kWrite, kRead);
-      if (!m.nr.evaluate(l, pass, in, out, drop, err)) {
-        l->Close();
-        return false;
-      }
-      if (pass > 0) transition(l, in, kRead, kWrite);
-      in = out;
-    }
+  if (evaluate && !m.record_passes(l, reset || m.reset_next, err)) {
+    l->Close();
+    return false;
   }
   m.timer.mark(l, t0 + 3);
 
@@ -1553,20 +1681,9 @@ bool Pipeline::render(ID3D12Resource* cur, const Target& target, bool reset, boo
   m.timer.mark(l, t0 + 1);
   m.timer.mark(l, t0 + 2);
   if (evaluate) {
-    const bool drop = reset || m.reset_next;
-    const D3D12_RESOURCE_STATES kRead = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-    const D3D12_RESOURCE_STATES kWrite = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    ID3D12Resource* in = m.work.in.Get();
-    for (int pass = 0; pass < m.desc.passes; ++pass) {
-      // chained: a pass reads what the pass before it wrote
-      ID3D12Resource* out = m.work.out[pass % 2].Get();
-      if (pass > 0) transition(l, in, kWrite, kRead);
-      if (!m.nr.evaluate(l, pass, in, out, drop, err)) {
-        l->Close();  // it may hold part of the runtime's commands, and is never run
-        return false;
-      }
-      if (pass > 0) transition(l, in, kRead, kWrite);
-      in = out;
+    if (!m.record_passes(l, reset || m.reset_next, err)) {
+      l->Close();  // it may hold part of the runtime's commands, and is never run
+      return false;
     }
     m.reset_next = false;
   }
@@ -1816,12 +1933,37 @@ bool Pipeline::nr_on() const { return impl_ && impl_->network && impl_->nr_on; }
 
 void Pipeline::set_settings(const NrPasses& settings) {
   if (!impl_ || same_passes(settings, impl_->settings, impl_->desc.passes)) return;
-  impl_->settings = settings;
-  impl_->reset_next = true;
-  if (impl_->network) impl_->nr.set_settings(settings);
+  Impl& m = *impl_;
+  // the strength is the pipeline's own, see record_passes(): a new one changes nothing the
+  // network is given, so the history stays and the runtime is not told
+  NrPasses as_before = settings;
+  as_before.strength = m.settings.strength;
+  const bool strength_alone = same_passes(as_before, m.settings, m.desc.passes);
+  m.settings = settings;
+  if (strength_alone) return;
+  m.reset_next = true;
+  if (!m.network) return;
+  // While the maker thread creates features it reads the network's settings, so they are
+  // handed over once it has ended (settle_settings), and the set it makes is at the old
+  // ones: a remake may then be due again, which network_needs_remake() says.
+  if (m.making.load() == 1) m.settings_pending = true;
+  else m.nr.set_settings(settings);
 }
 
-void Pipeline::set_settings(const NrSettings& settings) { set_settings(NrPasses(settings)); }
+void Pipeline::set_settings(const NrSettings& settings) {
+  if (!impl_) return;
+  NrPasses all(settings);
+  all.preset = impl_->settings.preset;
+  all.shared = impl_->settings.shared;
+  all.strength = impl_->settings.strength;
+  set_settings(all);
+}
+
+bool Pipeline::network_needs_remake() const { return impl_ && impl_->network && impl_->nr.needs_remake(); }
+
+bool Pipeline::shared_network() const { return impl_ && impl_->network && impl_->nr.shared(); }
+
+unsigned Pipeline::preset() const { return impl_ && impl_->network ? impl_->nr.preset() : 0u; }
 
 bool Pipeline::network_runs() const { return impl_ && impl_->runs() && !impl_->hold; }
 

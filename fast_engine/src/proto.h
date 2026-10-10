@@ -32,7 +32,7 @@ struct Command {
     Nr,           // nr 1|0            on: the network on or off
     Reload,       // reload            read the settings in ReShade.ini again
     Settle,       // settle 1|0        on: a picture come to rest goes through the network again
-    Quality,      // quality N         n: the quality step to switch to, 0 to 4
+    Quality,      // quality N         n: the quality step to switch to, 0 to 5
   };
   Kind kind = Quit;
   int x = 0;
@@ -48,7 +48,7 @@ struct Command {
 //   - "live", "ready", "clip", "nr" and "settle" take exactly one word: off for "0", "off"
 //     and "no", on for anything else.
 //   - "crop" needs exactly two whole numbers, "probe" and "quality" exactly one, "cap"
-//     exactly one number. A negative probe or cap counts as 0, and a quality outside 0 to 4
+//     exactly one number. A negative probe or cap counts as 0, and a quality outside 0 to 5
 //     as the nearer of the two. With the wrong count or something that is not a number the
 //     line is ignored, as the presenter ignores it. A whole number is
 //     a sign if any and digits, and one beyond an int is held at the end of the range. A

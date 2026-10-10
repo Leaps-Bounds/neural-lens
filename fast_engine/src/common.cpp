@@ -219,12 +219,16 @@ const char kUsage[] =
     "  --stack DIR           the folder with nvngx_dlssnr.dll and ReShade.ini\n"
     "  --data DIR            a writable folder for the runtime's logs (%TEMP%\\lens-fast)\n"
     "  --passes N            neural passes, 1 to 8 (1)\n"
-    "  --quality N           the quality step, 0 to 4. The network works on a copy of\n"
+    "  --quality N           the quality step, 0 to 5. The network works on a copy of\n"
     "                        the picture, and a lower step makes that copy smaller, which\n"
     "                        costs less power and gives up some of the fine detail the\n"
-    "                        network adds. 4 Quality, 3 Balanced, 2 Performance, 1 Low\n"
-    "                        power, 0 Lowest power. Not given, it is 4 for a picture that\n"
-    "                        fits 2560x1440 and 3 for a larger one, where no loss was seen\n"
+    "                        network adds. 5 Full, the picture's own size at any\n"
+    "                        resolution, 4 Quality, the own size within 2560x1440, 3\n"
+    "                        Balanced, 2 Performance, 1 Low power, 0 Lowest power. Not\n"
+    "                        given, it is 4 for a picture that fits 2560x1440 and 3 for a\n"
+    "                        larger one, where no loss was seen against the picture fitted\n"
+    "                        into 2560x1440. Full costs the network 14.3 ms a pass at\n"
+    "                        6144x2560 on an RTX 5090, against 3.0 ms a pass at Balanced\n"
     "  --work-size W H       for tests, the size the network works at in place of a step\n"
     "  --work-scale S        for tests, that size as a share of the picture, 0 to 1\n"
     "  --work-max W H        for tests, that size as the picture fitted into W x H\n"
@@ -237,13 +241,13 @@ const char kUsage[] =
     "                        run IMAGE through the pipeline with no window and no\n"
     "                        capture, time it and write the pictures into OUTDIR\n"
     "  --switches LIST       with --selftest, at the end switch through these quality\n"
-    "                        steps in order, as in 4,3,2,1,0,4, and keep a picture of each\n"
+    "                        steps in order, as in 5,3,2,1,0,4, and keep a picture of each\n"
     "  --switch-frames N     frames drawn at each of them (421). Under 100 no picture is\n"
     "                        kept, and such a run is for the video memory alone\n"
     "  --switch-rest S       after the last of them, S seconds with no frame and then\n"
     "                        frames again, with the video memory in use at each point\n"
     "  --capturetest SECONDS capture for that long and report, with no window and no network\n"
-    "  --steps W H           print the five steps' work sizes for a W x H picture and\n"
+    "  --steps W H           print the six steps' work sizes for a W x H picture and\n"
     "                        leave. It may be given several times\n"
     "  --help                this text\n"
     "An option it does not know is ignored with a note on stderr.\n"
@@ -254,20 +258,27 @@ const char kUsage[] =
     "and four of its own:\n"
     "  nr 1|0       the network on or off. Off shows the capture unchanged\n"
     "  reload       read the settings in ReShade.ini again: the six in [RenoDX.DLSS5],\n"
-    "               the base every pass starts from, and each pass's own values where the\n"
-    "               file holds them, Pass<n>Style, Pass<n>Intensity, Pass<n>LocalTone,\n"
-    "               Pass<n>LocalStructure, Pass<n>SkinStructure and Pass<n>AutoMask in\n"
-    "               [NeuralLens.Passes], n from 2 up to the pass count. The intensity of\n"
-    "               passes 2 to 4 is the add-on's own NRPass<n>Intensity, or the base's\n"
-    "               where Pass<n>IntensityTied is in the lens's section. The start reads\n"
-    "               the same\n"
+    "               the base every pass starts from, with NRUICorrection and NRPreset\n"
+    "               there, and each pass's own values where the file holds them,\n"
+    "               Pass<n>Style, Pass<n>Intensity, Pass<n>LocalTone, Pass<n>LocalStructure,\n"
+    "               Pass<n>SkinStructure and Pass<n>AutoMask in [NeuralLens.Passes], n from\n"
+    "               2 up to the pass count. The intensity of passes 2 to 4 is the add-on's\n"
+    "               own NRPass<n>Intensity, or the base's where Pass<n>IntensityTied is in\n"
+    "               the lens's section. SharedNetwork=1 in the lens's section, with two\n"
+    "               passes or more, runs every pass through the first pass's feature, each\n"
+    "               with its own values, so one history serves them all. ScaleChange=1\n"
+    "               there, with Strength from 1 to 2, scales the change the passes made\n"
+    "               together by the strength, once the last pass has run, since the\n"
+    "               network itself does no more above an intensity of 1. The start reads\n"
+    "               the same. A new preset or shared state makes the features again, as\n"
+    "               quality does, while the pictures go on\n"
     "  settle 1|0   on by default. When a picture that changed over 1/32 of its area or\n"
     "               more has stood still for 150 ms, the network runs on it up to 4\n"
     "               more times, so a still picture reaches the network's settled state.\n"
     "               Never while the picture changes, and under a limit no faster than\n"
     "               the limit\n"
-    "  quality N    switch to that quality step, 0 to 4. The network for the new size is\n"
-    "               made beside the one in use while the pictures go on, about 130 ms.\n"
+    "  quality N    switch to that quality step, 0 to 5. The network for the new size is\n"
+    "               made beside the one in use while the pictures go on, 0.1 to 0.5 s.\n"
     "               Then the next picture is the first at the new size, and the network\n"
     "               starts on it without its history. A picture at rest then goes through\n"
     "               the network 64 times, and once more 14 s later, which is when the\n"
@@ -276,22 +287,36 @@ const char kUsage[] =
     "\n"
     "Lines on stdout:\n"
     "  presenter ready ...   once the first picture is on screen. It ends with the work\n"
-    "                        size, the passes, the quality step in use and \"hdr off\" or\n"
-    "                        \"hdr on\", whether Windows HDR is on for the monitor, which a\n"
-    "                        note on stderr says as well when the capture first starts and\n"
-    "                        whenever that state changes. With it on the capture and the\n"
-    "                        picture are in 16-bit floats, the picture is shown in HDR as\n"
-    "                        the desktop is, and the line's format is 10\n"
-    "                        (R16G16B16A16_FLOAT) in place of 87\n"
+    "                        size, the passes, the quality step in use, \"shared on\" or\n"
+    "                        \"shared off\", whether the passes run through one feature,\n"
+    "                        and \"hdr off\" or \"hdr on\", whether Windows HDR is on for\n"
+    "                        the monitor, which a note on stderr says as well when the\n"
+    "                        capture first starts and whenever that state changes. With\n"
+    "                        it on the capture and the picture are in 16-bit floats, the\n"
+    "                        picture is shown in HDR as the desktop is, and the line's\n"
+    "                        format is 10 (R16G16B16A16_FLOAT) in place of 87\n"
     "  engine quality N work WxH\n"
-    "                        the answer to a quality line, once that step is in use\n"
-    "  stats new=N arrived=N repeated=N dropped=N skipped=N meter=MS delay=MS\n"
-    "                        once a second. meter is the time in ms from a captured\n"
+    "                        the answer to a quality line, once the switch has landed,\n"
+    "                        with the step in use from then on. That is the step asked\n"
+    "                        for, or the step it had where the network for the new step\n"
+    "                        could not be made, or Quality where Full was asked for a\n"
+    "                        picture above 47 megapixels\n"
+    "  engine remake failed, shared on|off, preset N, REASON\n"
+    "                        a reload asked for a new preset or shared state and the\n"
+    "                        features could not be made again for it, so they run as\n"
+    "                        they were made, in the state named, which the stats line\n"
+    "                        keeps saying. A reload that changes the state asks again\n"
+    "  stats new=N arrived=N repeated=N dropped=N skipped=N meter=MS delay=MS shared=on|off\n"
+    "        network=MS      once a second. meter is the time in ms from a captured\n"
     "                        frame's timestamp to the present call, negative because the\n"
     "                        timestamp is a refresh still to come. delay is the time in\n"
     "                        ms from that timestamp to the refresh that showed the\n"
-    "                        picture, nan when none was learned. With\n"
-    "                        LENS_PRESENTER_PROFILE=1 more pairs follow\n"
+    "                        picture, nan when none was learned. shared is whether the\n"
+    "                        passes run through one feature, as on the ready line.\n"
+    "                        network is the GPU time in ms of the network's passes\n"
+    "                        together, the mean over the second's runs, nan where it did\n"
+    "                        not run. With LENS_PRESENTER_PROFILE=1 more pairs come\n"
+    "                        before shared\n"
     "  paused | resumed | shot done ... | shot failed REASON\n"
     "  probe n=N median=M max=X | capture lost REASON | engine failed REASON\n";
 
@@ -457,6 +482,26 @@ constexpr const wchar_t* kPassNames[6] = {L"Style", L"Intensity", L"LocalTone", 
 // in the Windows folder instead.
 std::wstring stack_ini(const std::wstring& stack_dir) { return path_join(absolute(stack_dir), L"ReShade.ini"); }
 
+// The strength in effect, see NrPasses: 1 unless the lens's section has ScaleChange on, else
+// its Strength held within kStrengthLeast and kStrengthMost, with a note where the file
+// holds a value outside them or none.
+float read_strength(const IniSection& own) {
+  if ((int)section_number(own, L"ScaleChange", 0.0f) == 0) return 1.0f;
+  bool found = false;
+  const float value = section_number(own, L"Strength", kStrengthLeast, &found);
+  if (!found) {
+    note("settings: ScaleChange is on and Strength is missing, so the strength is %.0f", kStrengthLeast);
+    return kStrengthLeast;
+  }
+  if (value < kStrengthLeast || value > kStrengthMost) {
+    const float held = value < kStrengthLeast ? kStrengthLeast : kStrengthMost;
+    note("settings: Strength is %.2f, outside %.0f to %.0f, so the strength is held at %.0f", value, kStrengthLeast,
+         kStrengthMost, held);
+    return held;
+  }
+  return value;
+}
+
 void read_base(const IniSection& addon, NrSettings& out) {
   const NrSettings d;
   const float style = section_number(addon, L"NRStyle", (float)d.style);
@@ -466,6 +511,18 @@ void read_base(const IniSection& addon, NrSettings& out) {
   out.local_structure = section_number(addon, L"NRLocalStructure", d.local_structure);
   out.skin_structure = section_number(addon, L"NRSkinStructure", d.skin_structure);
   out.auto_mask = (int)section_number(addon, L"NRAutoMask", (float)d.auto_mask) != 0 ? 1 : 0;
+  out.ui_correction = (int)section_number(addon, L"NRUICorrection", (float)d.ui_correction) != 0 ? 1 : 0;
+}
+
+// The preset the features are created with, 0 to 3 as the add-on's menu offers them. Read
+// as the six are, and anything outside that range, which the add-on would not write,
+// counts as the default.
+constexpr unsigned kPresetMost = 3;
+
+unsigned read_preset(const IniSection& addon) {
+  const float value = section_number(addon, L"NRPreset", 0.0f);
+  if (value < 0.0f || value > (float)kPresetMost) return 0u;
+  return (unsigned)value;
 }
 
 std::wstring pass_key(int n, const wchar_t* name) {
@@ -490,7 +547,7 @@ bool read_nr_settings(const std::wstring& stack_dir, NrSettings& out, std::strin
 bool same_settings(const NrSettings& a, const NrSettings& b) {
   return a.style == b.style && a.intensity == b.intensity && a.local_tone == b.local_tone &&
          a.local_structure == b.local_structure && a.skin_structure == b.skin_structure &&
-         a.auto_mask == b.auto_mask;
+         a.auto_mask == b.auto_mask && a.ui_correction == b.ui_correction;
 }
 
 bool read_nr_passes(const std::wstring& stack_dir, NrPasses& out, std::string& err, int count) {
@@ -502,11 +559,15 @@ bool read_nr_passes(const std::wstring& stack_dir, NrPasses& out, std::string& e
   }
   const IniSection addon = read_section(ini, kAddonSection);
   read_base(addon, out.pass[0]);
+  out.preset = read_preset(addon);
   const NrSettings base = out.pass[0];
   for (NrSettings& p : out.pass) p = base;      // a pass beyond the count runs nothing of its own
+  const IniSection own = read_section(ini, kPassSection);
+  out.strength = read_strength(own);            // the strength, whatever the pass count, see NrPasses
   if (count > kNrMaxPasses) count = kNrMaxPasses;
   if (count < 2) return true;                   // one pass reads what it did before the passes had values
-  const IniSection own = read_section(ini, kPassSection);
+  // the shared mode: the lens's key, or the test switch, see NrPasses
+  out.shared = (int)section_number(own, L"SharedNetwork", 0.0f) != 0 || env_text(L"LENS_FAST_ONE_FEATURE") == L"1";
   for (int n = 2; n <= count; ++n) {
     NrSettings& p = out.pass[n - 1];
     const float style = section_number(own, pass_key(n, kPassNames[0]), (float)base.style);
@@ -532,6 +593,7 @@ bool read_nr_passes(const std::wstring& stack_dir, NrPasses& out, std::string& e
 
 bool same_passes(const NrPasses& a, const NrPasses& b, int count) {
   if (count > kNrMaxPasses) count = kNrMaxPasses;
+  if (a.preset != b.preset || a.shared != b.shared || a.strength != b.strength) return false;
   for (int i = 0; i < count; ++i) {
     if (!same_settings(a.pass[i], b.pass[i])) return false;
   }
@@ -550,6 +612,7 @@ std::string own_values_text(const NrSettings& base, const NrSettings& pass) {
   if (pass.local_structure != base.local_structure) add(strf("local structure %.2f", pass.local_structure));
   if (pass.skin_structure != base.skin_structure) add(strf("skin structure %.2f", pass.skin_structure));
   if (pass.auto_mask != base.auto_mask) add(strf("auto mask %d", pass.auto_mask));
+  if (pass.ui_correction != base.ui_correction) add(strf("ui correction %d", pass.ui_correction));
   return text;
 }
 
@@ -653,13 +716,13 @@ bool parse_options(int argc, wchar_t** argv, Options& out, std::string& err) {
     } else if (a == L"--quality") {
       if (!values(1)) return false;
       if (!to_int(v[0], o.quality)) {
-        err = "--quality needs a whole number from 0 to 4";
+        err = "--quality needs a whole number from 0 to 5";
         return false;
       }
       if (o.quality < 0 || o.quality > kQualityMost) {
         const int asked = o.quality;
         o.quality = asked < 0 ? 0 : kQualityMost;
-        note("options: --quality %d is outside 0 to 4, using %d", asked, o.quality);
+        note("options: --quality %d is outside 0 to %d, using %d", asked, kQualityMost, o.quality);
       }
     } else if (a == L"--work-size") {
       if (!values(2)) return false;
@@ -678,7 +741,7 @@ bool parse_options(int argc, wchar_t** argv, Options& out, std::string& err) {
       o.work_max_given = true;
     } else if (a == L"--switches") {
       if (!values(1)) return false;
-      // whole numbers from 0 to 4 with commas between, as in 4,3,2,1,0,4
+      // whole numbers from 0 to 5 with commas between, as in 5,3,2,1,0,4
       o.switches.clear();
       bool good = !v[0].empty();
       for (size_t at = 0; good && at <= v[0].size();) {
@@ -689,7 +752,7 @@ bool parse_options(int argc, wchar_t** argv, Options& out, std::string& err) {
         at = comma + 1;
       }
       if (!good) {
-        err = "--switches needs quality steps from 0 to 4 with commas between, as in 4,3,2,1,0,4";
+        err = "--switches needs quality steps from 0 to 5 with commas between, as in 5,3,2,1,0,4";
         return false;
       }
     } else if (a == L"--switch-frames") {
@@ -1021,11 +1084,15 @@ const work_table::Entry* table_entry(int W, int H) {
 
 int held_step(int step) { return step < 0 ? 0 : (step > kQualityMost ? kQualityMost : step); }
 
+// The table and the rule hold the five steps below Full, 0 to 4.
+constexpr int kTableSteps = kQualityFull;
+static_assert(kTableSteps == 5 && kQualityMost == kQualityFull, "the table holds the steps below Full");
+
 }  // namespace
 
 const char* quality_name(int step) {
   static const char* const names[kQualityMost + 1] = {"Lowest power", "Low power", "Performance", "Balanced",
-                                                      "Quality"};
+                                                      "Quality", "Full"};
   return step >= 0 && step <= kQualityMost ? names[step] : "";
 }
 
@@ -1034,8 +1101,22 @@ int default_quality(int W, int H) {
   return work_table::kDefaultStep[e ? e->kind : quality_rule(W, H).kind];
 }
 
+bool full_fits(int W, int H) { return (long long)W * H <= kFullMostTexels; }
+
 void quality_work_size(int W, int H, int step, int& work_w, int& work_h, bool* measured) {
   step = held_step(step);
+  if (W < 1) W = 1;
+  if (H < 1) H = 1;
+  if (step == kQualityFull) {
+    if (full_fits(W, H)) {
+      // the picture itself, whatever its size: nothing is resampled, so there is no grid
+      if (measured) *measured = false;
+      work_w = W;
+      work_h = H;
+      return;
+    }
+    step = kQualityFull - 1;  // the runtime would refuse the feature, so Quality's size
+  }
   const work_table::Entry* e = table_entry(W, H);
   if (measured) *measured = e != nullptr;
   if (e) {
@@ -1051,6 +1132,11 @@ void quality_work_size(int W, int H, int step, int& work_w, int& work_h, bool* m
 bool quality_figures(int W, int H, int step, double& ms, double& kept) {
   const work_table::Entry* e = table_entry(W, H);
   if (!e || step < 0 || step > kQualityMost) return false;
+  if (step == kQualityFull) {
+    // Quality's figures where Quality is the own size too, a picture that fits 2560x1440
+    if (e->step[kTableSteps - 1].w != e->width || e->step[kTableSteps - 1].h != e->height) return false;
+    step = kTableSteps - 1;
+  }
   ms = e->step[step].ms;
   kept = e->step[step].kept;
   return true;
@@ -1061,7 +1147,14 @@ std::string steps_text(int W, int H) {
   bool measured = false;
   for (int step = kQualityMost; step >= 0; --step) {
     int w = 0, h = 0;
-    quality_work_size(W, H, step, w, h, &measured);
+    bool from_table = false;
+    quality_work_size(W, H, step, w, h, &from_table);
+    if (step < kQualityFull) measured = from_table;  // the five below Full: in the table or by the rule
+    if (step == kQualityFull && !full_fits(W, H)) {
+      text += strf(" %d %s held at %s above %lld megapixels,", step, quality_name(step),
+                   quality_name(kQualityFull - 1), kFullMostTexels / 1000000);
+      continue;
+    }
     text += strf(" %d %s %dx%d,", step, quality_name(step), w, h);
   }
   return text + strf(" default %d, %s", default_quality(W, H), measured ? "measured" : "by the rule");
@@ -1088,6 +1181,10 @@ WorkPlan work_plan(int W, int H, const Options& o) {
   } else {
     p.chosen = o.quality >= 0;
     p.quality = p.chosen ? held_step(o.quality) : default_quality(W, H);
+    if (p.quality == kQualityFull && !full_fits(W, H)) {
+      p.quality = kQualityFull - 1;  // the step in use, which the ready line names
+      p.held = true;
+    }
     quality_work_size(W, H, p.quality, p.w, p.h, &p.measured);
   }
   if (p.w < 1) p.w = 1;

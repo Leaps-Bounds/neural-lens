@@ -18,10 +18,23 @@
 //             the four further runs of the network the loop's settle gives it
 //   strength  at a strength of 0 the network gives its input back, so leaving it out there,
 //             as the pipeline does, changes no byte
+//   above 1   at a strength above 1 the pipeline scales the change the passes made together,
+//             once, after the last pass, since the runtime holds its own at 1: the picture at
+//             1, at 1.5, at 2 and at 1 again, the last the first byte for byte, and at any pass
+//             count the network's output at 1.5 and at 2 the output at 1 scaled on the CPU as
+//             the shader scales it, against the network's input, byte for byte
 //   per pass  with --passes 2 or more, the second pass at values of its own gives another
 //             picture than every pass at the base's values, the base's values again give
 //             the first picture back byte for byte, and the first pass at half the strength
-//             gives another picture than the second at half, so each pass takes its own slot's
+//             gives another picture than the second at half, so each pass takes its own slot's.
+//             With SharedNetwork=1 in the stack's [NeuralLens.Passes] (or LENS_FAST_ONE_FEATURE=1)
+//             the passes run through the first pass's feature, which the first line and
+//             timings.json say, and the pictures are that mode's: tools\run_selftest.py --shared
+//             holds them against their own reference
+//   remake    with --passes 2 or more, the shared state flipped and the next preset take
+//             effect once the features are made again at the same size, as the loop does on a
+//             reload: after four frames of one picture the other mode's picture differs, and
+//             flipped back the picture is the same again byte for byte
 //   switches  with --switches, one quality step after another in one run, each with the
 //             time the switch took, the network's time at the new size, the video memory
 //             in use and a picture. While a new network is being made, frames are drawn as
@@ -311,18 +324,11 @@ int run_selftest(const Options& o) {
   if (!make_dirs(o.selftest_outdir)) return failed("cannot create " + narrow(o.selftest_outdir));
   const std::string step_text =
       plan.quality >= 0 ? strf("quality %d %s, %s, %s", plan.quality, quality_name(plan.quality),
-                               plan.chosen ? "as asked" : "the default for this size",
-                               plan.measured ? "a measured size" : "by the rule")
+                               plan.held ? "Full was asked, which the picture is too large for"
+                                         : (plan.chosen ? "as asked" : "the default for this size"),
+                               plan.measured ? "a measured size"
+                                             : (plan.quality == kQualityFull ? "the picture's own size" : "by the rule"))
                         : strf("quality none, the work size was given by %s", plan.given_by);
-  say("selftest picture %s %ux%u, work %dx%d, passes %d, %s", narrow(o.selftest_image).c_str(), W, H, work_w,
-      work_h, o.passes, step_text.c_str());
-
-  std::vector<uint8_t> original((size_t)W * H * 3);  // tight RGB8, what "nr off" must give back
-  for (size_t i = 0, n = (size_t)W * H; i < n; ++i) {
-    original[i * 3] = picture.bgra[i * 4 + 2];
-    original[i * 3 + 1] = picture.bgra[i * 4 + 1];
-    original[i * 3 + 2] = picture.bgra[i * 4];
-  }
 
   // the base and each pass's own values, as the loop reads them, see NrPasses
   NrPasses pass_settings;
@@ -330,6 +336,18 @@ int run_selftest(const Options& o) {
     note("selftest: %s, the runtime's defaults are used", err.c_str());
   }
   const NrSettings settings = pass_settings.base();
+  // the shared state as the features are made with it: off with one pass whatever the file says
+  const bool shared = pass_settings.shared && o.passes > 1;
+  say("selftest picture %s %ux%u, work %dx%d, passes %d, %s, shared %s, preset %u, ui correction %d",
+      narrow(o.selftest_image).c_str(), W, H, work_w, work_h, o.passes, step_text.c_str(), shared ? "on" : "off",
+      pass_settings.preset, settings.ui_correction);
+
+  std::vector<uint8_t> original((size_t)W * H * 3);  // tight RGB8, what "nr off" must give back
+  for (size_t i = 0, n = (size_t)W * H; i < n; ++i) {
+    original[i * 3] = picture.bgra[i * 4 + 2];
+    original[i * 3 + 1] = picture.bgra[i * 4 + 1];
+    original[i * 3 + 2] = picture.bgra[i * 4];
+  }
 
   // ---- the device and the textures
   Gpu gpu;
@@ -557,6 +575,67 @@ int run_selftest(const Options& o) {
         zero_ran_exact ? "yes" : "NO", zero_ran_ms, zero_off_exact ? "yes" : "NO", zero_off_ms);
   }
 
+  // ---- the strength above 1, the lens's own scaling of the change the passes made
+  // together, see NrPasses in common.h: every pass at the base's values with the intensity
+  // at 1, at a strength of 1, then 1.5, then 2, and 1 again, each the network's first picture
+  // of this frame. The picture at 1 again must be the first byte for byte. At any pass count
+  // the network's output at 1.5 and at 2 must be the output at 1 scaled on the CPU the way
+  // the shader scales it, against the network's input, byte for byte, which the two factors
+  // allow since every value of theirs is exact in a float. The pictures at 1.5 and 2 must
+  // each differ from the one at 1 and from each other. The mean absolute change from the
+  // original at each is reported, so the scaling can be read as a ratio: it is not the factor
+  // itself, since each level is rounded and held inside 0 to 255.
+  bool above_ok = true, above_back = false, above_exact = true;
+  double above_change[3] = {};  // at 1, 1.5 and 2
+  {
+    NrPasses one = pass_settings;
+    for (NrSettings& p : one.pass) {
+      p = settings;
+      p.intensity = 1.0f;
+    }
+    one.strength = 1.0f;
+    NrPasses half = one, two = one;
+    half.strength = 1.5f;
+    two.strength = 2.0f;
+    std::vector<uint8_t> pic[3], again, out_one, out_scaled;
+    UINT ow = 0, oh = 0;
+    auto draw = [&](const NrPasses& with, std::vector<uint8_t>& pic_out) {
+      pipeline.set_settings(with);
+      if (!pipeline.ingest(a.Get(), nullptr, nullptr, 0, changed, err)) return false;
+      if (!pipeline.render(a.Get(), back, true, true, err)) return false;
+      return pipeline.read_target(pic_out, err);
+    };
+    if (!draw(one, pic[0])) return failed(err);
+    if (!pipeline.read_work(true, out_one, ow, oh, err)) return failed(err);
+    const NrPasses* with[2] = {&half, &two};
+    const float factor[2] = {1.5f, 2.0f};
+    for (int k = 0; k < 2; ++k) {
+      if (!draw(*with[k], pic[k + 1])) return failed(err);
+      if (!pipeline.read_work(true, out_scaled, ow, oh, err)) return failed(err);
+      if (out_scaled.size() != out_one.size() || out_one.size() != work_in.size()) above_exact = false;
+      // the shader's arithmetic: in + (out - in) * factor, a half going up, held in 0 to 255
+      for (size_t i = 0; i < out_one.size() && above_exact; ++i) {
+        const float v = (float)work_in[i] + ((float)out_one[i] - (float)work_in[i]) * factor[k];
+        float q = std::floor(v);
+        if (v - q >= 0.5f) q += 1.0f;
+        const int level = q < 0.0f ? 0 : (q > 255.0f ? 255 : (int)q);
+        if (level != (int)out_scaled[i]) above_exact = false;
+      }
+    }
+    if (!draw(one, again)) return failed(err);
+    pipeline.set_settings(pass_settings);
+    above_back = again == pic[0];
+    for (int k = 0; k < 3; ++k) above_change[k] = mean_abs(pic[k], original);
+    above_ok = above_back && above_exact && pic[1] != pic[0] && pic[2] != pic[0] && pic[2] != pic[1];
+    say("selftest strength above 1: with every pass at the base's values the mean absolute change from the "
+        "original is %.3f of 255 at a strength of 1, %.3f at 1.5 (%.2f times) and %.3f at 2 (%.2f times); at 1 "
+        "again the picture is the first byte for byte: %s; the network's output at 1.5 and at 2 is the output "
+        "at 1 scaled as the shader scales it, byte for byte: %s",
+        above_change[0], above_change[1], above_change[0] > 0.0 ? above_change[1] / above_change[0] : 0.0,
+        above_change[2], above_change[0] > 0.0 ? above_change[2] / above_change[0] : 0.0,
+        above_back ? "yes" : "NO", above_exact ? "yes" : "NO");
+  }
+
   // ---- each pass's own values, with two passes or more: the same picture drawn with every
   // pass at the base's values, then with the second pass at half the strength, then at the
   // base's values again, then with the second pass at another style, and last with the first
@@ -575,16 +654,22 @@ int run_selftest(const Options& o) {
   // mean abs from the equal picture, out of 255, and the last's from the one with the second at half
   double per_pass_half = -1.0, per_pass_style = -1.0, per_pass_first = -1.0, per_pass_first_half = -1.0;
   bool per_pass_again = false, per_pass_at_zero = false;
+  // the remake check below: the other mode's picture from the equal one, and the way back
+  bool remake_ok = true, remake_back = false;
+  double remake_other = -1.0;
   if (o.passes >= 2) {
     const NrSettings base = settings;
     per_pass_at_zero = !(base.intensity > 0.0f);
     const float halved = base.intensity > 0.0f ? base.intensity * 0.5f : 0.5f;
-    NrPasses equal(base);
-    NrPasses half(base);
+    // every pass at the base's values, with the run's preset and shared state kept, so the
+    // check runs the features as they were made
+    NrPasses equal = pass_settings;
+    for (NrSettings& p : equal.pass) p = base;
+    NrPasses half = equal;
     half.pass[1].intensity = halved;
-    NrPasses styled(base);
+    NrPasses styled = equal;
     styled.pass[1].style = (base.style + 1) % 3;
-    NrPasses first(base);
+    NrPasses first = equal;
     first.pass[0].intensity = halved;
     std::vector<uint8_t> pic_equal, pic_half, pic_again, pic_styled, pic_first;
     auto draw = [&](const NrPasses& with, std::vector<uint8_t>& pic) {
@@ -618,6 +703,61 @@ int run_selftest(const Options& o) {
           "same picture: %s. With the first pass at half the strength it is %.3f from the equal one and %.3f from "
           "the one with the second at half",
           per_pass_half, per_pass_style, per_pass_again ? "yes" : "NO", per_pass_first, per_pass_first_half);
+    }
+
+    // ---- the shared state and the preset take effect when the features are made again, which
+    // the loop does on a reload through its quality switch, see main.cpp. The two modes draw
+    // the same picture from a dropped history, since the second pass then starts afresh
+    // either way: they part over frames, as the shared feature's history takes in the network's
+    // own output. So each picture here is the frame drawn with the history dropped and then
+    // three times more with it kept. First in the run's own mode. Then with the shared state
+    // flipped and the next preset, the features made again at the same size and put in use,
+    // as a quality switch does it: another picture, and the network must say it was made with
+    // the new state. Flipped back the same way, the first picture again byte for byte. Before
+    // each remake the pipeline must say one is due, and after it that none is. Where the file
+    // has a strength of 0 the network does not run in either mode and both draw the original,
+    // so the other mode's picture is not judged then, as the per pass check does not judge
+    // its pictures at that strength, and the line says so. The states and the way back are.
+    {
+      NrPasses other = equal;
+      other.shared = !equal.shared;
+      other.preset = (equal.preset + 1) % 4;
+      auto frames = [&](std::vector<uint8_t>& pic) {
+        if (!pipeline.ingest(a.Get(), nullptr, nullptr, 0, changed, err)) return false;
+        if (!pipeline.render(a.Get(), back, true, false, err)) return false;
+        for (int i = 0; i < 3; ++i) {
+          if (!pipeline.render(a.Get(), back, false, i == 2, err)) return false;
+        }
+        return pipeline.read_target(pic, err);
+      };
+      auto remake = [&](const NrPasses& with, std::vector<uint8_t>& pic, bool& due_before, bool& due_after) {
+        pipeline.set_settings(with);
+        due_before = pipeline.network_needs_remake();
+        if (!pipeline.prepare_work((UINT)work_w, (UINT)work_h, err) || !pipeline.commit_work(err)) return false;
+        due_after = pipeline.network_needs_remake();
+        return frames(pic);
+      };
+      std::vector<uint8_t> pic_same, pic_other, pic_back;
+      bool due1 = false, due1_after = true, due2 = false, due2_after = true;
+      pipeline.set_settings(equal);
+      if (!frames(pic_same)) return failed(err);
+      if (!remake(other, pic_other, due1, due1_after)) return failed(err);
+      const bool other_state = pipeline.shared_network() == other.shared && pipeline.preset() == other.preset;
+      if (!remake(equal, pic_back, due2, due2_after)) return failed(err);
+      const bool back_state = pipeline.shared_network() == equal.shared && pipeline.preset() == equal.preset;
+      pipeline.set_settings(pass_settings);
+      remake_other = mean_abs(pic_other, pic_same);
+      remake_back = pic_back == pic_same;
+      remake_ok = due1 && !due1_after && due2 && !due2_after && other_state && back_state &&
+                  (per_pass_at_zero || remake_other > 0.0) && remake_back;
+      say("selftest remake: with the shared state flipped to %s and preset %u the features made again at the same "
+          "size give, after four frames, a picture %.3f of 255 from this mode's%s, the network says it was made so: "
+          "%s; flipped back it is this mode's picture again: %s, made so: %s; a remake was due before each and "
+          "none after: %s",
+          other.shared ? "on" : "off", other.preset, remake_other,
+          per_pass_at_zero ? " (not judged at a strength of 0, where the network does not run in either mode)" : "",
+          other_state ? "yes" : "NO", remake_back ? "yes" : "NO", back_state ? "yes" : "NO",
+          due1 && !due1_after && due2 && !due2_after ? "yes" : "NO");
     }
   }
 
@@ -852,6 +992,8 @@ int run_selftest(const Options& o) {
     for (size_t k = 0; k < o.switches.size(); ++k) {
       Switched s;
       s.quality = o.switches[k];
+      // Full above the network's largest size is Quality, as the loop holds it
+      if (s.quality == kQualityFull && !full_fits((int)W, (int)H)) s.quality = kQualityFull - 1;
       s.at_s = now_s() - t_switches;
       int w = 0, h = 0;
       quality_work_size((int)W, (int)H, s.quality, w, h);
@@ -1011,7 +1153,8 @@ int run_selftest(const Options& o) {
   const bool joined_ok = joined_off_exact && joined_on_same && joined_unchanged && joined_tiled && joined_timed;
   const bool checks_ok = same_unchanged && restored_unchanged && found == (int)spots.size() && repaint_same &&
                          sparse_same && native_exact && all_unchanged && off_exact && zero_ran_exact &&
-                         zero_off_exact && switches_ok && joined_ok && times_bounded && per_pass_ok;
+                         zero_off_exact && above_ok && switches_ok && joined_ok && times_bounded && per_pass_ok &&
+                         remake_ok;
   {
     FILE* f = _wfopen(path_join(out, L"timings.json").c_str(), L"w");
     if (!f) return failed("cannot write timings.json in " + narrow(out));
@@ -1032,9 +1175,11 @@ int run_selftest(const Options& o) {
       fprintf(f, " \"quality\": null,\n \"work_given_by\": \"%s\",\n", plan.given_by);
     }
     fprintf(f, " \"settings\": {\"style\": %u, \"intensity\": %.2f, \"local_tone\": %.2f, \"local_structure\": %.2f, "
-               "\"skin_structure\": %.2f, \"auto_mask\": %d},\n",
+               "\"skin_structure\": %.2f, \"auto_mask\": %d, \"ui_correction\": %d, \"preset\": %u},\n",
             settings.style, settings.intensity, settings.local_tone, settings.local_structure,
-            settings.skin_structure, settings.auto_mask);
+            settings.skin_structure, settings.auto_mask, settings.ui_correction, pass_settings.preset);
+    // whether the passes ran through the first pass's feature, as the features were made, see NrPasses
+    fprintf(f, " \"shared\": %s,\n", pipeline.shared_network() ? "true" : "false");
     // each pass's own values as the file gave them, and what the per pass check found
     fprintf(f, " \"pass_own\": {");
     for (int p = 1; p < o.passes && p < kNrMaxPasses; ++p) {
@@ -1049,6 +1194,9 @@ int run_selftest(const Options& o) {
               "\"first_from_equal\": %.4f, \"first_from_half\": %.4f%s},\n",
               per_pass_half, per_pass_style, per_pass_again ? "true" : "false", per_pass_first, per_pass_first_half,
               per_pass_at_zero ? ", \"not_judged_at_strength_0\": [\"style_from_equal\", \"first_from_half\"]" : "");
+      fprintf(f, " \"remake\": {\"other_from_equal\": %.4f, \"back_same\": %s, \"ok\": %s%s},\n", remake_other,
+              remake_back ? "true" : "false", remake_ok ? "true" : "false",
+              per_pass_at_zero ? ", \"not_judged_at_strength_0\": [\"other_from_equal\"]" : "");
     }
     fprintf(f, " \"frames\": {\"warm\": %d, \"timed\": %d},\n", kWarmFrames, kTimedFrames);
     fprintf(f, " \"gpu_ms\": {\n  \"ingest\": %s,\n  \"nr\": %s,\n  \"composite\": %s,\n  \"frame\": %s\n },\n",
@@ -1068,6 +1216,15 @@ int run_selftest(const Options& o) {
     fprintf(f, " \"zero_strength\": {\"run_gives_original\": %s, \"run_nr_ms\": %.4f, \"left_out_gives_original\": %s, "
                "\"left_out_nr_ms\": %.4f},\n",
             zero_ran_exact ? "true" : "false", zero_ran_ms, zero_off_exact ? "true" : "false", zero_off_ms);
+    // the change from the original with every pass at the base's values and the strength at
+    // 1, 1.5 and 2, see the check: the ratios read the scaling, and the outputs were held
+    // against the CPU's scaling byte for byte
+    fprintf(f, " \"strength_above_1\": {\"change_at_1\": %.4f, \"change_at_1_5\": %.4f, \"change_at_2\": %.4f, "
+               "\"ratio_1_5\": %.4f, \"ratio_2\": %.4f, \"back_same\": %s, \"outputs_exact\": %s, \"ok\": %s},\n",
+            above_change[0], above_change[1], above_change[2],
+            above_change[0] > 0.0 ? above_change[1] / above_change[0] : 0.0,
+            above_change[0] > 0.0 ? above_change[2] / above_change[0] : 0.0, above_back ? "true" : "false",
+            above_exact ? "true" : "false", above_ok ? "true" : "false");
     if (!switched.empty()) {
       fprintf(f, " \"switch_frames\": %d,\n \"switches\": [\n", switch_frames);
       for (size_t k = 0; k < switched.size(); ++k) {
@@ -1096,12 +1253,14 @@ int run_selftest(const Options& o) {
     fprintf(f, " \"checks\": {\"same_picture_unchanged\": %s, \"single_texel_found\": %d, \"single_texel_tried\": %d, "
                "\"put_back_unchanged\": %s, \"repaint_same\": %s, \"sparse_same\": %s, \"native_copy_exact\": %s, "
                "\"unchanged_frames_unchanged\": %s, \"nr_off_exact\": %s, \"zero_strength_exact\": %s, "
-               "\"switches_same\": %s, \"joined_list\": %s, \"times_bounded\": %s, \"per_pass_values\": %s},\n",
+               "\"strength_above_1\": %s, \"switches_same\": %s, \"joined_list\": %s, \"times_bounded\": %s, "
+               "\"per_pass_values\": %s, \"remake\": %s},\n",
             same_unchanged ? "true" : "false", found, (int)spots.size(), restored_unchanged ? "true" : "false",
             repaint_same ? "true" : "false", sparse_same ? "true" : "false", native_exact ? "true" : "false",
             all_unchanged ? "true" : "false", off_exact ? "true" : "false",
-            zero_ran_exact && zero_off_exact ? "true" : "false", switches_ok ? "true" : "false",
-            joined_ok ? "true" : "false", times_bounded ? "true" : "false", per_pass_ok ? "true" : "false");
+            zero_ran_exact && zero_off_exact ? "true" : "false", above_ok ? "true" : "false",
+            switches_ok ? "true" : "false", joined_ok ? "true" : "false", times_bounded ? "true" : "false",
+            per_pass_ok ? "true" : "false", remake_ok ? "true" : "false");
     fprintf(f, " \"ok\": %s\n}\n", checks_ok ? "true" : "false");
     fclose(f);
   }

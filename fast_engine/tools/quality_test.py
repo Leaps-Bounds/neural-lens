@@ -1,4 +1,4 @@
-"""The fast engine's five quality steps, tried with no window: each by itself, then switched
+"""The fast engine's five quality steps below Full, tried with no window: each by itself, then switched
 through in one run, then switched back and forth to watch the video memory.
 
     python quality_test.py [OUTDIR] [--image PNG] [--loop N] [--math] [--keep]
@@ -86,14 +86,16 @@ def timings(outdir):
 
 
 def steps_of(width, height):
-    """The engine's own word on the picture size: the five work sizes and the default step."""
+    """The engine's own word on the picture size: the work sizes of the five steps below Full
+    and the default step. The Full step, the picture's own size, is not part of this test's
+    runs and its entry is left out."""
     out = subprocess.run([rs.EXE, "--steps", str(width), str(height)], capture_output=True, text=True,
                          creationflags=NO_WINDOW).stdout.strip()
     sizes = {}
     default = None
     for part in out.split(":", 1)[-1].split(","):
         words = part.split()
-        if words and words[0].isdigit():
+        if words and words[0].isdigit() and int(words[0]) <= 4:
             sizes[int(words[0])] = words[-1]
         elif len(words) == 2 and words[0] == "default":
             default = int(words[1])

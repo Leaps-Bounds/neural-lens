@@ -3,6 +3,138 @@
 Versions follow semantic versioning. While the major version is 0 the project is beta, and
 settings, the state file format and behaviour may change between releases.
 
+## 0.7.0, 2026-10-09
+
+A switch that scales the network's change, with a strength of its own, a switch that runs the
+passes after the first through the first pass's network, an explanation for every setting on the
+NR settings panel, and a Full quality step that has the network work on the picture at its own
+size.
+
+- **A switch that scales the change, with a strength of its own.** The network itself does no
+  more above an intensity of 1, so the NR settings panel's intensity slider above 1, which has run
+  to 2.00 since 0.6.0 as the add-on's Home menu does, draws the picture of 1 on either engine, as
+  it did, and the intensity's explanation now says so. A stronger picture is the new switch Scale
+  the change, under the pass count on the panel, and while it is on, a slider of its own below it,
+  Strength, from 1.00 to 2.00. On, the fast engine multiplies the change the passes made together,
+  the last pass's output against the first pass's input, by the strength, so the picture is the
+  picture at 1 with its change that many times larger. The lens keeps it as `ScaleChange=1` and
+  `Strength` in its own section of `ReShade.ini`, which the add-on never reads. The switch is off
+  to begin with, an ini or a profile from before 0.7.0 has neither key, and so nothing changes
+  until the switch is switched on. The strength stays in the file while the switch is off, so
+  switching it on again brings it back. A profile carries both, the star shows once the lens
+  differs from its profile in them, the Profiles page of Settings lists them, and the panel's foot
+  says that the switch does nothing on the ReShade engine. Measured on a test computer with an RTX
+  5090 over the Blender picture at 2560x1053, the change from the picture at a strength of 1.5 and
+  of 2 was 1.57 and 2.00 times the change at 1 with one pass, and 1.52 and 1.99 times with two
+  passes through one network, the network's output at each being the output at 1 scaled on the
+  CPU byte for byte, and at 1 again the picture was the first byte for byte.
+- **Runs through pass 1's network, a switch on the tab of pass 2.** On the NR settings panel it
+  sits on the tab of pass 2, under the values and their Same as pass 1 ticks. On, the second pass
+  runs through the first pass's network, with that network's history, instead of a network of its
+  own, still at its own values, and the change comes out stronger. Passes 3 and 4 follow pass 2,
+  and their tabs show the switch greyed with a note that they follow pass 2. The tab of pass 1
+  has no such switch, so a lens at one pass shows none. It is off to begin with. The lens keeps it
+  in its own section of `ReShade.ini` as `SharedNetwork=1`, which stays in the file at one pass,
+  where the engine does not read it. A profile carries it, one saved before 0.7.0 loads with it
+  off, the star shows once the lens differs from its profile in it, and the Profiles page of
+  Settings lists it for a profile of two passes or more. The on-screen readout's passes item says
+  shared once the engine runs the passes that way. Where the engine could not make its network
+  again for the switch, the notice says so for 8 s and the switch's row says that it is not in
+  effect, and where it could not for other new settings, such as a profile's preset, the notice
+  says that instead. The switch is the fast engine's alone. The ReShade engine never reads the
+  key, and the panel's foot says that the switch does nothing there.
+- **The windowed look the switch gives fullscreen.** On the ReShade engine, which draws every
+  windowed lens, the add-on's Denoise before upscaling, `NRPreUpscale=1`, runs the network twice
+  for each picture through one network, the second time on the first run's output. Measured on a
+  test computer with an RTX 5090 over a character still at 1400x1000, with two passes and the
+  second at the first pass's values, the fast engine's picture with the switch on was 0.91 of 255
+  from the ReShade engine's with Denoise before upscaling on at one set of values, and 0.72 of 255
+  at another, where one pass was 13.2 and 6.2 of 255 from it, see Each pass's values in
+  `docs/NOTES.md`. The windowed picture is the softer one, keeping 0.35 of the still's fine detail
+  at the second set of values where the fast engine kept 0.74. Over text scrolling 3 and 8 pixels
+  a frame the switch left no trail and no double, the same as one pass. With the engine by itself
+  fullscreen at 6144x2526 at Balanced, over a picture that changed at every refresh, two passes
+  with the switch on showed 75 new pictures a second on 261 W with a median delay of 15 ms, the
+  same as two passes without it, where one pass showed 120 a second on 226 W with 10.6 ms.
+- **Every setting on the NR settings panel is explained.** Rest the pointer on a setting for a
+  second and a half and a small window beside the pointer says what the setting does, as Settings
+  does. F1 says the same for the setting the arrow keys are on, below it, so the panel can be read
+  from the keyboard while a game keeps the foreground, and a new line at the panel's foot says how.
+  The lens holds F1 only while the panel is open, and not where a hotkey of Settings has F1 on its
+  own, where the foot line names the pointer alone. Any key on the panel takes the explanation
+  away, and like the panel it never takes the foreground from the program in front.
+- **A Full quality step.** Full is the step above Quality. At Full the network works on the
+  picture at its own size, however large the screen, where every other step has it work on a
+  smaller copy of a picture larger than 2560x1440. For a picture within 2560x1440, Quality works at
+  the picture's own size already, so there the two are the same. Full is on the NR settings panel
+  and the Power page of Settings, the hotkey that raises the step reaches it, a profile carries it,
+  `fast_quality = 5` in the ini keeps it, and the readout says step Full. The default is
+  unchanged, Balanced for a picture larger than 2560x1440 and Quality for a smaller one. A lens
+  before 0.7.0 takes such an ini or profile as Quality. Measured on a test computer with an RTX
+  5090 without a window, the network took 14.3 ms a pass at 6144x2560 and 27.9 to 28.7 ms for two
+  passes, against 3.0 ms a pass at Balanced, and 7.3 ms a pass at 3840x2160, and the engine held
+  2192 MiB of video memory at one pass and 3877 MiB at two at 6144x2560. With the engine by itself
+  fullscreen at 6144x2526, over the picture that changed at every refresh, Full showed 40 new
+  pictures a second on 408 W with a median delay of 29 ms at one pass, and 24 a second on 472 W
+  with 42 ms at two, where Balanced in the same series showed 120 a second on 234 W with 10.5 ms
+  at one pass and 75 a second on 257 W with 15 ms at two. Over a still picture the engine at Full
+  comes to rest as at every step, and with two passes the card drew 52 W, 1 W more than with the
+  desktop and the picture alone.
+- **On a large screen Balanced gives another picture than Full.** On three 6144x2560 frames of a
+  game with two passes, measured without a window, the picture at Balanced was 8.8 to 9.5 of 255
+  from the picture at Full, where the frame with no network at all was 10.0 to 12.0 of 255 from
+  it. The change at Balanced was as large overall but fell in other places, a correlation of 0.61
+  to 0.69 with the change at Full, and in two of the frames a face darkened by 19.6 and 19.8 of 255
+  in luma at Balanced against 35.5 and 36.4 at Full. Balanced showed no loss against the picture
+  fitted into 2560x1440, which is what the steps were measured against before, see The quality
+  steps in `docs/NOTES.md`.
+- **A step the fast engine cannot take.** A quality step is made beside the network in use, so the
+  switch to Full at 6144x2560 with two passes took 0.30 to 0.32 s while the pictures went on, and
+  held 5763 MiB of video memory with both networks for that moment, and the switch back to
+  Balanced took 0.46 s. Where the engine cannot make the network for a step, as with too little
+  video memory for Full on a large screen, it runs on at the step it had, and the lens now goes
+  by that step, keeps it in the ini and says on the notice which step runs.
+  Where the engine cannot make it at a start at Full on a picture larger than 2560x1440, the lens
+  goes by the default step, says so the same way and starts the engine once more, where before a
+  failed start ruled the fast engine out for the run. The runtime makes no network for a picture
+  above about 47 megapixels, so Full runs such a picture at Quality, where 8K is 33 megapixels.
+  The warning that the lens falls behind goes by the network's own time a picture, which the fast
+  engine's stats line now carries. The delay stays close to that time and one refresh, so at
+  Full, where the two reach the three refreshes the warning counts from, the lens would be behind
+  with no program in front, and the warning says that the network's own work on this screen holds
+  the lens back by itself and that a lower step lets it keep up, since no frame rate limit in the
+  program in front could help then. With the engine by itself at 6144x2526 and 120 Hz the network
+  took 18.6 ms a picture at one pass and 38.1 ms at two, so both get those words there. Where the
+  network takes less, the warning puts the delay down to the program in front as at any step.
+- **Global tone is gone from the Profiles page.** The add-on's `NRGlobalTone` does nothing on the
+  model the stack installs, which has no such setting, and a measurement at 2 against 0.99 moved
+  the picture by no more than noise, so the page no longer lists it. A profile still carries it
+  with the rest of the add-on's section.
+- **The fast engine reads the add-on's UI correction and preset.** It reads `NRUICorrection` and
+  `NRPreset` from the add-on's section, as it reads the other values, and hands them to the
+  network, the preset as the network is made, so a new preset makes the network again. On the
+  model the stack installs, over a character still and a page of text, UI correction on and off
+  and every preset gave the same picture byte for byte, so the panel has no control for them.
+- **From source, the fast engine's self test holds two references.**
+  `fast_engine\tools\run_selftest.py` holds the reference run's composite, the network's input and
+  output and the runtime's reads against a baseline, byte for byte, and `--shared` does the same
+  for a run of two passes through one network. `--both` runs the two, and `--against` and
+  `--against-shared` name other baselines. The baselines are kept beside the measuring tools,
+  outside the repository, and where one is missing its comparison is skipped and said. Each self
+  test now also checks that the strength scales the change, the network's output at 1.5 and at 2
+  against the CPU's scaling of the output at 1 byte for byte at any pass count, and that at 1 the
+  picture comes back byte for byte, and at two passes or more that switching the passes to one
+  network and back takes effect once the network is made again.
+- **Smaller changes.** The fast engine's ready line says `shared on` or `shared off` before the
+  HDR state, its stats line carries `shared=on` or `shared=off` and ends with `network=MS`, the
+  network's GPU time a picture over the second, it prints `engine remake failed` with the state it
+  runs in where it could not make its network again for a new preset or for the switch, and
+  `--steps` lists six steps. The lens's summary line in its log, every ten seconds fullscreen on
+  the fast engine, ends with the network's median time a picture. In Settings, the Passes item of
+  the on-screen readout says what shared means, the Profiles page's explanation names the two
+  switches among what a profile holds, and on the Hotkeys page the action that raises the quality
+  step goes toward Full.
+
 ## 0.6.1, 2026-10-05
 
 HDR for a fullscreen lens on the fast engine and a warning on the ReShade engine, each pass with

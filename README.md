@@ -290,18 +290,21 @@ them, and the setup does not accept them. The SF-v2 build is what runs on every 
 - **Profiles** keep everything that makes the picture under a name. That is the window's place
   and size, fullscreen, the pass count, the Cost Scaler rule, the motion detail, Ready mode,
   the frame rate limit, what the title bar shows, every setting in the Home menu, the values
-  each pass has of its own and the quality step. The selector on the title bar, marked Profile
-  until one is in use, saves the current settings as a new profile and switches between them,
-  a fullscreen lens has it as Profiles in its menu, and on the fast engine the NR settings
-  panel has it at its top. Applying one restarts the picture, since the add-on reads its
-  settings only when it starts. The exception is a fullscreen profile at the lens's own pass
-  count, which a fullscreen lens on the fast engine takes as it runs. A profile saved before
-  0.6.1 has neither a pass's own values nor a quality step. Loading one gives the passes from
-  the second on the first pass's values, apart from the intensity of passes 2 to 4, see
-  [Multiple passes](#multiple-passes), and leaves the quality step as it is. The name turns
-  amber with a star once the lens no longer matches the profile in what the bar and Settings
-  hold or in a value of a pass. Settings renames and deletes them. They live in
-  `profiles.json` in the data folder.
+  each pass has of its own, whether the passes after the first run through the first pass's
+  network, whether the change is scaled and by how much, and the quality step. The selector on
+  the title bar, marked Profile until one is in use, saves the current settings as a
+  new profile and switches between them, a fullscreen lens has it as Profiles in its menu, and on
+  the fast engine the NR settings panel has it at its top. Applying one restarts the picture,
+  since the add-on reads its settings only when it starts. The exception is a fullscreen profile
+  at the lens's own pass count, which a fullscreen lens on the fast engine takes as it runs. A
+  profile saved before 0.6.1 has neither a pass's own values nor a quality step. Loading one
+  gives the passes from the second on the first pass's values, apart from the intensity of passes
+  2 to 4, see [Multiple passes](#multiple-passes), and leaves the quality step as it is. A
+  profile saved before 0.7.0 loads with each pass on a network of its own and the change not
+  scaled. The name turns amber with a star once the lens no longer matches the profile in what
+  the bar and Settings hold, in a value of a pass, in whether the passes after the first run
+  through the first pass's network or in whether and how much the change is scaled. Settings
+  renames and deletes them. They live in `profiles.json` in the data folder.
 - **A profile can be tied to a program**, so that it loads when that program comes to the
   front. An entry in the profile list on the NR settings panel ties the profile in use to the
   program in front, and the Profiles page of Settings ties the profile chosen in its list to the
@@ -396,36 +399,39 @@ them, and the setup does not accept them. The SF-v2 build is what runs on every 
   size are kept for the way back. `fullscreen = 1` in the ini opens the lens that way.
 - **Keys for a fullscreen lens**, which has no title bar to click. F7 opens the lens menu at the
   pointer, with the readout the title bar would show on its second line and Leave fullscreen,
-  Minimise to the taskbar, Profiles, Settings and Quit Neural Lens among its entries. F8 opens
-  the NR settings, F9 turns Neural Rendering off and on, and F10 shows or hides the on-screen
-  readout described below. The lens holds these four only while it is fullscreen and in view,
-  so a windowed or minimised lens leaves them to other programs. It lets them go while Settings
-  or another dialog of its own is in front, so the Hotkeys page can take them, and while a
-  program in exclusive fullscreen is in front on its monitor, see [What the lens does and does
-  not do](#what-the-lens-does-and-does-not-do). They are single keys because Windows takes only
-  the last key of a combination away from the program in front, so with a combination such as
+  Minimise to the taskbar, Profiles, Settings and Quit Neural Lens among its entries. F8 opens the
+  NR settings, F9 turns Neural Rendering off and on, and F10 shows or hides the on-screen readout
+  described below. The lens holds these four only while it is fullscreen and in view, so a
+  windowed or minimised lens leaves them to other programs. It lets them go while Settings or
+  another dialog of its own is in front, so the Hotkeys page can take them, and while a program in
+  exclusive fullscreen is in front on its monitor, see [What the lens does and does not
+  do](#what-the-lens-does-and-does-not-do). They are single keys because Windows takes only the
+  last key of a combination away from the program in front, so with a combination such as
   Ctrl+Home a game still gets the Ctrl, and many games use it. While the menu or the NR settings
   panel is open, the lens holds the arrow keys, Enter and Escape as well, so both work from the
-  keyboard while the game keeps the foreground. In the menu, Up and Down move through the
-  entries, Enter chooses one and Escape closes it. On the panel, Up and Down move between the
-  settings, Left and Right change the one that is lit, Enter switches a switch and Escape closes
-  the panel. Left and Right move a slider by 0.01 a press, and a key held down moves it further
-  with each repeat the longer it is held, from one end of the slider to the other in about 2.9 s
-  at Windows' default key repeat. On the profile at the panel's top they load the profile before
-  or after the one in use, by name, and Enter opens the profile list. On the pass tabs they show
-  the pass before or after. The lens lets those keys go when the menu or the panel closes. The
-  menu, the panel and the note never take the foreground from the program in front. The Hotkeys
-  page of Settings changes or clears the four keys. Whenever the lens does not hold the menu's
-  key, such as when it has none, or another program or another of its actions has it, a click on
-  the lens's taskbar button opens the menu.
+  keyboard while the game keeps the foreground. With the panel open it holds F1 too, which says
+  what the setting the arrow keys are on does, unless a hotkey of Settings has F1 on its own. In
+  the menu, Up and Down move through the entries, Enter chooses one and Escape closes it. On the
+  panel, Up and Down move between the settings, Left and Right change the one that is lit, Enter
+  switches a switch and Escape closes the panel. Left and Right move a slider by 0.01 a press, and
+  a key held down moves it further with each repeat the longer it is held, from one end of the
+  slider to the other in about 2.9 s at Windows' default key repeat. On the profile at the panel's
+  top they load the profile before or after the one in use, by name, and Enter opens the profile
+  list. On the pass tabs they show the pass before or after. The lens lets those keys go when the
+  menu or the panel closes. The menu, the panel and the note never take the foreground from the
+  program in front. The Hotkeys page of Settings changes or clears the four keys. Whenever the
+  lens does not hold the menu's key, such as when it has none, or another program or another of
+  its actions has it, a click on the lens's taskbar button opens the menu.
 - **An on-screen readout** can show figures in a corner of the screen while the lens is
   fullscreen. The Fullscreen page of Settings has a switch each for the frame rate, the latency,
   the quality step, the passes and the style, all off to begin with, and a choice of corner, the
   top right unless you pick another. The figures are one line in a small window of the lens's
   own that lets every click through, never takes the keyboard and is out of the picture, and
-  they are updated once a second. The quality step shows only on the fast engine. The readout
-  goes while the lens is in a window or minimised. F10 hides it and shows it again while the
-  lens is fullscreen. Hidden, by F10 or by switching every figure off in Settings, it keeps the
+  they are updated once a second. The quality step shows only on the fast engine, and the passes
+  say shared where the passes after the first run through the first pass's network there, see
+  [Multiple passes](#multiple-passes). The
+  readout goes while the lens is in a window or minimised. F10 hides it and shows it again while
+  the lens is fullscreen. Hidden, by F10 or by switching every figure off in Settings, it keeps the
   figures it showed, and F10 brings those back. Where none are kept, as on a new install, F10
   shows the frame rate and the latency. F10 changes the figures as Settings would, so the
   readout is as it was left the next time the lens is fullscreen. `fs_readout` and
@@ -440,16 +446,25 @@ them, and the setup does not accept them. The SF-v2 build is what runs on every 
   top are the profile in use, with the list that loads, saves and ties profiles, and the switch
   that loads a profile for the program in front, see Profiles above. Then come Neural Rendering
   on or off, a tab for each pass that runs, the pass's style, intensity, local tone, local
-  structure, skin structure and auto mask, the passes and the quality step. On the tab of a pass
-  from the second on, each value has a tick, Same as pass 1. Ticked, the pass runs at the first
-  pass's value and the control is greyed, and unticked, the value is the pass's own, see
-  [Multiple passes](#multiple-passes). A button to the right of each slider's number puts the
-  slider at 1.00, and is greyed with the slider. A value shows in the picture while it moves and
-  is kept, and a new pass count restarts the picture. With the ReShade engine chosen for
-  fullscreen, the NR settings key and menu entry open the ReShade overlay as in a window. Where
-  the fast engine is not there, or fails, the lens draws fullscreen with the ReShade engine by
-  itself. After a failure it says so on the notice, and the Fullscreen page of Settings gives the
-  reason until the lens is started again.
+  structure, skin structure and auto mask, the passes, the switch Scale the change, with the
+  strength's own slider under it while it is on, and the quality step. On the tab of a pass from
+  the second on, each value has a tick, Same as pass 1. Ticked, the pass runs at the first pass's
+  value and the control is greyed, and unticked, the value is the pass's own, see [Multiple
+  passes](#multiple-passes). Under the values the tab of pass 2 has the switch Runs through pass
+  1's network, which the tabs of passes 3 and 4 show greyed, since those passes follow pass 2. A
+  button to the right of each slider's number puts the slider at 1.00, and is greyed with the
+  slider. The intensity goes up to 2.00, as in the Home menu, and the network itself does no more
+  above 1. Runs through pass 1's network has the second pass, and the passes after it, run through
+  the first pass's network, and Scale the change multiplies the network's change by the strength,
+  from 1.00 to 2.00, see [Multiple passes](#multiple-passes) for both. The quality step runs from
+  Lowest power up to Full, see [The fast engine](#the-fast-engine). A value shows in the picture
+  while it moves and is kept, and a new pass count restarts the picture.
+  Rest the pointer on a setting for a second and a half, or press F1 while the arrow keys are on
+  it, and a small window says what the setting does, as in Settings. The line at the panel's foot
+  says so. With the ReShade engine chosen for fullscreen, the NR settings key and menu entry open
+  the ReShade overlay as in a window. Where the fast engine is not there, or fails, the lens draws
+  fullscreen with the ReShade engine by itself. After a failure it says so on the notice, and the
+  Fullscreen page of Settings gives the reason until the lens is started again.
 
 ## What the lens does and does not do
 
@@ -574,23 +589,28 @@ limit at 60, and the ReShade engine's from 326 to 332 W.
 
 **The quality step** is the size the network works at. It is on the Power page of Settings and
 on the NR settings panel, and a lower step costs less power and loses some of the fine detail the
-network adds, while the original's own detail is always kept. The five steps and their sizes:
+network adds, while the original's own detail is always kept. At Full, the highest, the network
+works on the picture at its own size, however large. The six steps and their sizes:
 
-| fullscreen picture | Quality | Balanced | Performance | Low power | Lowest power |
-|---|---|---|---|---|---|
-| 6144x2558 | 2560x1024 | 2560x896 | 2176x896 | 2560x640 | 1536x640 |
-| 3840x2158 | 2560x1408 | 2560x1152 | 2176x1152 | 2560x896 | 1536x896 |
-| 2560x1438 | 2560x1438 | 2560x1152 | 2560x1024 | 2560x896 | 1536x896 |
-| 1920x1078 | 1920x1078 | 1920x896 | 1920x768 | 1920x640 | 1152x640 |
+| fullscreen picture | Full | Quality | Balanced | Performance | Low power | Lowest power |
+|---|---|---|---|---|---|---|
+| 6144x2558 | 6144x2558 | 2560x1024 | 2560x896 | 2176x896 | 2560x640 | 1536x640 |
+| 3840x2158 | 3840x2158 | 2560x1408 | 2560x1152 | 2176x1152 | 2560x896 | 1536x896 |
+| 2560x1438 | 2560x1438 | 2560x1438 | 2560x1152 | 2560x1024 | 2560x896 | 1536x896 |
+| 1920x1078 | 1920x1078 | 1920x1078 | 1920x896 | 1920x768 | 1920x640 | 1152x640 |
 
 A picture larger than 2560x1440 starts at Balanced. The network works on a downscaled copy of
-such a picture at every step, and at Balanced no loss was seen on text, thin lines, an interface
-or the Blender picture at the top of this page, at its own size or enlarged three times. A
-picture within 2560x1440 starts at Quality, where the network works at the picture's own size.
-There the first step down takes away about 60 percent of the finest texture the network adds
-from row to row. On one test picture that showed faintly as smoother grain at three times its
-size, and on none at its own size.
-`fast_quality` in the ini takes 4 for Quality down to 0 for Lowest power, and a change applies
+such a picture at every step but Full, and at Balanced no loss was seen against the picture
+fitted into 2560x1440, on text, thin lines, an interface or the Blender picture at the top of
+this page, at its own size or enlarged three times. Against the picture's own size, which Full
+works at, Balanced gives another picture. On three 6144x2560 frames of a game with two passes,
+the picture at Balanced was 8.8 to 9.5 of 255 from the picture at Full, where the frame with no
+network at all was 10.0 to 12.0 of 255 from it, and in two of the frames a face darkened about
+half as much as at Full. A picture within 2560x1440 starts at Quality, where the network works
+at the picture's own size, the same size as at Full. There the first step down takes away about
+60 percent of the finest texture the network adds from row to row. On one test picture that
+showed faintly as smoother grain at three times its size, and on none at its own size.
+`fast_quality` in the ini takes 5 for Full down to 0 for Lowest power, and a change applies
 while the picture runs.
 
 Measured with the engine by itself at 6144x2526, on the same computer with the same second
@@ -607,6 +627,25 @@ a second with the engine's limit at 80:
 
 Almost all of the engine's work on the card is the network. The downscale, the comparison and the
 composite together took about 0.2 ms a picture in those runs.
+
+**Full on a large screen** costs the network several times what Balanced does. Measured on the
+same computer without a window, the network took 14.3 ms a pass at 6144x2560 and 27.9 to 28.7 ms
+for two passes, against 3.0 ms a pass at Balanced, 7.3 ms a pass at 3840x2160 and 32.4 ms a pass
+at 7680x4320, about a millisecond a pass for each megapixel. The engine held 2192 MiB of video
+memory at one pass and 3877 MiB at two at 6144x2560. With the engine by itself at 6144x2526, over
+a picture that changed at every refresh and with a second monitor at 3840x1200 and 144 Hz
+connected, Full showed 40 new pictures a second on 408 W with a median delay of 29 ms at one pass
+and 24 a second on 472 W with 42 ms at two, where Balanced in the same series showed 120 new
+pictures a second on 234 W with 10.5 ms at one pass and 75 a second on 257 W with 15 ms at two.
+Over a still picture the engine at Full comes to rest as at every step, and with two passes the
+card drew 52 W, 1 W more than with the desktop and the picture alone. A switch to Full is made
+beside the network in use while the picture goes on, in about 0.3 s at 6144x2560 with two
+passes, and the switch back to Balanced took 0.46 s. Where the engine cannot make the network
+for a step, as with too little video memory for Full, it runs on at the step it had, and the
+lens goes by that step, keeps it in the ini and says so on the notice. Where it cannot make it at
+a start at Full, the lens goes by the default step, says so the same way and starts the engine
+once more. No network is made for a picture above about 47 megapixels, so Full runs such a picture
+at Quality, and a monitor at 8K is 33 megapixels.
 
 Over a picture that does not change, the fast engine repeats its last picture fifteen times a
 second, or on every eighth refresh of a display faster than 120 Hz, without running the network.
@@ -685,6 +724,48 @@ stack the tests ran on, that section held 0.94, 0.6 and 0.36 for them, with the 
 first pass's intensity as before. The panel shows an intensity from the add-on's keys as the
 pass's own, and ticking Same as pass 1 beside it puts the pass back at the first pass's
 intensity and writes that value into the add-on's key for the pass.
+
+**Runs through pass 1's network.** The switch Runs through pass 1's network, on the tab of pass 2
+of the NR settings panel, under the values, has the second pass run through the first pass's
+network, with that network's history, instead of a network of its own, at its own values, and
+the change comes out stronger. The fast engine keeps one such setting for every pass after the
+first, so passes 3 and 4 follow pass 2, and their tabs show the switch greyed with a note that
+they follow pass 2. The tab of pass 1 has no such switch, so at one pass the panel shows none. It
+is off to begin with. The lens keeps it as `SharedNetwork=1` in `[NeuralLens.Passes]`, which the
+add-on does not read, so the switch changes nothing on the ReShade engine. A profile carries it,
+and the on-screen readout says `2 passes, shared` once the fast engine runs the passes that way,
+which it does a fraction of a second after the switch, once it has made its network again. This
+is the look the ReShade engine gives with the add-on's Denoise before upscaling on,
+`NRPreUpscale=1`, which in the lens runs the network twice for each picture through one network,
+the second time on the first run's output. The switch leaves each pass's own values as they are,
+so where the add-on's section holds another intensity for the second pass, ticking Same as pass
+1 for it gives the look measured here. Over a character still
+at 1400x1000, with two passes and the second at the first pass's values, the fast engine's
+picture with the switch on was 0.91 and 0.72 of 255 from that windowed picture at two sets of
+values, where one pass was 13.2 and 6.2 of 255 from it. The windowed picture is the softer one.
+Two passes through one network cost what two passes without it do, and hold one network in
+video memory where two passes otherwise hold two. With the engine by itself at 6144x2526 at
+Balanced, over a picture that changed at every refresh, that was 75 new pictures a second on
+261 W with a median delay of 15 ms, against 120 a second on 226 W with 10.6 ms at one pass.
+[docs/NOTES.md](docs/NOTES.md) has the values and the figures, under Each pass's values.
+
+**Scale the change.** The network itself does no more above an intensity of 1, so the intensity
+slider above 1 draws the picture of 1, on the fast engine and on the ReShade engine alike, as
+measured. A stronger picture is the switch Scale the change, under the pass count on
+the NR settings panel. While it is on, a slider of its own shows under it,
+Strength, from 1.00 to 2.00, and the fast engine multiplies the change the passes made together,
+the last pass's output against the first pass's input, by the strength, once the last pass has
+run, so the picture is the picture at 1 with its change that many times larger. The lens keeps
+the switch as `ScaleChange=1` and the strength as `Strength` in `[NeuralLens.Passes]`, which the
+add-on does not read, so the ReShade engine never scales the change, and the panel's foot says
+so. The switch is off to begin with, and the strength stays in the file while it is off. A profile
+carries both. Over the Blender picture at 2560x1053 the change at a strength of 1.5 and of 2 was
+1.57 and 2.00 times the change at 1 with one pass, and 1.52 and 1.99 times with two passes
+through one network. The ratios are not the strength exactly, since each value is rounded to a
+whole level, a half going up, which lengthens some changes and shortens others, and is held
+within 0 to 255, which only shortens them. The network's output at each was its output at 1
+scaled the same way on the CPU, byte for byte. [docs/NOTES.md](docs/NOTES.md) has the figures
+under Each pass's values.
 
 ### Frame rate and delay
 
@@ -851,7 +932,16 @@ front all that time, a warning at the top of the screen says about how far behin
 front the lens is, that this program most likely keeps the graphics card fully busy, and that a
 frame rate limit in that program, set a little below the rate it reaches, lets the lens keep up.
 Its last sentence says where in Settings it can be switched off. It goes after about 12 s and
-does not come back for ten minutes.
+does not come back for ten minutes. At the Full step the network's own work can hold the lens
+past that line by itself. The delay stays close to one refresh plus the network's own time, see
+[Frame rate and delay](#frame-rate-and-delay), and the engine says that time on its stats line.
+Where its median over the span with one refresh more reaches the three refreshes, the warning
+says instead that the network's own work on this screen holds the lens back by itself and that a
+lower step lets it keep up, since no limit in the program in front could help then. With the
+engine by itself at 6144x2526 and 120 Hz, over a picture that changed at every refresh, the
+network took 18.6 ms a picture at Full with one pass and 38.1 ms with two, and the median delay
+was 29 ms and 42 ms, so both get those words there. Where the network takes less, the warning
+puts the delay down to the program in front as at any step.
 
 A median up to a tenth of a refresh short of three refreshes counts as well, since Windows gives
 a rate such as 119.88 Hz as 119 Hz. A span in which another window came to the front starts the

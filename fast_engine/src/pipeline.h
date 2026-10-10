@@ -3,8 +3,10 @@
 //   ingest   compute: the crop is area-downscaled to the work size into the network's
 //            input, and compared with the frame before it, every texel. The call waits
 //            for the GPU and says whether anything changed.
-//   render   the network (one feature a pass, chained), then the residual composite drawn
-//            as one full-screen triangle straight into the target:
+//   render   the network (one feature a pass, chained, and with the strength above 1 the
+//            last pass followed by a compute pass that scales the change the passes made
+//            together, see NrPasses in common.h), then the residual composite drawn as one
+//            full-screen triangle straight into the target:
 //                out = native + (bilinear(network output) - bilinear(network input))
 //            which keeps the original's detail, because only what the network changed is
 //            scaled up. With the network off it is a plain copy of native. It submits and
@@ -327,9 +329,23 @@ class Pipeline {
 
   // New settings for the network, each pass's own, from the next render(). When they differ
   // from the current ones, over the passes in use, the next render() resets the history.
+  // The strength (NrPasses) is the pipeline's to act on: above 1 the change the passes made
+  // together is scaled by it after the last pass's run, see NrPasses in common.h.
+  // The preset and the shared state (NrPasses) are taken when the features are next made:
+  // a caller that changes either follows with begin_work() or prepare_work() at the work
+  // size in use and commit_work(), as for a new work size, and network_needs_remake() says
+  // when that is due. Until then the network runs as its features were made.
   void set_settings(const NrPasses& settings);
-  // The same values for every pass.
+  // The same values for every pass. The preset, the shared state and the strength stay as
+  // they are. A change of the strength alone keeps the history, since the network is given
+  // nothing new.
   void set_settings(const NrSettings& settings);
+  bool network_needs_remake() const;
+
+  // What the features in use were made with: whether every pass runs the first pass's
+  // feature, and the model preset. false and 0 without a network.
+  bool shared_network() const;
+  unsigned preset() const;
 
   // Whether a render() runs the network: it is loaded, it is switched on, the strength of
   // one of its passes at least, NRIntensity or a pass's own, is above 0, and no other work
@@ -343,7 +359,9 @@ class Pipeline {
   // the test shows that it gives its input back there.
   void set_run_at_zero(bool run);
 
-  // Another work size while the pipeline runs, in two steps: made, then put in use.
+  // Another work size while the pipeline runs, in two steps: made, then put in use. The
+  // size in use is allowed too: that makes the features again, for a new preset or shared
+  // state, the same way.
   //
   // What the new size needs is made beside what is in use: the network's input and output
   // textures, the downscale's weights and the network's features (Nr::prepare). The

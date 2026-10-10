@@ -88,7 +88,7 @@ import urllib.request
 import winreg
 import zipfile
 
-__version__ = "0.6.1"
+__version__ = "0.7.0"
 
 FROZEN = getattr(sys, "frozen", False)
 # Everything lives in the lens's own folder, the one the installer put it in or
@@ -226,10 +226,13 @@ FileFormat=1
 # and feature 18 created and evaluated.
 ADDON_SECTION = "[RenoDX.DLSS5]"
 # The lens's own section, which the add-on never reads. It holds the values a
-# pass from the second on has of its own, and which of passes 2 to 4 are ticked
-# Same as pass 1. The name is PASS_SECTION in neural_lens.py and kPassSection in
-# the fast engine. The template has no such section, and a new install starts
-# without one.
+# pass from the second on has of its own, which of passes 2 to 4 are ticked
+# Same as pass 1, SharedNetwork, whether the passes after the first run through
+# the first pass's network on the fast engine, and ScaleChange with Strength,
+# whether and how much that engine scales the network's change. The name is
+# PASS_SECTION in neural_lens.py and kPassSection in the fast engine. The
+# template has no such section, and a new install starts without one, so each
+# pass starts out on a network of its own and the change not scaled.
 LENS_SECTION = "[NeuralLens.Passes]"
 RESHADE_PRESET = """Techniques=vort_MotionEffects@vort_Motion.fx,DLSS5_Feed@DLSS5_Feed.fx
 TechniqueSorting=vort_MotionEffects@vort_Motion.fx,DLSS5_Feed@DLSS5_Feed.fx

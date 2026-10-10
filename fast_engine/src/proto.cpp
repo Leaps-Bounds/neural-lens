@@ -959,7 +959,8 @@ static_assert([] {
   Parsed p;
   return parse_line("quality 3\r", p) && p.kind == Command::Quality && p.n == 3 &&
          parse_line("quality 0", p) && p.n == 0 && parse_line("quality 4", p) && p.n == 4 &&
-         parse_line("quality -1", p) && p.n == 0 && parse_line("quality 9", p) && p.n == 4;
+         parse_line("quality 5", p) && p.n == 5 && parse_line("quality -1", p) && p.n == 0 &&
+         parse_line("quality 9", p) && p.n == 5;
 }());
 static_assert(ignored("quality") && ignored("quality 2.0") && ignored("quality 1 2") &&
               ignored("quality high") && ignored("qualities 1"));

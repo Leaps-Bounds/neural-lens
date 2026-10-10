@@ -243,9 +243,13 @@ see The engine's frame rate limit.
 `lens-fast.exe` is the presenter of a fullscreen lens, a C++ program of the lens's own built from
 `fast_engine`. It takes the presenter's command line and speaks its protocol on stdin and stdout,
 so the lens drives either the same way, and `lens-fast.exe --help` prints both. Of its own it
-reads `nr 1|0`, `reload`, `settle 1|0` and `quality N`, and prints `engine quality N work WxH`
-and, as its last line when it fails, `engine failed REASON`. The lens finds its window by its
-process id and its class, `NeuralLensFast`.
+reads `nr 1|0`, `reload`, `settle 1|0` and `quality N`, and prints `engine quality N work WxH`,
+`engine remake failed, shared on|off, preset N, REASON` where a reload asked it to make its
+network again and it could not, see Each pass's values, and, as its last line when it fails,
+`engine failed REASON`. Its stats line carries the presenter's pairs and then `shared=on|off`
+and `network=MS`, the network's GPU time a picture as the mean over the second's runs, `nan`
+where it did not run, see The quality steps for what the lens does with it. The lens finds its
+window by its process id and its class, `NeuralLensFast`.
 
 No ReShade and no add-on run in it. It loads the stack's `nvngx_dlssnr.dll`, which is the Cost
 Scaler's proxy, by its full path, and through it NVIDIA's model, and creates and evaluates NGX
@@ -253,9 +257,10 @@ feature 18 on its own D3D12 device with a parameter object of its own. The call 
 parameter names follow openNR's native adapter, whose MIT notice `nr.cpp` carries. No NVIDIA
 header is included, and the runtime's functions are found with `GetProcAddress`. The six settings it
 gives the model, the style, the intensity, local tone, local structure, skin structure and the auto
-mask, are read from `ReShade.ini` at the start and again on `reload`, for each pass, see Each pass's
-values. The model's motion vector and depth inputs are 1x1 textures of zeros. With full-size
-textures of zeros the output was the same byte for byte, on 21 MiB more video memory.
+mask, are read from `ReShade.ini` at the start and again on `reload`, for each pass, with the
+add-on's UI correction and preset beside them, see Each pass's values. The model's motion vector
+and depth inputs are 1x1 textures of zeros. With full-size textures of zeros the output was the
+same byte for byte, on 21 MiB more video memory.
 
 One frame goes through five stages:
 
@@ -264,18 +269,21 @@ capture     the region under the lens is copied on the card, in the capture's ow
             into a texture that the D3D12 device shares
 ingest      one compute pass downscales the region to the work size by area and compares
             every texel with the frame before
-network     the model runs on the downscaled copy, once for each pass, each at its own values
+network     the model runs on the downscaled copy, once for each pass, each at its own values,
+            and with the strength above 1 the change the passes made together is scaled on the
+            last pass's output, see Each pass's values
 composite   one triangle drawn straight into the back buffer:
             original + (bilinear(network output) - bilinear(network input))
 present     a flip model swapchain in a click-through window that is out of the capture
 ```
 
-A frame equal to the last ends at the comparison, and nothing is drawn for it. The composite adds
-only what the network changed, scaled up, to the original at full size, so the original's own
-detail is kept at any work size. It is the same kind of residual blend as the Matched Residual of
-xenmods' DLSSNR-Cost-Scaler (MIT), which the lens has used since 0.2.0. The window stays hidden
-until the first picture has been presented, 0.63 to 0.72 s after the process starts, and the
-engine is gone 0.09 to 0.12 s after the lens closes it.
+A frame equal to the last ends at the comparison, and nothing is drawn for it. At the Full step,
+and at Quality for a picture within 2560x1440, the work size is the picture's own size, and the
+ingest copies the picture as it is. The composite adds only what the network changed, scaled up, to
+the original at full size, so the original's own detail is kept at any work size. It is the same
+kind of residual blend as the Matched Residual of xenmods' DLSSNR-Cost-Scaler (MIT), which the lens
+has used since 0.2.0. The window stays hidden until the first picture has been presented, 0.63 to
+0.72 s after the process starts, and the engine is gone 0.09 to 0.12 s after the lens closes it.
 
 What the stages cost without a window, on an RTX 5090 with a 6144x2526 picture and a work size of
 2560x1053. These are GPU times from timestamp queries, the medians of 300 frames after the first 120:
@@ -398,6 +406,28 @@ Over the 69 work sizes measured, from 768x384 to 2560x1440, a straight line of 1
 0.53 ms a megapixel is within 0.12 ms of every one. So most of a pass does not depend on the
 size, and halving the work size saves far less than half the time.
 
+Above 2560x1440, where only the Full step works, the line no longer holds. At the picture's own
+size the network took about 0.9 to 1.0 ms a pass for each megapixel. That was measured the same
+way, on the Blender picture resized to each size at the test stack's values, and at 6144x2560 on
+three frames of a game at the values given under The quality steps. Video memory is the engine's
+after the timed frames:
+
+```
+work size    megapixels   one pass    two passes           video memory at one and two passes
+3840x2160     8.29         7.27 ms    14.72 ms             1395 MiB    2423 MiB
+6144x2560    15.73        14.29 ms    27.89 to 28.74 ms    2192 MiB    3877 MiB
+7680x4320    33.18        32.42 ms    65.80 ms             4511 MiB    8178 MiB
+7680x6144    47.19        48.26 ms                         6212 MiB
+```
+
+The ingest took 0.21 ms and the composite 0.11 ms at 6144x2560. The runtime makes no feature
+above an area of about 47 megapixels. 7680x6144 was made and ran, and 7680x6272, 48.17
+megapixels, was refused with `0xBAD00002` within 1.3 s, as was every larger size tried up to
+16384x8192, with 26 GB of video memory free. A side alone is not the limit, since 8256x4320 and
+4096x8256 were made. So the engine holds the Full step at Quality for a picture above 7680x6144
+texels in area, with a note at the start and on a `quality` line, and its ready line and its
+answer name the step in use. No monitor comes near it, a picture at 8K being 33 megapixels.
+
 Sizes on multiples of 128 texels are the cheap and the strong ones:
 
 - One row or one column past a multiple of 128 cost 0.03 to 0.28 ms more than the multiple
@@ -417,8 +447,9 @@ Sizes on multiples of 128 texels are the cheap and the strong ones:
 So the engine never takes a plain share of the picture as its work size.
 `fast_engine\src\work_table.h` holds the measured sizes for 20 picture sizes, made from the
 measurements by `fast_engine\tools\make_work_table.py`. For any other picture size a rule in
-`common.cpp` gives them, on multiples of 128 wherever a side is resampled.
-`lens-fast.exe --steps W H` prints the five sizes for a picture.
+`common.cpp` gives them, on multiples of 128 wherever a side is resampled. The Full step needs
+neither, since nothing is resampled there, and nor does Quality for a picture within 2560x1440.
+`lens-fast.exe --steps W H` prints the six sizes for a picture.
 
 ### The quality steps
 
@@ -474,19 +505,140 @@ takes away about 60 percent of the one texel texture it adds down the picture. T
 faintly as smoother grain on one picture at three times its size, and not at the picture's own
 size. Even four rows of resampling, 1600x900 to 1600x896, took half of it. So the default follows
 the picture's size. It is Balanced for a picture larger than 2560x1440 in width or in height,
-where every step is a downscale and Balanced showed no loss, and Quality for a picture within it,
-where Quality is the picture's own size. The engine applies the rule when it is given no
-`--quality`, and names the step in its ready line, before the HDR state that ends the line.
+where every step but Full is a downscale and Balanced showed no loss against the picture fitted
+into 2560x1440, and Quality for a picture within it, where Quality is the picture's own size.
+Full is never the default. The engine applies the rule when it is given no `--quality`, and
+names the step in its ready line, before the shared state and the HDR state that end the line.
+
+**5 Full** has the network work on the picture at its own size, however large, with nothing
+resampled, see The work size, and what the network costs, for its time and its limit. It is not
+in the tables above, which hold each step against the picture fitted into 2560x1440, and for a
+picture within 2560x1440 it is the size of Quality. `--quality 5`, `quality 5`, `--switches` and
+profiles take it, and its ready line says `quality 5`. Without a window at 6144x2560, on the three
+frames of a game below at two passes and on frame 3 at one pass, the Full step's picture was byte
+for byte the picture of a run at `--work-size 6144 2560`, and a run that switched from Balanced
+to Full, back and to Full again gave each step's picture byte for byte. The one-pass rows of
+frames 1 and 2 in the table below are runs at `--work-size 6144 2560`, the size Full works at.
+
+**Against the picture's own size.** Three frames of a game at 6144x2560, taken with nothing
+applied, went through the self test with two passes, every pass at style Default, intensity 1,
+local tone 1, local structure 1, skin structure 1 and the auto mask on, with a network for each
+pass, and each picture after 420 frames on the still. Frames 2 and 3 are one scene a moment
+apart. The model the stack installs and NVIDIA's stock 310.8 gave the same pictures byte for
+byte. Each picture against the one at Full from the same frame, as the mean absolute RGB
+difference of 255 over the whole frame, then the picture's own change from the frame, the
+correlation of its change in luma with the change at Full, and the change in mean luma over a
+face:
+
+```
+frame   work size, passes            from Full   change   correlation   face
+1       6144x2560 Full, two            0.00        9.98      1.000         -9.53
+        2560x896 Balanced, two         8.80       10.53      0.605        +12.36
+        6144x2560 Full, one            4.62        5.54      0.975         -8.62
+        the frame, no network          9.98
+2       6144x2560 Full, two            0.00       11.72      1.000        -35.45
+        2560x896 Balanced, two         9.26       11.46      0.693        -19.59
+        6144x2560 Full, one            5.66        6.32      0.976        -24.30
+        the frame, no network         11.72
+3       6144x2560 Full, two            0.00       12.00      1.000        -36.41
+        4608x1920, two                 5.03       11.40      0.914        -30.94
+        3072x1280, two                 7.70       11.53      0.797        -25.22
+        2560x1024 Quality, two         8.92       11.62      0.728        -23.12
+        2560x896 Balanced, two         9.55       11.56      0.685        -19.80
+        6144x2560 Full, one            5.73        6.55      0.977        -24.79
+        the frame, no network         12.00
+```
+
+So on a large screen Balanced makes a change as large as Full's but in other places, and its
+picture lands nearly as far from Full's as the frame with no network. The distance falls steadily
+as the work size grows. On frames 2 and 3 a face that Full darkened by 35.45 and 36.41 of 255
+darkened by 19.59 and 19.80 at Balanced, and on frame 1, where Full darkened it by 9.53, Balanced
+brightened it by 12.36. One pass at Full makes about half the change of two.
+
+**Against the network at a game's Present.** Both scenes were also taken in the game with the
+network applied at its Present, on its finished frame at its own size of 6144x2560, by the
+renodx-dlss add-on, see Upstream versions and what was measured against them, in its build of
+2026-10-03. It ran at the values above with two passes, each with a network of its own, and with
+the model above. Those pictures were taken moments apart from the frames, with the camera moved
+slightly between them, so each of the engine's pictures was moved onto the add-on's by an optical
+flow on locally normalised luma before the comparison. The add-on's open panel and the game's
+interface were left out, which leaves about 72 percent of the frame. The distance is the mean
+absolute RGB difference of 255 over that area without the parts that move, the character among
+them, and over all of that area in brackets. The factor is the size of the change at the Present
+as a least-squares multiple of the engine's change, 1 being the same size. Against frame 3:
+
+```
+the engine's picture                        distance        correlation   factor
+the frame, no network                       10.90 (12.61)
+6144x2560 Full, two passes                   1.68  (2.22)    0.985         1.00
+4608x1920, two passes                        5.04  (5.69)    0.892         0.95
+3072x1280, two passes                        7.57  (8.31)    0.759         0.78
+2560x1024 Quality, two passes                8.64  (9.42)    0.692         0.70
+2560x896 Balanced, two passes                9.22 (10.00)    0.646         0.66
+6144x2560 Full, one pass                     5.48  (6.33)    0.960         1.74
+6144x2560, two passes through one network   12.33 (13.02)    0.825         0.48
+two frames of the game with no network       1.05  (1.61)
+```
+
+Against frame 2, a larger move of the camera away, two passes at Full were 2.31 (2.96) of 255
+from the picture at the Present and Balanced 9.27 (10.12), where the frame with no network was
+10.96 (12.74). Against frame 1, in the other scene, two passes at Full were 1.14 (1.75) with a
+factor of 1.03, Balanced 8.24 (8.99), and the frame with no network 9.31 (9.82). So two passes
+at the frame's own size come within about the measuring floor of the network at a game's Present,
+in tone, in detail, on faces and on the interface alike, and every smaller work size lands
+further away. One pass makes a little over half the change, and two passes through one network
+about twice it. The engine of 0.6.1 gave the picture of 1 at an intensity of 1.8 or 2.0, byte for
+byte, since the network holds its own intensity at 1, see Each pass's values. The add-on had the
+game's depth and motion vectors and a 10-bit swapchain, which the engine does not use, and the
+frames were near still, so motion was not compared.
 
 `quality N` changes the step while the engine runs. The network for the new size is made beside
-the one in use, on a second thread, in 116 to 198 ms, while the loop goes on drawing new pictures
-with the network's last change. On screen the first picture at the new size came 132 to 158 ms
-after the command and no picture stood longer than 24.8 ms. Made on the loop's own thread, the
-new network held the picture for 112 to 157 ms. The stack gives a replaced network up only after
-the new one has run between 33 and 64 times, and its video memory comes back about 10 s later,
-inside the next run. So a picture at rest after a switch goes through the network 64 times, and
-once more 14 s later, unless the settle is switched off. Over 24 switches without a window the
-engine went from 847 MiB to 1371 MiB at the most and was back at 847 MiB 10.2 s after the last.
+the one in use, on a second thread, in 116 to 198 ms at a work size up to 2560x1440, and longer
+at Full on a large screen, below, while the loop goes on drawing new pictures with the network's
+last change. On screen the first picture at the new size came 132 to 158 ms after the command and
+no picture stood longer than 24.8 ms. Made on the loop's own thread, the new network held the
+picture for 112 to 157 ms. The stack gives a replaced network up only after the new one has run
+between 33 and 64 times, and its video memory comes back about 10 s later, inside the next run.
+So a picture at rest after a switch goes through the network 64 times, and once more 14 s later,
+unless the settle is switched off. Over 24 switches without a window the engine went from 847 MiB
+to 1371 MiB at the most and was back at 847 MiB 10.2 s after the last. A switch from Balanced to
+Full at 6144x2560 with two passes was made in 302 to 320 ms, 287 to 307 ms of it the creation,
+143 to 154 ms a pass, and while both networks were held the engine had 5763 MiB of video memory,
+3877 MiB after. The switch from Full back to Balanced in the same run took 464 ms, 453 ms of it
+the creation, the longest switch measured.
+
+The engine answers a step it is told with the step it runs, `engine quality N work WxH`, and
+where it could not make the network for the step, it answers the step it had. The lens holds that
+answer against the step it told. An answer that differs counts once it has stood for 3 s with no
+other after it, since the engine takes only the last of several steps told together and answers
+each switch it makes. The lens then goes by the engine's step, keeps it as `fast_quality`, so the
+next start does not ask for a step the card could not make, tells the engine that step and says
+so on the notice for 8 s, with a line in its log. A step given at the start is held against the
+ready line the same way. A fast engine whose pipeline fails at its start at Full on a picture
+larger than 2560x1440, where the network for Full is made at the picture's own size, has the lens
+go by the default step for the picture, take `fast_quality` out of the ini, say the same words on
+the held notice, log a line and start the engine once more. That start asks for the default step,
+and a second failure rules the fast engine out for the run as any failed start does. On a picture
+within 2560x1440 Full is Quality's size, so a failed start there is not Full's doing and goes
+straight to the fallback. Checked without a window with a stand-in engine that prints
+`engine failed pipeline: ...` and ends.
+
+The warning that the lens runs behind goes by the network's time on the engine's stats line, see
+The fast engine. The lens keeps the median of it over each 10 s span beside the delay's median,
+and its summary line ends with it. A picture is shown at a refresh once the network has run on
+it, and with the engine by itself over a picture that changed at every refresh, see Frames a
+second and power at each step, the median delay came within about 4 ms of the network's time and
+one refresh, at Balanced and at Full, with one pass and with two. So at Full, where that median
+with one refresh more reaches the three refreshes the warning counts from, less the tenth of a
+refresh allowed, the lens would be past the line with no program in front, and the warning names
+the step as the cause and a lower step as the way out, since no limit in the program in front
+could bring it under. Where the network takes less, the warning is the one of every step, which
+puts the delay down to the program in front. For the Full words the network's time has to reach
+about 15.8 ms at 120 Hz, 16.0 ms at a rate Windows gives as 119 Hz, 13.2 ms at 144 Hz, 7.9 ms at
+240 Hz and 31.7 ms at 60 Hz. At 6144x2526 on screen it took 18.6 ms at Full with one pass and
+38.1 ms with two, so both get the Full words there. Without a window it took 7.3 ms a pass at
+3840x2160 and 14.7 ms for two passes, and on screen it takes longer than without one, so on such
+a screen the words go with the refresh rate and with what else the card does.
 
 ### Frames a second and power at each step
 
@@ -536,6 +688,44 @@ and with the limit at 60 it drew 130 to 132 W, the median 131 W. At Performance 
 326 W. The ReShade engine, with the Cost Scaler at 0.50, showed 60.9 to 62.4 a second on 326 to
 332 W over eleven runs, the medians 62 a second and 330 W.
 
+With the build of 0.7.0 on 2026-10-06, and a second monitor at 3840x1200 and 144 Hz connected in
+place of the one above, the engine ran by itself at 6144x2526 over the same scrolling picture,
+with no limit, for 60 s after 10 s to warm up. The source alone drew 70 to 78 W, and 72 to 82 W
+for the rows at Full, which ran later the same day. Power is the median of the samples a second
+apart, and the delay is the engine's own median. Shared is two passes through one network, the
+second through the first pass's, see Each pass's values:
+
+```
+step, passes                  new a second   network    delay     power
+3 Balanced, one pass          120.2          3.48 ms    10.6 ms   226 W
+3 Balanced, two passes         75.5          7.51 ms    15.0 ms   261 W
+3 Balanced, two, shared        75.0          7.55 ms    15.1 ms   261 W
+5 Full, one pass               40.3         18.62 ms    29.2 ms   408 W
+5 Full, two passes             24.2         38.11 ms    42.5 ms   472 W
+```
+
+Two passes through one network cost what two passes with a network each cost, within the
+spread between runs, and the engine held 929 MiB of video memory at its start with them against
+1294 MiB with a network each and 920 MiB for one pass.
+
+The rows at Full ran in a series of their own with Balanced beside them again, which showed
+120.2 new pictures a second, 3.64 ms, 10.5 ms and 234 W at one pass and 74.6 a second, 7.54 ms,
+15.2 ms and 257 W at two. Above the source alone the card drew 156 W and 184 W for those, against
+156 W and 187 W in the rows above, so the card's whole draw moves with the source's from one series
+to the next. At Full it drew 328 W above the source alone with one pass and 390 W with two, and
+the card was 83 and 95 percent busy, against 64 and 71 percent at Balanced. The engine held 2283
+MiB of video memory at its start at Full with one pass and 3968 MiB with two. On screen the
+network took longer than without a window, 18.6 ms against 14.3 ms for one pass and 38.1 ms
+against 27.9 to 28.7 ms for two, while the card also composed the picture that changed at every
+refresh, which by itself kept it 20 percent busy. Over a picture that changed 25 times a second
+the same two passes took 27.3 ms.
+
+Over a still picture at Full with two passes the engine came to rest as at the other steps. The
+settle ran its four runs within a second of the picture's stop, and after that no new picture was
+made and the network did not run for the rest of the minute, with 15 repeats a second. The card
+drew 52.2 W, 0.9 W above the still picture and the desktop alone, which drew 52.2 W before and
+50.4 W after.
+
 ### Each pass's values
 
 The engine runs the network once for each pass, and since 0.6.1 each pass at values of its own. The
@@ -564,11 +754,14 @@ second on starts from them and takes a value of its own where `ReShade.ini` hold
   passes reads these.
 
 Nothing is taken for a tie because two numbers are equal. A pass with no key of its own for a value
-runs at the first pass's. The section's header stays in the file once every key in it has gone.
-`NRPass4Color`, which the add-on also keeps in its section, belongs to the add-on's own colour
-stage, which the engine does not have, and is left as the add-on wrote it. The stack setup keeps the
-lens's section byte for byte on a repair, and on an update that runs it, see The add-on's defaults
-on a new install.
+runs at the first pass's. The lens's section also holds `SharedNetwork`, whether the passes after
+the first run through the first pass's network, see Passes through pass 1's network below, and
+`ScaleChange` with `Strength`, whether and how much the change is scaled, see An intensity above 1,
+and the strength below, which the engine reads at any pass count. The section's header stays in
+the file once every key in it has gone. `NRPass4Color`, which the add-on also keeps in its
+section, belongs to the add-on's own colour stage, which the engine does not have, and is left as
+the add-on wrote it. The stack setup keeps the lens's section byte for byte on a repair, and on an
+update that runs it, see The add-on's defaults on a new install.
 
 Up to 0.6.0 the engine ran every pass at the first pass's values. So a fullscreen lens at two passes
 or more now draws another picture where the add-on's keys for passes 2 to 4 differ from the first
@@ -603,6 +796,138 @@ what the second at half draws, so the self test does not judge those two compari
 line and `timings.json` name them. Over a still at 6144x2558 with two passes, the lens's pictures
 with the second pass's intensity at 0.3 of its own and tied to the first pass were 6.975 of 255
 apart on average and 46 of 255 at most, and tied again the picture was the same byte for byte.
+
+**An intensity above 1, and the strength.** The network holds its own intensity at 1. On the game
+frames under The quality steps, 1.8 and 2.0 gave the picture of 1 byte for byte, with the model
+the stack installs and with NVIDIA's stock 310.8, through the proxy with its scaling off, which by
+its source hands the value on as it is, and over the Blender picture at 2560x1053 `NRIntensity=1`
+and `NRIntensity=1.6` gave one composite byte for byte. The engine hands the runtime the value as
+the file gives it, as 0.6.1 did, so an intensity above 1 draws the picture of 1 on the fast engine.
+The add-on holds it at 1 too. Through the lens over a character still at 1400x1000, with style
+Default, local tone 1.86, local structure 1.01, skin structure 1, the auto mask off and Denoise
+before upscaling on, the ReShade engine's picture at `NRIntensity=1.6` was 1.19 of 255 from its
+picture at `NRIntensity=1`, its change 1.006 times as large, where two runs at 1 lay 1.19 of 255
+apart. A stronger picture comes from the strength, the lens's own. `ScaleChange=1` in
+`[NeuralLens.Passes]`, which the switch Scale the change on the NR settings panel writes, switches
+it on, with `Strength` from 1 to 2, which its own slider writes, the slider in view only while
+the switch is on. The engine reads both at any pass count, at the start and on `reload`, and
+holds a value outside 1 to 2 at the nearer end with a note, `settings: Strength is 3.00, outside 1
+to 2, so the strength is held at 2`, and a missing `Strength` at 1 with a note. With the strength
+above 1, once the last pass has run, a compute shader, `scale_cs.hlsl`, scales the change the passes
+made together in place on the last pass's output, against the network's input, which the first
+pass read. The output becomes the input plus the change times the strength, on the 0 to 255 scale,
+rounded to a whole level as the composite rounds, a half going up, and held within 0 to 255, and
+the composite adds that change. It does so in standard range and in HDR alike, since both
+composites read the same two textures, which no run with Windows HDR on has measured, see What
+is not measured. At a strength of 1, with the switch off or the keys missing, the shader does not
+run and the picture is what it was, byte for byte. A change of the strength alone keeps the
+network's history, since the network is given nothing new. The shader reads the output through a
+typed unordered access view, which the device has to be able to load `R8G8B8A8_UNORM` through,
+and where it cannot, the strength counts as 1 with a note. The settings note on `reload` says
+`strength off` or `strength 1.60, the change times it`, and the start's `loop:` line names the
+strength where it is above 1. Over the Blender picture at 2560x1053 with the test stack's values,
+the self test's reference picture, the change from the picture was 3.418 of 255 at a strength of
+1, 5.356 at 1.5 and 6.833 at 2, which is 1.57 and 2.00 times, and with two passes through one
+network 6.078, 9.220 and 12.076, which is 1.52 and 1.99 times. The ratios are not the strength
+exactly. A change of an odd number of levels times 1.5 ends in a half, which goes up, so a
+brightening change grows by half a level more and a darkening one by half a level less, and on
+this picture that left both ratios at 1.5 above the strength. At 2 nothing is rounded, and the
+hold within 0 to 255, which only shortens a change, left the ratios at 2 a hair under it, 1.999
+and 1.987. At each the network's output was the scaling of the output at 1 done on the CPU, byte
+for byte, and at 1 again the picture was the first byte for byte. Through the file,
+`Strength=1.6` gave the baseline's output scaled by 1.6 byte for byte, `Strength=3` the
+baseline's scaled by 2, and `ScaleChange=0` with `Strength=1.6` the baseline's three files byte
+for byte. Over that character still at those values, with two passes through one network and the
+second at the first pass's values, which is that look on the fast engine, see Passes through pass
+1's network below, the fast engine's picture at a strength of 1.6 changed the still by 54.8 of 255
+against 35.6 for the ReShade engine's at `NRIntensity=1.6`, 1.54 times as much, and lay 19.3 of
+255 from it, where with the switch off the two engines' pictures lay 1.4 of 255 apart. So only
+the fast engine draws the stronger picture, as the panel's foot says.
+
+**Passes through pass 1's network.** `SharedNetwork=1` in `[NeuralLens.Passes]`, which the switch
+Runs through pass 1's network on the tab of pass 2 of the NR settings panel writes, has every pass
+run through the first pass's network feature, each pass at its own values, so one history serves
+all the passes. The key is one for every pass after the first, so the tabs of passes 3 and 4 show
+the switch greyed at the key's state, with the note `follows pass 2` beside it, and only the tab
+of pass 2 changes it. The tab of pass 1 has no row for it, so at one pass the panel shows none,
+and the key stays in the file as it was. The engine reads it at the start and on `reload` with two
+passes or more. With one pass it changes nothing and the engine says `shared off`. `0`, a word or
+no key at all is off, so a profile saved before 0.7.0, whose section lacks the key, loads with it
+off. Only the first pass's feature is made while it is on. A `reload` that changes it, or the
+preset below, makes the features again at the work size in use, on a second thread as a quality
+step does, while the pictures go on with the network's change as it stood, and the history then
+starts again. On screen over a 1400x1000 picture the note
+`loop: the network was made again at 1400x1000, preset N, shared on|off` came 0.17 to 0.27 s
+after the `reload`, the features made in 118 to 247 ms. The engine's ready line says `shared on`
+or `shared off` before the HDR state, and its stats line carries `shared=on` or `shared=off`,
+each as the features were last made. The lens's readout says shared by those lines, so it follows
+the engine and not the file. Where the features cannot be made again, the engine runs on as they
+were made and prints `engine remake failed, shared on|off, preset N, REASON`, with the state it
+runs in. Where that state is not the one the key gives at the pass count, the lens says so for
+the switch on the notice for 8 s, beside the switch until the engine runs as the key has it, in
+place of the note on the tabs of passes 3 and 4, and in its log. Where it is the one, as after a
+profile with another preset and the same switch, or at one pass, where the key changes nothing,
+the switch was not what failed, and the notice and the log say that the network could not be
+made again for the new settings and that the engine runs on with the network it had.
+`LENS_FAST_ONE_FEATURE=1` forces the passes through one feature as the key does, see Switches for
+tests. The ReShade engine never reads the key. The switch leaves each pass's values as they are,
+so where the add-on's key for pass 2 holds another intensity than the first pass's, as 0.94
+against 0.97 in the stack the tests ran on, the second pass runs at that unless Same as pass 1 is
+ticked for it.
+
+On the ReShade engine the add-on's Denoise before upscaling, `NRPreUpscale=1`, runs the network
+twice for each picture through one feature, see Passes inside the add-on, and this is that look in
+the fast engine. Measured on an RTX 5090 over a character still at 1400x1000, the engine's self
+test at the picture's own size against the ReShade engine's picture of the same still through the
+lens, with Denoise before upscaling on and off, pre-upscale on and off below, at two sets of
+values. The tests' values are style Default, intensity 0.97, local tone 0.99, local structure 0.41,
+skin structure 0 and the auto mask off, and a user's own values are style Default, intensity 0.46,
+local tone 1.86, local structure 1.01, skin structure 1 and the auto mask off. With two passes the
+second ran at the first pass's values, and the distance is the mean absolute RGB difference of 255:
+
+```
+values               fast engine                       to pre-upscale on   to pre-upscale off
+the tests' values    one pass                          13.20                0.72
+                     two passes, a network each         4.15                9.39
+                     two passes, shared                 0.91               13.50
+a user's own values  one pass                           6.23                0.77
+                     two passes, shared                 0.72                6.32
+```
+
+The windowed pictures with pre-upscale off and on are 13.26 and 6.21 of 255 apart at the two sets
+of values. At the tests' values the shared picture darkens the still by 1.83 in mean luma, where
+one pass darkens it by 0.37. At a user's own values it brightens it by 1.35, where one pass
+brightens it by 0.62, so the switch's explanation says that the change comes out stronger and no
+more. The windowed picture is softer. With pre-upscale on it kept 0.35 of the still's fine detail
+at a user's own values, as the variance of the Laplacian against the still's, where the shared
+picture kept 0.74 and one pass 0.83. The difference that is left sits on the edges, at a user's
+own values 1.42 and 3.59 of 255 in luma on edges and strong edges against 0.27 on flat areas.
+
+Over a page of text scrolling sideways at 3 and 8 pixels a frame under a 1400x1000 engine at the
+picture's own size, the shared mode left no trail and no double, the same as one pass and as two
+passes with a network each. In eight pairs of the captured frame and the picture for each mode,
+lined up, no pixel of the page's white paper came out below 200 of 255, and the share below 235
+was 0.2 percent at most, no more than with the page at rest. The ReShade engine's picture over
+the same page, with pre-upscale on or off, left a faint double of the text at 8 pixels a frame,
+4.2 and 5.2 percent of the paper below 235.
+
+Two passes through one network take the network as long as two passes with a network each,
+6.66 ms against 6.69 ms at 2560x1053 without a window, and 7.55 ms against 7.51 ms fullscreen at
+Balanced, see Frames a second and power at each step. They hold one feature, 921 MiB of video
+memory at 2560x1053 against 910 MiB for one pass. A picture at rest settles more slowly. The
+shared reference of the self test went from 1.54 to 0.38 of 255 from its settled picture over the
+four runs of the settle, where the one-pass reference goes from 0.45 to 0.18.
+
+**UI correction and the preset.** The engine reads the add-on's `NRUICorrection`, 0 or 1, and
+`NRPreset`, 0 to 3, anything else counting as 0, from its section with the six values, and hands
+them to the runtime as `DLSSNR.UICorrection` at every evaluation and `DLSSNR.Hint.Render.Preset`
+as the features are made, so a new preset makes the features again as a new shared state does.
+Over the character still and a page of text at 1400x1000, UI correction 0 and 1 and the presets 0
+to 3 gave the same picture byte for byte, though the runtime read the preset. The engine hands the
+runtime no texture of a program's interface. So the panel has no control for either, and a
+profile carries both with the add-on's section. The add-on's `NRGlobalTone` names nothing that the
+model the stack installs reads, and 2 against 0.99 moved the ReShade engine's picture by 0.26 of
+255, which is noise, so the Profiles page of Settings no longer lists it.
 
 ### The present path and the delay
 
@@ -748,7 +1073,10 @@ more times. Without a window, after ten frames that scrolled 8 texels each, the 
 picture was 0.447 of 255 from the settled one on average, and 0.339, 0.263, 0.215 and 0.178 after
 one to four more runs. On screen, after the whole picture had scrolled for 5 s and stopped, the
 four runs moved the picture by 1.42 of 255 at a work size of 2560x1053, and by 1.74 to 1.95 over
-six measurements at 2560x896, and two shots a second apart then differed by 0.0000. At rest
+six measurements at 2560x896, and two shots a second apart then differed by 0.0000. At Full with
+two passes, at 6144x2526 over the same noise, they moved it by 23.9 of 255, where the network's
+change from the picture was 18.0 of 255 before them and 21.0 after, and two shots a second apart
+then differed by 0.0000 as well. At rest
 means no new picture for 150 ms, or for a period and a half of a frame rate limit, so it never
 runs while the picture changes. It runs only when 8 or more of the picture's 256 tiles changed
 since the last rest, so a blinking caret, which changes one tile, never starts it. A picture the
@@ -989,6 +1317,16 @@ with the time its seconds began:
 - The program in front is only the most likely cause. A program with no window that keeps the
   card fully busy holds the lens back as well, as measured above, and the warning then still puts
   the delay down to the program in front.
+- At the Full step, where the median over the span of the network's own time a picture, from the
+  engine's stats line, with one refresh more reaches the line less the tenth of a refresh, the
+  warning says instead that at the Full step the network's own work on this screen holds the lens
+  back by itself and that a lower step lets it keep up, and its log line ends `, at the Full
+  quality step with the network at N ms a picture`. The delay stays close to the network's time
+  and one refresh, see The quality steps, so the lens would be past the line then with no program
+  in front, and no limit in the program in front could help. At 120 Hz that takes about 15.8 ms
+  of the network, which one pass at Full at 6144x2526 took on screen at 18.6 ms and two passes at
+  38.1 ms. Where the network takes less, the warning is the one of every step, and on a smaller
+  screen which one comes goes with the refresh rate and with what the network takes there.
 - Then neither comes again for 600 s, whether the warning was shown or only logged. The count
   goes on, so a lens still behind after that says so again at the next summary. Switching the
   warning on in Settings ends the 600 s, so it comes at the next two summaries behind in a row.
@@ -1117,6 +1455,10 @@ draws:
   clipped input. `pass` applies it as at white, where it can only darken, `fade` scales it down to
   nothing at twice white, and `clip` leaves it out. Unset, or with another word, it is `fade`, the
   engine's own, see Above SDR white under HDR. A note names the way whenever the switch is set.
+- `LENS_FAST_ONE_FEATURE=1` runs the passes after the first through the first pass's network with
+  two passes or more, whatever `SharedNetwork` in `ReShade.ini` says, see Passes through pass 1's
+  network under Each pass's values. The engine reads it again on each `reload`. Without it the
+  pictures are those of the engine without the switch, byte for byte.
 - `LENS_FAST_QUEUE_PRIORITY=high` asks for the engine's D3D12 queue at high priority, and
   `realtime` for one at global realtime priority. A refusal falls back to a normal queue, and a
   note says which the engine has.
@@ -1132,6 +1474,29 @@ draws:
 
 With both priority switches at high the self test's pictures were the same bit for bit. What
 they changed in use is under A game in front that keeps the card busy.
+
+**The self test's references.** `fast_engine\tools\run_selftest.py` runs the engine's self test on
+`docs\images\blender-before.png` at a work size of 2560x1053 with the test stack, without a
+window, and scores it. A reference run, with no other picture, work size or pass count, holds its
+`composite.png`, `nr_in.png`, `nr_out.png` and `nr-reads.txt` against a baseline byte for byte and
+fails where one differs, the baseline of 2026-10-03 for the run at one pass. `--shared` is the
+reference run of two passes through one network, with `SharedNetwork=1` and
+`Pass2IntensityTied=1` written into the test stack's `ReShade.ini` for the run and the file put
+back byte for byte after it, held against the baseline of 2026-10-06. `--both` runs the two in
+turn. `--against DIR` names another baseline, with `--both` for the run at one pass while
+`--against-shared DIR` names the shared run's, and `--against none` compares nothing. The
+baselines are kept with the measuring tools, outside the repository, and where one is missing the
+run says that it compared nothing. On an RTX 5090 the network took 3.36 ms in the reference run
+and 6.68 ms for the two passes of the shared one. With two passes or more each self test also
+flips the shared state and moves the preset, and checks that the features are made again for
+them, that the other shared state draws another picture and that flipped back the picture is the
+first byte for byte, where the change of picture is not judged at an intensity of 0. Every self
+test draws the picture at a strength of 1, 1.5, 2 and 1 again, with every pass at the values
+every pass starts from and the intensity at 1, checks that the last is the first byte for byte
+and that the network's output at 1.5 and at 2 is the CPU's scaling of the output at 1 against the
+network's input, byte for byte, at any pass count, and writes the changes and their ratios to
+`timings.json` as `strength_above_1`. `--quality 5` is a size argument like the others, so such a
+run is held against no baseline.
 
 ### What is not measured
 
@@ -1153,13 +1518,28 @@ they changed in use is under A game in front that keeps the card busy.
   test's own.
 - **Passes at their own values beyond two.** The picture with a pass at values of its own was
   measured at two passes, and not at three or four.
+- **Passes through pass 1's network beyond two, and with the second pass at values of its own.**
+  The look was measured at two passes with the second at the first pass's values, at 1400x1000,
+  and the cost at two passes.
+- **An intensity above 1 on the ReShade engine beyond one case.** That the add-on holds 1.6 at 1
+  was measured over one still at one set of values with Denoise before upscaling on, and not with
+  it off, at other values or over a game.
+- **The Full step in HDR and in motion.** Its pictures were judged on near-still frames of a game,
+  and it was not run with Windows HDR on.
+- **The strength in motion, over a game and in HDR.** Scale the change was measured over stills
+  alone, the Blender picture in the self test, a character still and a still of noise through the
+  lens. Scaling the change also scales how the network's change moves from one picture to the
+  next, and how that looks in motion or over a game was not judged. That the composite adds the
+  scaled change in HDR as in standard range is from the code, and it was not run with Windows HDR
+  on.
 - **The add-on's intensities for passes 2 to 4.** That the add-on runs passes 2 to 4 at
   `NRPass2Intensity` to `NRPass4Intensity`, and that its overlay can change them, is taken from the
   key names in the add-on's own file. The ReShade engine's picture at two passes or more was not
   compared with the fast engine's, and what the add-on runs those passes at where its section holds
   no such key was not measured.
 - **Motion at the steps.** The pictures the steps were judged on were stills, including stills
-  three evaluations into a picture.
+  three evaluations into a picture, and near-still frames of a game against the picture's own
+  size.
 - **The steps on screen at other sizes.** The on-screen figures are all at 6144x2526 and
   6144x2558. The other picture sizes ran without a window.
 - **Other cards, and other Windows versions.** Everything is from one RTX 5090 on Windows 11
@@ -1240,11 +1620,13 @@ press. The menu takes them first, then the panel, then the note.
 - **On the NR settings panel** Up and Down light a row, its name drawn in the accent colour, in
   the order the profile, the switch that loads a profile for the program in front, Neural
   Rendering, the pass tabs, the style, the intensity, local tone, local structure, skin
-  structure, skin structure left to the model, the auto mask, the passes and the quality step.
-  On the tab of a pass from the second on, each value's Same as pass 1 is a row of its own after
-  the value. Left and Right load the profile before or after the one in use, show the pass
-  before or after, and change the style by one, a slider by 0.01 a press, the passes by one and
-  the quality step by one. A key held down moves a slider further with each repeat the longer it
+  structure, skin structure left to the model, the auto mask, the passes, the switch Scale the
+  change, the strength while that switch is on, and the quality step. On the tab of a pass from
+  the second on, each value's Same as pass 1 is a row of its own after the value, and the switch
+  Runs through pass 1's network is a row after the auto mask's, greyed on the tabs of passes 3
+  and 4. Left and Right load the profile before or after the one in use, show the pass before or
+  after, and change the style by one, a slider by 0.01 a press, the passes by one and the
+  quality step by one. A key held down moves a slider further with each repeat the longer it
   is held: 0.01 for the first 0.6 s, 0.02 up to 1.5 s and 0.05 after that. A move counts as part
   of the hold when it comes within 0.15 s of the move before, with the key down all the while,
   on the same slider of the same pass and the same way, as a held key's repeats do. Anything
@@ -1257,9 +1639,10 @@ press. The menu takes them first, then the panel, then the note.
   delay and rate a key held from 0 reaches 2 about 2.9 s after the press. Every value lands on a
   hundredth within the slider's range. Enter opens the profile list and switches each switch:
   the one for the program in front, Neural Rendering, a Same as pass 1, skin structure left to
-  the model and the auto mask. The profile and the passes take one step a press, and a repeat
-  within 0.5 s of a change is ignored, since a load can restart the picture and each change of
-  the passes does.
+  the model, the auto mask, Runs through pass 1's network on the tab of pass 2 and Scale the
+  change. A greyed switch stays as it is. The profile and the passes take one step a press, and
+  a repeat within 0.5 s of a change is ignored, since a load can restart the picture and each
+  change of the passes does.
 
 F6 is the add-on's and is never registered. Under the ReShade engine the add-on reads it with
 GetAsyncKeyState itself, and the lens reads it the same way to follow. The fast engine has no
@@ -1411,6 +1794,9 @@ action NR settings NRIntensity 0.95 (keyboard)
 action NR settings show pass 2 (click)
 action NR settings Pass2LocalTone same as pass 1 (mouse)
 action NR settings NRLocalTone 1 (reset button)
+action NR settings SharedNetwork 1 (keyboard)
+action NR settings ScaleChange 1 (mouse)
+action NR settings Strength 1.6 (mouse)
 action NR off (key F9)
 action readout hidden (key F10)
 action fullscreen off (taskbar list)
@@ -1448,6 +1834,8 @@ choices made in Settings before Save. A value changed on the panel gets one line
 still for 0.6 s, or as the panel closes, under its key in `ReShade.ini` for the first pass, such as
 `NRIntensity`, and for a pass from the second on under `Pass` with the pass's number and the value's
 name, such as `Pass2LocalTone`, which is the name for the intensity of passes 2 to 4 as well.
+The switch Runs through pass 1's network has its line under `SharedNetwork`, with 1 or 0, the
+switch Scale the change under `ScaleChange` the same way, and its strength under `Strength`.
 `same as pass 1` is a value ticked to follow the first pass, `NRSkinStructure -1` is skin structure
 left to the model, and `(reset button)` is the button beside a slider. A profile the lens loads by
 itself for the program in front has its line with `(auto)`. The lines the lens wrote before, such as
@@ -1463,7 +1851,7 @@ While a fullscreen lens on the fast engine is in view, a line every 10 s sums up
 stats lines:
 
 ```
-fast engine, last N s: N new and N arrived pictures a second, N repeated, N dropped, N skipped, median delay N ms, quality step N NAME, N pass(es), NR on|off, frame rate limit N fps|no frame rate limit
+fast engine, last N s: N new and N arrived pictures a second, N repeated, N dropped, N skipped, median delay N ms, quality step N NAME, N pass(es), NR on|off, frame rate limit N fps|no frame rate limit, network N ms
 ```
 
 The two rates are means over the seconds counted, which are the stats lines that came, ten as a
@@ -1471,7 +1859,9 @@ rule. Repeated, dropped and skipped are totals over those seconds: presents of a
 shown, frames replaced by a newer one or left out before the engine took them, and frames equal
 to the one before. The delay is the median of the engine's own figure, see The present path and
 the delay, not raised to zero as the menu shows it, and reads unknown when no refresh was learned.
-The line ends with the frame rate limit in force. Only the stats lines of the engine that runs
+Then come the frame rate limit in force and the network's time a picture, the median over the
+seconds it ran in of the engine's `network=` figure, see The fast engine, which reads unknown
+where it ran in none. Only the stats lines of the engine that runs
 now are counted, by its process id. A restart, a new quality step, Neural Rendering switched on
 or off, a new pass count, a new frame rate limit, Ready mode switched on or off, fullscreen and
 back, a profile and minimising each write a line at once, before they change anything, for the
@@ -1489,7 +1879,10 @@ the lens is running behind the program in front, median delay 51.0 ms, 2 summari
 The count is of the summaries behind in a row, and the figure after it is three refreshes of the
 lens's monitor. A median up to a tenth of a refresh below that figure counts as well, so at a
 rate Windows gives as 119 Hz the figure can read 25.2 ms over medians of 25.0 ms. Where the switch
-in Settings is off, the line ends `and the warning is off in Settings`.
+in Settings is off, the line ends `and the warning is off in Settings`. At the Full step, where
+the warning names that step because the network's own time with one refresh more reaches the
+line, see The quality steps, the line ends `, at the Full quality step with the network at N ms a
+picture` after either.
 
 While Windows HDR is on for the lens's monitor and the ReShade engine draws the picture, see The
 warning under HDR, a line says so each time the warning would be said, with the monitor's SDR white
@@ -1504,6 +1897,17 @@ goes off for that monitor while the warning applies, the log has
 `Windows HDR is off for the lens's monitor again`. Save in Settings names `hdr_warn 0` or
 `hdr_warn 1` where that switch changed, as it names `fs_behind_warn 0` or `fs_behind_warn 1` for the
 warning that the lens falls behind.
+
+Where the fast engine did not take a quality step it was told, see The quality steps, and where
+it could not make its network again for the switch Runs through pass 1's network, or for other
+new settings such as a profile's preset, see Each pass's values, a line says so, beside the
+notice:
+
+```
+the fast engine did not take quality step 5 Full and runs at 3 Balanced, so the lens goes by that step
+the fast engine could not make its network again for "Runs through pass 1's network", saying "REASON", so the passes run as they did before the switch
+the fast engine could not make its network again for the new settings, saying "REASON", so it runs on with the network it had
+```
 
 While the lens is fullscreen and in view, a line each time another window comes to the front:
 
@@ -1548,11 +1952,24 @@ where they change, and the picture goes on in the same engine process, which the
 The name on the bar and on the NR settings panel's picker gets a star, in amber, once the lens no
 longer matches its profile. It compares the pass count, the Cost Scaler rule, ready, the frame rate
 limit, the motion detail, the readout, the delay meter, what the title bar shows and fullscreen, the
-quality step where the profile holds one, and the six values of every pass the lens can run as
-`ReShade.ini` has them against the profile's, number by number. Verified with a test that saves and
-switches profiles through the lens's own methods. `profiles.json` is written beside itself and put
-in its place in one step, and a file that is there but cannot be read as profiles is kept as
-`profiles.json.bad`, with a line in the log, so the next save cannot write over it.
+quality step where the profile holds one, the six values of every pass the lens can run as
+`ReShade.ini` has them against the profile's, number by number, whether the passes after the
+first run through the first pass's network, `SharedNetwork` in the lens's section, whether the
+change is scaled, `ScaleChange`, and while it is the strength, `Strength`, to a hundredth. A
+profile saved before 0.7.0 has none of those keys, so it loads with each pass on a network of its
+own and the change not scaled, since applying it empties the lens's section of the keys it lacks.
+Verified with a test that saves and switches profiles through the lens's own methods.
+`profiles.json` is written beside itself and put in its place in one step, and a file that is
+there but cannot be read as profiles is kept as `profiles.json.bad`, with a line in the log, so
+the next save cannot write over it.
+
+The Profiles page of Settings lists for a profile the lens's own settings and the Home menu's,
+whether its passes run through pass 1's network, under the panel's label for the switch, for a
+profile of two passes or more, since at one pass the switch does nothing and the panel shows
+none, and whether its change is scaled, with the strength, among the first, and no longer the
+add-on's `NRGlobalTone`, which the model the stack installs does not read, see UI correction and
+the preset under Each pass's values. A profile at the Full step shows Full as its quality step,
+and a lens before 0.7.0 takes a profile's step 5 as Quality, the highest it has.
 
 A control on the title bar that answers a click of its own has to be named in the bar's
 `nodrag` list, because the bar binds the drag handlers to every other child after it is
@@ -1748,6 +2165,22 @@ passes   chained   frame rate   spread   regions   swing   consecutive
 
 The settings set the floor as well. `NRIntensity=1.31` with `NRStyle=1` gave 0.12 consecutive at
 one pass.
+
+**Denoise before upscaling.** The add-on's `NRPreUpscale=1`, Denoise before upscaling in its Home
+menu, runs the network on the colour that goes into a DLSS evaluate instead of on what comes out
+of it. In the presenter that evaluate is the Feed's DLAA, and it reaches two hooked copies of the
+NGX module, the driver's and the stack's `nvngx_dlss.dll`, the one forwarding into the other. On
+this path each copy runs the network, the second on the first one's output, through the same
+network feature and so with the same history. The add-on's log shows a second workset with the
+feature made once, and 208 evaluations a second against the Feed's 104 frames a second, where
+with the setting off it runs once a frame. Both 5.2.1, the add-on the stack installs, and
+8.5.0-rc10 do so. The Feed's DLAA then works on the result. Over a character still at 1400x1000 with
+5.2.1, at style Default, intensity 0.97, local tone 0.99, local structure 0.41, skin structure 0
+and the auto mask off, with one pass, the picture changed by 22.6 of 255 from the still with the
+setting on against 9.5 with it off, darkened it by 1.85 in mean luma against 0.40, and kept 0.24
+of the still's fine detail, as the variance of the Laplacian, against 0.37, where the Feed's DLAA
+alone keeps 0.46. The fast engine gives that look with the switch Runs through pass 1's network
+on the tab of pass 2, see Each pass's values.
 
 **Traps.** This add-on line resets its whole section to built-in defaults when `ConfigVersion` is
 missing or older than its own, and writes `ConfigVersion=2`, without a log line. Its own working
@@ -2668,13 +3101,17 @@ after Set it has not been measured again.
 **The fast engine has no overlay to open**, since no ReShade runs in it. The lens's own NR settings
 panel takes its place there. From the top it holds the profile picker, the switch that loads a
 profile for the program in front, see Profiles, Neural Rendering on or off, a tab for each pass that
-runs, the style, the four strengths, the auto mask, the passes and the quality step. On the tab of a
-pass from the second on each value has a tick, Same as pass 1. Ticked, the pass runs at the first
-pass's value, and the control shows that value greyed. Unticked, the value is the pass's own, and
-the control moves it alone. A pass fewer keeps that pass's own values in the file for when it comes
-back. A change goes into `ReShade.ini` at once, into the add-on's section for the first pass and for
-the intensity of passes 2 to 4, and into the lens's own section for the other values of a pass from
-the second on, see Each pass's values, in one write that keeps every other byte of the file. The
+runs, the style, the four strengths, the auto mask, the passes, the switch Scale the change with
+the strength's own slider while it is on, and the quality step. On the tab of a pass from the
+second on each value has a tick, Same as pass 1. Ticked, the pass runs at the first pass's value,
+and the control shows that value greyed. Unticked, the value is the pass's own, and the control
+moves it alone. Under the values the tab of pass 2 has the switch Runs through pass 1's network,
+see Each pass's values, which the tabs of passes 3 and 4 show greyed with the note
+`follows pass 2`, and the tab of pass 1 does not show. A pass fewer keeps that pass's own values
+in the file for when it comes back. A change goes into `ReShade.ini` at once, into the add-on's
+section for the first pass and for the intensity of passes 2 to 4, and into the lens's own
+section for the other values of a pass from the second on and for the two switches, see Each
+pass's values, in one write that keeps every other byte of the file. The
 file is written beside itself and put in its place in one step, so the engine never reads it cut
 short, and the engine is told `reload`, at most about ten times a second while a slider moves.
 Measured, a change of the intensity from 0.97 to 0.3 changed one line of the file, 1038 bytes to
@@ -2686,11 +3123,12 @@ hundredth. To the right of each slider's number a button with an anticlockwise a
 at 1.00 for the pass shown, as the arrow keys set a value. It is greyed, and does nothing, while its
 slider is greyed, for a value ticked Same as pass 1 or for skin structure left to the model, and it
 has no key. A new pass count restarts the picture, since the engine takes the count when it starts.
-The panel works from the keyboard as well, with the keys under Global hotkeys. Its last line says
-that the arrow keys pick a setting and change it, that a slider moves faster the longer Left or
-Right is held and that the button beside a number puts its slider at 1.00. The add-on of the ReShade
-engine reads only its own section, so there every pass from the second on runs at the first pass's
-values apart from the intensity of passes 2 to 4.
+The panel works from the keyboard as well, with the keys under Global hotkeys. A line at its foot
+says that the arrow keys pick a setting and change it, that a slider moves faster the longer Left
+or Right is held and that the button beside a number puts its slider at 1.00, and the last line
+says how a setting's explanation comes up. The add-on of the ReShade engine reads only its own
+section, so there every pass from the second on runs at the first pass's values apart from the
+intensity of passes 2 to 4, and neither switch does anything.
 
 ### The A/B divider
 
@@ -2948,6 +3386,16 @@ a rest. A bare F1 in a hotkey field shows that row's explanation too, and Ctrl, 
 with F1 can still be set there. The window shows the space between a number and its unit, and
 the one after RTX, as a space that does not break. Tk on Windows keeps such a pair on one line,
 so no line ends with "10" while the next begins with "ms".
+
+The NR settings panel explains each of its settings the same way, with a text of its own for each,
+`PANEL_WHY` in neural_lens.py, after the pointer has rested on it for a second and a half. The
+panel is a window of the lens's own that never takes the keyboard, so its explanation is one too.
+It is shown as the lens's own windows are, out of the capture and never taking the foreground, a
+click gives nothing the keyboard, and the panel's own keys take it away, since they never reach
+Tk. F1 is held as a hotkey while the panel is open, beside the arrow keys, Enter and Escape, and
+not for the menu or the note. It shows the explanation of the setting the arrow keys are on,
+below it, or with none picked the one under the pointer. Where a hotkey of Settings is F1 on its
+own, the panel leaves F1 to it, and the line at the panel's foot says only to rest the pointer.
 
 The dialog is as high as its tallest page, so the fullscreen settings have a page of their own
 and not a third section on the Power page. The Hotkeys page is the tallest. The dialog is 723x689

@@ -842,7 +842,7 @@ second at the first pass's values, which is that look on the fast engine, see Pa
 1's network below, the fast engine's picture at a strength of 1.6 changed the still by 54.8 of 255
 against 35.6 for the ReShade engine's at `NRIntensity=1.6`, 1.54 times as much, and lay 19.3 of
 255 from it, where with the switch off the two engines' pictures lay 1.4 of 255 apart. So only
-the fast engine draws the stronger picture, as the panel's foot says.
+the fast engine draws the stronger picture.
 
 **Passes through pass 1's network.** `SharedNetwork=1` in `[NeuralLens.Passes]`, which the switch
 Runs through pass 1's network on the tab of pass 2 of the NR settings panel writes, has every pass
@@ -1613,13 +1613,14 @@ front, Escape in a game included. The arrows repeat while held, and Enter and Es
 press. The menu takes them first, then the panel, then the note.
 
 - **In the menu** nothing is lit when it opens. Down lights the first entry that does something
-  and Up the last, both wrap round, and the pointer and the keys move one highlight. Enter
+  and Up the last, both wrap round, and the pointer and the keys move one highlight, the pointer
+  only while the program in front does not hold the mouse, see Free the mouse. Enter
   chooses the lit entry and does nothing with none lit, and Escape closes the menu. The menu's
   own poll of Escape, see Gotchas, is left out while Escape is registered, so one press never
   closes two things.
 - **On the NR settings panel** Up and Down light a row, its name drawn in the accent colour, in
-  the order the profile, the switch that loads a profile for the program in front, Neural
-  Rendering, the pass tabs, the style, the intensity, local tone, local structure, skin
+  the order the profile, the switch that loads a profile for the program in front, Free the
+  mouse, Neural Rendering, the pass tabs, the style, the intensity, local tone, local structure, skin
   structure, skin structure left to the model, the auto mask, the passes, the switch Scale the
   change, the strength while that switch is on, and the quality step. On the tab of a pass from
   the second on, each value's Same as pass 1 is a row of its own after the value, and the switch
@@ -1638,7 +1639,7 @@ press. The menu takes them first, then the panel, then the note.
   after Windows' repeat delay, half a second by default, and starts the hold, so at the default
   delay and rate a key held from 0 reaches 2 about 2.9 s after the press. Every value lands on a
   hundredth within the slider's range. Enter opens the profile list and switches each switch:
-  the one for the program in front, Neural Rendering, a Same as pass 1, skin structure left to
+  the one for the program in front, Free the mouse, Neural Rendering, a Same as pass 1, skin structure left to
   the model, the auto mask, Runs through pass 1's network on the tab of pass 2 and Scale the
   change. A greyed switch stays as it is. The profile and the passes take one step a press, and
   a repeat within 0.5 s of a change is ignored, since a load can restart the picture and each
@@ -1707,7 +1708,8 @@ though a hook that runs in the presenter's own message loop could.
   `SWP_NOACTIVATE`, and makes no focus call. The opacity stays at zero until 30 ms after the
   window is shown, when a timer sets it, so that Tk has drawn the window's contents by then. A
   toplevel mapped in view from the start can instead be made active as it appears, before any
-  style is on it.
+  style is on it. The one exception is the NR settings panel with Free the mouse on, which takes
+  the foreground while it is open and gives it back as it closes, see Free the mouse.
 - **The Vulkan layer.** Since 0.6.0 the layer's description carries `enable_environment` with
   `ENABLE_VK_LAYER_reshade_neural_lens=1`, and the presenter sets that variable for itself, so
   Vulkan loads ReShade into the presenter alone, see The installer and the stack setup. A
@@ -2975,7 +2977,9 @@ monitor switched to 125 percent while the session had logged on at 100 percent. 
 for 1400x760, a per monitor aware probe measured the picture's window at 1400x760 physical,
 ReShade created its resources at 1400x760, and the chrome measured 1404x796 with both windows
 reporting 120 DPI, so nothing is bitmap stretched either. Fonts follow the monitor's DPI. The bar
-is 34 pixels and holds a 10 point label up to 200 percent.
+is 34 pixels and holds a 10 point label up to 200 percent. The drawn themes take their sizes and
+their fonts in pixels from one scaling, Tk's, which a process keeps for all its windows, see
+[Looks and themes](#looks-and-themes).
 
 ### Fullscreen
 
@@ -3100,7 +3104,8 @@ after Set it has not been measured again.
 
 **The fast engine has no overlay to open**, since no ReShade runs in it. The lens's own NR settings
 panel takes its place there. From the top it holds the profile picker, the switch that loads a
-profile for the program in front, see Profiles, Neural Rendering on or off, a tab for each pass that
+profile for the program in front, see Profiles, the switch Free the mouse, see Free the mouse below,
+Neural Rendering on or off, a tab for each pass that
 runs, the style, the four strengths, the auto mask, the passes, the switch Scale the change with
 the strength's own slider while it is on, and the quality step. On the tab of a pass from the
 second on each value has a tick, Same as pass 1. Ticked, the pass runs at the first pass's value,
@@ -3123,12 +3128,87 @@ hundredth. To the right of each slider's number a button with an anticlockwise a
 at 1.00 for the pass shown, as the arrow keys set a value. It is greyed, and does nothing, while its
 slider is greyed, for a value ticked Same as pass 1 or for skin structure left to the model, and it
 has no key. A new pass count restarts the picture, since the engine takes the count when it starts.
-The panel works from the keyboard as well, with the keys under Global hotkeys. A line at its foot
-says that the arrow keys pick a setting and change it, that a slider moves faster the longer Left
-or Right is held and that the button beside a number puts its slider at 1.00, and the last line
-says how a setting's explanation comes up. The add-on of the ReShade engine reads only its own
+The panel works from the keyboard as well, with the keys under Global hotkeys. The one line at its
+foot says that the arrow keys pick a setting and change it and that Enter switches a switch, and
+how a setting's explanation comes up. The button beside a slider's number says in its own
+explanation that it puts the slider at 1.00. A line of the panel's own says to use the arrow keys,
+see Free the mouse below. The add-on of the ReShade engine reads only its own
 section, so there every pass from the second on runs at the first pass's values apart from the
 intensity of passes 2 to 4, and neither switch does anything.
+
+### Free the mouse
+
+The switch Free the mouse, `free_mouse = 1` in the ini and off unless it says so, is on the NR
+settings panel under the switch that loads a profile for the program in front, and on the
+Fullscreen page of Settings after Warn when the lens falls behind. The two are one setting. The
+panel's switch writes the ini at once, and a Save of Settings brings the panel's switch up to date
+and, with the panel open, has it take the foreground or give it back at once, as its own switch
+does.
+
+**The held mouse.** While the panel is open the lens reads, as it opens and then every 250 ms,
+whether the program in front holds the mouse. It counts the mouse as held when GetCursorInfo says
+the cursor is not showing, or when GetClipCursor gives a box narrower or lower than the virtual
+screen, `SM_CXVIRTUALSCREEN` by `SM_CYVIRTUALSCREEN`. Both calls only read, any program may make
+them, and the lens has no call that moves, clips, shows or hides the cursor. A game that hides
+its cursor reads as held while the cursor lies over the game, and one that keeps the cursor to
+less than the whole screen, such as a small box it puts the cursor back into each frame, reads as
+held wherever the cursor lies. Two readings in a row that find the pointer, read with
+GetCursorPos, within a pixel of the centre of the client area of the window in front count as
+held too, as a game that keeps putting the pointer back there holds it, but never for a window of
+the lens's own.
+
+**The panel's line.** The classic panel's line, across its head under the title, is
+`PANEL_ARROWS`, "Use the arrow keys to pick and change a setting.", and the panel's window takes the
+height the line asks for each time its words change. A drawn look's line is its idle line,
+`PANEL_IDLE`, "Pick a setting with the arrow keys or the pointer. What it does shows here.", which
+its explanation's part shows while no setting is picked, and Paper shows the first sentence under
+the head and the rest in its note. While the mouse is held and the switch is off, `PANEL_HELD`
+follows the line, "The program in front holds the mouse. Free the mouse lets you use it here.",
+and while the mouse is held with the switch on and the foreground not taken, `PANEL_KEPT`, "The
+program in front kept the mouse, so the keys are the way."
+
+**The foreground.** With the switch on, the panel takes the foreground as it is shown, and at once
+when the switch is turned on, on the panel or by a Save of Settings, while the panel is open. The
+lens remembers the window in front, unless it is one of the lens's own, takes `WS_EX_NOACTIVATE`
+off the panel's window and calls SetForegroundWindow on it. Windows lets a process set the
+foreground right after input of its own, which the hotkey that opened the panel, the key that
+switched the switch and a click on the panel or in Settings each are. 150 ms later one line in
+`lens.log` says whether it held, `the NR settings panel took the front (free mouse)` or
+`the NR settings panel could not take the front, the program in front kept it (free mouse)`.
+When the panel closes, or the switch is turned off with the panel open, the lens calls
+SetForegroundWindow on the window it remembered, only while a window of its own still has the
+foreground and the remembered window is still there, and writes
+`the front given back (free mouse)`. Otherwise the foreground stays where the person put it, and
+the line is `the front left where it went (free mouse)`. A call that fails with an error writes
+the error in place of the reason,
+`the NR settings panel could not take the front, <error> (free mouse)` or
+`the front not given back, <error> (free mouse)`. A panel that stays open gets
+`WS_EX_NOACTIVATE` back. With the switch off the panel never takes the foreground.
+
+**The pointer.** While the mouse is held, the panel takes in the pointer's moves and does nothing
+with them, so no explanation is timed by the pointer, and in a drawn look the pointer lights no
+row. The lens menu lights no entry by the pointer then either, while the arrow keys light theirs
+as before. In a drawn look, where the row under the pointer lights as the pointer moves, the row
+an arrow key lit stays until the pointer has moved 8 pixels at the look's scale from where it was
+at the key, counted across and down together, so a pointer at rest on the panel, or one a game
+puts back, does not take the row away. F1 picks by key whatever the pointer does.
+
+**Measured** on a test computer with Windows 11, a fullscreen lens at 6144x2560 on the fast
+engine, in the classic look, in Slate and in Paper, with a stand-in for a game in front. The stand-in was a
+window of a process of its own that hid the cursor, kept it in a 48 pixel box under the panel's
+intensity row and put it back 60 times a second, moving it 16 pixels and back every two seconds.
+The lens read the mouse as held from the clip. GetCursorInfo said the cursor was hidden while it
+lay over the stand-in's own window and showing while it lay over the panel, so there only the
+clip tells that the mouse is held. With the switch off, a real F8 opened the panel with the line
+naming the switch at once, three presses of Down lit the profile, the auto-load switch and Free
+the mouse, and in the 4.6 s after them the lit row stayed and no explanation came up by the
+pointer. A real Enter on Free the mouse, pressed while the stand-in had the keyboard, gave the
+panel the foreground 0.05 s after the switch's line in `lens.log`, and the stand-in let go of the
+mouse. Escape gave the foreground back to the stand-in, which held the mouse again. F8 with the
+switch on took the foreground again as the panel opened, and with a second window clicked to the
+front while the panel was open, Escape left the foreground with that window. With the panel open
+and in front, a Save of Settings with the switch off gave the foreground back to the window that
+had it, which was in front within 0.16 s, and the panel stayed open and never active again.
 
 ### The A/B divider
 
@@ -3368,10 +3448,49 @@ different case or an older build. VORT is fetched as well and can be chosen inst
 
 ## Settings
 
-Each setting in the dialog is one short label in a 12 point font, and one helper, `Hints`, shows
-what a setting does for the whole dialog. An explanation says what its setting does and no more.
-It names no card and gives no watts, milliseconds or frame rates, and the measurements behind the
-settings are in the README and in this file. The pointer has to rest on a setting for a second
+Each setting in the dialog is one short label, and one helper, `Hints`, gives what a setting does
+for the whole dialog. An explanation says what its setting does and no more. It names no card and
+gives no watts, milliseconds or frame rates, and the measurements behind the settings are in the
+README and in this file.
+
+In each theme Settings is drawn as the theme's design draws it, see [Looks and
+themes](#looks-and-themes). Slate, Graphite and Paper list the pages on a rail down the left, and
+Industrial as tabs along the top. The explanation of the setting picked shows in a part of the
+dialog's own, a pane at the right in Slate and Graphite, a note in the margin level with the
+setting in Paper, and a strip along the foot in Industrial. The pointer picks the setting it is
+on at once, and F1 the setting that has the keyboard, so no window comes up by the pointer. The
+keys are bound on the dialog. Up and Down pick the setting before or after in the order the page
+is read, round from the last to the first, Left and Right change a choice, the quality step or
+the corner, Enter switches a switch, presses a button, or gives a field or the profile list the
+keyboard, Ctrl+Tab and Page Down turn to the next page, Ctrl+Shift+Tab and Page Up to the one
+before, and Escape cancels. None of them acts while a field, a list or a text has the keyboard,
+which keeps its own keys, apart from Escape, which gives the keyboard back to the settings, so a
+second Escape cancels. A hotkey field takes every key it is given, Escape too, and Tab and
+Shift+Tab stay Tk's own. A setting the keys pick is lit, explained, kept in view and given the
+keyboard, so Space works it as Tk's own keys do. The keyboard moves only inside the dialog, which
+has it already where these keys reach it, so no window of the lens takes the foreground. Enter
+never saves, since it switches a switch, and Save is a click. The footer shows the keys.
+Industrial's footer, its key strip, shows the version too. Where its groups of keys have no room
+as drawn, the gaps between them close up to half the drawn gap, then the version leaves the strip,
+then the groups leave from Turn the page back, and Esc Cancel stays at every width, since
+Industrial's Cancel button carries no key cap. Measured from the font files, the five groups and
+the version fit the drawn width with the gaps closed up from 26 to 14 pixels at 100 percent, from
+33 to 22 at 125 percent and from 39 to 29 at 150 percent.
+
+Settings is drawn 1120 pixels wide, and 736 high in Slate and Graphite, 744 in Paper and 746 in
+Industrial, at 100 percent display scaling, and its sizes scale with the display. It is fitted to
+the work area of its monitor less 8 pixels at each side. Where the drawn size does not fit, the
+rows and gaps take their compact sizes, about 0.82 of the drawn, and the height is held to the
+screen, so a page taller than its part scrolls. Where the width does not fit either, Slate's and
+Paper's column for the explanation narrows from 320 pixels to 260 and 240, and below that it goes,
+and the explanation comes up by the pointer as below, the footer then saying so in place of the
+keys. Industrial's strip runs along the foot at any width, and its modules take one column where
+the page is narrower than 760 pixels. Fonts never shrink, only the spacing and the layout. A page
+that asks for more width than its part has widens the window rather than being cut.
+
+Where Settings has no room for the explanation's part, and in the look the lens had up to 0.7.0,
+which the tests can still ask for, the explanation comes up by the pointer, and each label is in
+a 12 point font. The pointer has to rest on a setting for a second
 and a half without moving, measured at 1.50 and 1.51 s. The explanation then comes up in a window of
 the dialog's with no frame, wrapped at 320 points, 16 pixels right of the pointer and 22 pixels
 below it, or above the pointer where the monitor ends. It is out of the capture, never takes the
@@ -3387,8 +3506,33 @@ with F1 can still be set there. The window shows the space between a number and 
 the one after RTX, as a space that does not break. Tk on Windows keeps such a pair on one line,
 so no line ends with "10" while the next begins with "ms".
 
-The NR settings panel explains each of its settings the same way, with a text of its own for each,
-`PANEL_WHY` in neural_lens.py, after the pointer has rested on it for a second and a half. The
+In each theme the NR settings panel shows what the setting the arrow keys or the pointer are on
+does in a part of its own under its settings, and the keys that work it along its foot, each key a
+cap with its words, with a text of its own for each setting, `PANEL_WHY` in neural_lens.py. The
+panel is drawn 624 pixels wide in Slate and Graphite, 664 in Paper and 680 in Industrial at 100
+percent, its settings in the order of the theme's design, the same order the arrow keys walk.
+Slate and Graphite have the quality step and the passes above the pass tabs, Paper the passes and
+then the quality step, and Industrial both under the tab. Scale the change and its strength, which
+no design draws, follow the passes in every theme. Where the panel is taller than its monitor less
+24 pixels above and below, it takes the compact rows, then the profile in its head, and below that
+the card of the pass's values scrolls to keep the lit setting in view. The part that explains a
+setting keeps its drawn height at each of these steps, 112 pixels in Slate and Graphite, 117 in
+Paper and 136 in Industrial at 100 percent.
+
+Every explanation of the panel and of Settings fits whole in the part it shows in, in each theme
+at 100, 125 and 150 percent: the panel's part less the room its design keeps above and under the
+lines, and Settings' column or Industrial's strip at the sizes they have on the screens Settings
+is fitted to, the smallest being 1280x720 and 1366x768 at 100 percent, 1366x768 at 125, where
+Slate's and Paper's column is narrow, and 1920x1080 at 150. Each was measured in the theme's type
+at its width, wrapped as Tk wraps it. Before a setting is picked, Slate's pane lists the page's
+sections that fit it whole, at least the first, so its narrow column at 1366x768 and 125 percent
+lists two of the three on some pages. A text that needs more grows the panel's part by the lines it
+needs, two at most and never past the panel's room on its monitor, and lines that do not fit even
+then stay out whole, `lens.log` saying so once. Industrial's strip in Settings grows by up to two
+lines into the page above it, so Settings keeps its size. No explanation ends in three dots.
+
+In the look of 0.7.0 the NR settings panel explains each of its settings by the pointer as
+Settings does, after the pointer has rested on it for a second and a half. The
 panel is a window of the lens's own that never takes the keyboard, so its explanation is one too.
 It is shown as the lens's own windows are, out of the capture and never taking the foreground, a
 click gives nothing the keyboard, and the panel's own keys take it away, since they never reach
@@ -3397,10 +3541,10 @@ not for the menu or the note. It shows the explanation of the setting the arrow 
 below it, or with none picked the one under the pointer. Where a hotkey of Settings is F1 on its
 own, the panel leaves F1 to it, and the line at the panel's foot says only to rest the pointer.
 
-The dialog is as high as its tallest page, so the fullscreen settings have a page of their own
-and not a third section on the Power page. The Hotkeys page is the tallest. The dialog is 723x689
-at 100 percent display scaling, 816x822 at 125 percent and 947x984 at 150 percent, which fits a
-1920x1080 screen at all three with nothing cut off on any page.
+In the look of 0.7.0 the dialog is as high as its tallest page, so the fullscreen settings have a
+page of their own and not a third section on the Power page. The Hotkeys page is the tallest. The
+dialog is 723x689 at 100 percent display scaling, 816x822 at 125 percent and 947x984 at 150
+percent, which fits a 1920x1080 screen at all three with nothing cut off on any page.
 
 What Tk does that the dialog depends on:
 
@@ -3409,17 +3553,134 @@ What Tk does that the dialog depends on:
   and 125 percent, and 34 pixels with no border.
 - A key event made for a window is dropped unless that window has the keyboard.
 - Asked for its text, an `Entry` gives the name of its variable.
+- The pages stay the frames of a `ttk.Notebook` in every theme, its tabs drawn by nothing, so the
+  lens builds them and the tests turn and read them as before. A drawn theme holds the notebook in
+  a canvas that scrolls it under the title and the footer.
+- A check or radio button with `indicatoron=0` draws no box or dot of its own, so a drawn switch or
+  choice is a face over the very button, which keeps its variable and command.
+- A `Canvas` draws its circles and lines with a hard edge, so the round marks of the designs, a
+  slider's thumb among them, are drawn as small pictures with a soft edge, as text is.
+- A font given a negative size is that many pixels, which the looks use, and Tk keeps one scaling
+  for the whole process, so the first window's holds for every window.
+- A `tkinter.font.Font` made from a font given in pixels is made through Tk's `font actual`, which
+  gives whole points, so at 125 percent a 16 pixel font measured that way is a pixel larger than
+  the label it came from. The lens measures its words with Tk's own `font measure` of the
+  widget's font.
+- `Leave` with the detail `NotifyInferior` comes when the pointer moves onto a widget inside the
+  one it left, so a menu entry's hint and key caps, which lie inside the entry, do not unlight it.
 
-## Themes
+## Looks and themes
 
-Every colour the lens draws comes from one table, `THEMES` in neural_lens.py, resolved once at
-start into the constants the rest of the file always used, BG, FG, ACCENT, DIM, WARN, CAP and the
-four that used to be literals, HOVER, FIELD, TAB_BG and CLOSE. The chosen theme is `theme` in the
-ini, and `themes.json` in the data folder is laid over the table, a theme there with a built-in
-name replacing it and a theme missing keys taking them from Slate, so a theme can be made without
-touching the program. A theme takes effect at the next launch because the colours are baked into
-the widgets when they are built, so choosing one in Settings restarts the lens, as the folders do.
-The picture is never touched, since the presenter draws nothing but the picture.
+The lens has four themes, Slate, Graphite, Paper and Industrial, chosen on the Look page of
+Settings or by `theme` in the ini, Slate where it names none. A theme sets how every window of the
+lens looks, never the picture, since the presenter draws nothing but the picture. Each theme draws
+one of three layouts, each from a design of its own: Slate's, which Graphite has in its own
+colours, Paper's and Industrial's. The package `lens_look` holds them, as the kinds console, folio
+and industrial. A layout changes more than the colours. It draws Settings' pages on a rail or as
+tabs with the explanation in a pane, a margin note or a strip, the NR settings panel's controls
+in its design's order, the menus and lists with each entry's keys as caps, the title bar and the
+frame, the fullscreen note, the notices, the readout, the hover window, the tab, the A/B divider,
+the pick hint and the region sheet, the lens's own dialogs and the stack setup's window. A theme
+takes effect at the next launch, because its colours, type and sizes are bound as the windows are
+built, so choosing one in Settings restarts the lens, as the folders do.
+
+Under each drawn control the lens keeps the Tk widget it always made, with the same words,
+variable, command, ini key, log line and keys. The theme draws a face over the widget or beside
+it, a canvas or a small widget that shows the widget's state and passes a click to the widget
+itself. A widget whose words or colours a theme draws otherwise, such as a picker's name followed
+by its chevron or Industrial's capitals, keeps the words and the colour the code gave it, which
+`cget` gives back, so the tests read the same states in every theme.
+
+A fault never stops the lens. Where `lens_look` cannot be imported, or its look cannot be chosen,
+the lens draws as it did up to 0.7.0, in that version's colours of the theme, with Windows' own
+message boxes, and `lens.log` says why in one line. Where one window of a theme cannot be built,
+that window is drawn as up to 0.7.0 in the theme's colours for the rest of the run, and `lens.log`
+says so once. The look of 0.7.0 is also what `NEURAL_LENS_LOOK=classic` in the environment, or
+`look = classic` in the ini, gives, for the tests. No setting offers it.
+
+**Colours.** Every part of the lens a theme does not draw itself takes the theme's ten colours,
+`bg`, `fg`, `accent`, `dim`, `warn`, `cap`, `hover`, `field`, `tab` and `close`, as the constants
+BG to CLOSE that the rest of neural_lens.py has always used, so DIM is the colour of secondary
+words. The drawn parts take their colours by role, the same roles in every layout:
+
+- `surface`, the page, the menus, the panel's body and a dialog's body, and `deep`, a step from
+  it, for the rail, the pane, the footers, the bar, the heads, the readout and the hover window
+- `lit`, the row, entry or tile the pointer or the keys are on, `chosen`, the chosen rail item or
+  tab, `raised`, the chosen segment or card with `on_raised` on it, `hover`, the colour under the
+  pointer, and `tab`, a tab not chosen
+- `well`, the wells, fields and slider tracks, `head`, secondary buttons and the plates of
+  Industrial's modules, `rule`, the rules and separators, `edge`, the borders of controls and
+  modules, and `frame`, the line round the lens and the panel
+- `text`, `strong` for titles and lit labels, and `muted` for secondary words
+- `faint`, the faint marks, never text, such as pips, rings and ticks
+- `accent` with `on_accent` on it, `primary` for Save and OK with `on_primary` on it, `warn` and
+  `close`
+- `cap`, `cap_edge` and `cap_text`, a key cap
+
+Slate, Paper and Industrial take their designs' colours. Their `dim` is light enough to read as
+text, #94a3b8 in Slate where 0.7.0 had #64748b, #ab9f8d in Industrial for #8a7f70, and Paper takes
+its design's warm palette, the sheet #edebe6 with ink #1b1a17 and secondary words #58544b, where
+0.7.0's Paper was grey. Graphite has no design and keeps its own colours in Slate's layout, its
+roles derived from its ten colours, all but `dim`, #989898 in place of #8a8a8a. That is the least
+step toward its text colour at which every text of its roles reads at 4.5 to 1 and every mark at
+3 to 1, its secondary words 4.71 to 1 on its lit rows where they were 3.93, and its faint marks
+3.04 to 1 on its surface where they were 2.66. In all four themes every text reads at 4.5 to 1 or
+more on each ground it is drawn on, and the marks of a control or its state at 3 to 1, as WCAG 2
+reckons contrast, apart from outlines and chosen segments the designs draw fainter, which are
+kept as drawn, since the lit bar, the rings, the accent and the semibold words also carry the
+state. Slate's chosen segment in its well is 1.81 to 1, its borders on the surface 1.51, and
+Industrial's borders on its plate 1.73.
+
+**themes.json** in the data folder adds themes or changes those that come with the lens, as an
+object under each theme's name. An object can give any of the ten colours as `#rrggbb`, any role
+above that is not one of the ten by its name, and `look`, the theme it starts from, Slate,
+Graphite, Paper or Industrial in any case. A theme of the user's own starts from the theme its
+`look` names, or from Slate, and an object under a built-in theme's name starts from that theme.
+A theme has the layout of the theme it starts from, and the colours it leaves out are that
+theme's, its drawn ones in a drawn layout. A role it gives is its own, and the roles that take
+their colour from it follow it, folio's frame and key caps' edge from its `edge`, say. Every other
+role whose colours are all the layout's own is the design's, and the rest are derived from the ten
+colours as Graphite's are. A value that is not a colour is passed over, and a file that cannot be
+read is ignored, so a bad file never stops the lens. Where the colours put text under 4.5 to 1 on
+a ground the layout draws it on, `lens.log` names each pair of roles with its contrast in one
+line, and the theme draws all the same.
+
+**Captions.** On Windows 11, build 22000 and later, the frame Windows draws round a dialog of the
+lens and round the stack setup takes the theme's colours for its caption, its title and its
+border, by DwmSetWindowAttribute 35, 36 and 34. Windows 10 takes none of them and keeps its own,
+in its dark mode for a dark theme, attribute 20 from version 2004 and 19 before. A call Windows
+refuses is passed over, so a dialog never fails on its frame. The folder and file pickers stay
+Windows' own.
+
+**Fonts.** The drawn themes use the fonts their designs name. Slate and Graphite draw in
+Bahnschrift, which Windows 10 has from version 1709 and Windows 11 has, with Barlow Semi Condensed
+in its place where it is not there. Paper draws in Source Serif 4, its page titles in the Subhead
+cut, and Source Sans 3, and Industrial in Barlow, Barlow Semi Condensed and IBM Plex Mono. The
+lens bundles 13 files of these, 3.27 MB, unchanged, in `assets\fonts`, with FONTS.txt naming each
+one's source, version and SHA-256, and their licence texts in `licenses`. As its module is
+imported in a drawn theme, before Tk makes any font, the lens adds them by AddFontResourceExW with
+FR_PRIVATE, for its own process alone. Nothing is installed, no administrator is asked, no other
+program sees them, and they go when the lens ends. The installer's and the uninstaller's runs of
+the lens, which make no window, add none. Windows lists a static weight other than regular and
+bold as a family of its own, such as Source Sans 3 Semibold, and shortens some names, such as IBM
+Plex Mono SmBld, so the lens reads each family's name from the file's name table. At the first
+window each role finds the first family of its chain that is there, in the weight nearest the one
+asked, and `lens.log` names the face of every role in one line. Where none of a chain is there,
+the role takes the chain's last family, Segoe UI, Georgia or Consolas, which every Windows has.
+Tk has no letter spacing, optical sizes or figures of one width, so the spaced capitals of the
+designs are plain capitals. No role draws Barlow at weight 600, so that file is not bundled, and
+Source Serif 4's SmText cut is not either, since the Text cut reads solid at the 15 and 16 pixels
+Paper draws its serif text at.
+
+**Sizes.** The sizes are the designs' pixels at 100 percent, turned into the screen's by S, Tk's
+scaling times 72/96, read from the first window, since Tk keeps one scaling for the whole
+process. A size is rounded half up, a hairline is one pixel at any scaling, and a font is given in
+pixels. Tk keeps its scaling as the screen's size in whole millimetres, so S comes out a little
+off, on a 6144 pixel wide monitor 1.250462 for 125 percent and 1.499631 for 150 percent, which
+makes a few sizes at 150 percent a pixel smaller than at exactly 1.5. The title bar stays 34
+pixels high in every theme. Its drawn controls are wider than 0.7.0's, so a lens in a window is
+wider at its narrowest, 390, 488 and 576 pixels at 100, 125 and 150 percent in Slate and Graphite,
+380, 484 and 572 in Paper and 400, 502 and 596 in Industrial, where 0.7.0's were 322, 366 and 414.
 
 ## The title bar hidden
 

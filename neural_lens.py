@@ -142,6 +142,22 @@ import tkinter.font as tkfont
 from tkinter import filedialog, messagebox
 from tkinter import ttk
 
+# The looks the lens can be drawn in, see LOOK. A fault in that package never
+# stops the lens, which then keeps its classic look and says why in lens.log.
+try:
+    import lens_look
+    import lens_look.dialogs        # the lens's own dialog and its frame, see messagebox below
+    import lens_look.fonts          # the fonts of the drawn looks, see _FONTS_SAID below
+    import lens_look.settings       # the frame of Settings in a drawn look, see Lens.settings_dialog
+    import lens_look.panel          # the NR settings panel in a drawn look, see Lens._open_panel_drawn
+    import lens_look.menus          # the lens menu and its lists in a drawn look, see PopupMenu._open_drawn
+    import lens_look.small          # the note, the notice, the readout and the other small windows, see _drawn_small
+    import lens_look.bar            # the title bar and the frame in a drawn look, see Lens._bar_drawn
+    _LOOK_FAULT = None
+except Exception as _e:
+    lens_look = None
+    _LOOK_FAULT = 'the looks could not be loaded ("%s")' % (str(_e) or type(_e).__name__)
+
 
 def _script_dir():
     """The folder the ini lives in: beside the script, or beside the exe when
@@ -159,9 +175,12 @@ def _asset(name):
 
 
 def _set_icon(window):
-    """Give a Tk window the lens icon, which the taskbar button shows."""
+    """Give a Tk window the lens icon, which the taskbar button shows. Given to
+    a root, it is also the icon of every window made after it, the dialogs
+    included, which would otherwise carry Tk's own."""
     try:
         window.iconbitmap(_asset("neural-lens.ico"))
+        window.iconbitmap(default=_asset("neural-lens.ico"))
     except Exception:
         pass
 
@@ -1469,7 +1488,7 @@ def _write_proxy(enabled, scale):
 # process's id, so two lenses at once, one per monitor say, never pick up each
 # other's presenter.
 TITLE = "LensNR %d" % os.getpid()
-__version__ = "0.7.0"        # beta; see CHANGELOG.md
+__version__ = "0.8.0"        # beta; see CHANGELOG.md
 
 DATA_DIR = (os.environ.get("NEURAL_LENS_DATA") or _INI.get("data_dir")
             or os.path.join(_script_dir(), "data"))
@@ -1588,10 +1607,11 @@ KEY_HOLD = 350               # ms a posted key stays down, longer than any frame
 # on top, so one that hides itself no longer comes up. Measured, one row short
 # does none of that, and the lens keeps its sizes even, so it is two.
 FULL_SHORT = 2
-# Themes. Every colour the lens draws comes from one of these, chosen by
-# theme = Name in the ini; Slate is the lens as it always looked. A themes.json
-# in the data folder adds or replaces themes, one object per name with the same
-# keys, so a theme can be made without touching the program.
+# Themes, chosen by theme = Name in the ini, Slate where it names none. These
+# are each theme's ten colours as the lens drew them up to 0.7.0, which the
+# classic look still draws, and the drawn looks take each theme's own from
+# lens_look.tokens. A themes.json in the data folder changes a theme or adds
+# one, see _load_themes, so a theme can be made without touching the program.
 THEMES = {
     "Slate": {"bg": "#1b2430", "fg": "#cbd5e1", "accent": "#4ade80", "dim": "#64748b", "warn": "#fbbf24",
               "cap": "#243040", "hover": "#334155", "field": "#0b1220", "tab": "#1e293b", "close": "#e11d48"},
@@ -1611,19 +1631,29 @@ def _is_colour(v):
 
 
 def _load_themes():
-    """The built-in themes, with the data folder's themes.json laid over them:
-    a theme there with a built-in name replaces it, a new name is added, and a
-    theme missing keys takes them from Slate. A file that cannot be read is
-    ignored, since a bad file must not stop the lens."""
+    """The built-in themes, with the data folder's themes.json laid over them.
+    An entry with a built-in name changes that theme, and an entry with a new
+    name adds a theme, which starts from the built-in theme its look key
+    names, Slate, Graphite, Paper or Industrial, or from Slate where it names
+    none. The colours an entry leaves out come from the theme it starts from,
+    and its look key and the colours it gives the drawn looks' roles stay in
+    it for lens_look.choose. A value that is not a colour as #rrggbb is passed
+    over, and a file that cannot be read is ignored, since a bad file must not
+    stop the lens."""
     themes = {k: dict(v) for k, v in THEMES.items()}
     try:
         with open(os.path.join(DATA_DIR, "themes.json"), encoding="utf-8") as f:
             extra = json.load(f)
         for name, vals in (extra or {}).items():
             if isinstance(vals, dict) and str(name).strip():
-                merged = dict(THEMES["Slate"])
-                merged.update({k: str(v) for k, v in vals.items() if k in THEME_KEYS and _is_colour(v)})
-                themes[str(name).strip()] = merged
+                name = str(name).strip()
+                look = str(vals.get("look") or "").strip()
+                base = name if name in THEMES else {n.lower(): n for n in THEMES}.get(look.lower(), "Slate")
+                merged = dict(THEMES[base])
+                merged.update({str(k): str(v) for k, v in vals.items() if str(k) != "look" and _is_colour(v)})
+                if look:
+                    merged["look"] = look
+                themes[name] = merged
     except Exception:
         pass
     return themes
@@ -1631,13 +1661,257 @@ def _load_themes():
 
 ALL_THEMES = _load_themes()
 THEME_NAME = str(_INI.get("theme", "Slate")).strip() or "Slate"
+# NEURAL_LENS_THEME names the theme in place of the ini, for the tests, where
+# it names one of the themes. While it is set, a theme chosen in Settings does
+# not show after the restart.
+if str(os.environ.get("NEURAL_LENS_THEME") or "").strip() in ALL_THEMES:
+    THEME_NAME = str(os.environ["NEURAL_LENS_THEME"]).strip()
 if THEME_NAME not in ALL_THEMES:
     THEME_NAME = "Slate"
-_T = ALL_THEMES[THEME_NAME]
+
+
+def _is_dark(colour):
+    """Whether a background is dark, by its luminance as WCAG 2 reckons it,
+    the test lens_look.tokens.is_dark makes."""
+    def lin(v):
+        v /= 255.0
+        return v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4
+    r, g, b = (int(str(colour)[i:i + 2], 16) for i in (1, 3, 5))
+    return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b) < 0.18
+
+
+class _ClassicLook(object):
+    """The look when the looks cannot be had at all, the lens as it always
+    looked in the theme's own colours. It answers what a classic
+    lens_look.Look answers, its flags, its scale and px, so the lens asks
+    either the same. Its colours by role, type, faces and sizes are empty,
+    since only the looks' package draws with those. See LOOK."""
+    kind, classic = "classic", True
+    nav, explain, menu_hints = "tabs", "popup", "text"
+    heading_case = button_case = hints_case = None
+
+    def __init__(self, theme, legacy):
+        self.theme, self.legacy = theme, legacy
+        self.c, self.own, self.fonts, self.m, self.compact, self.logical = {}, {}, {}, {}, {}, {}
+        self.faces = {}
+        self.dark_caption = _is_dark(legacy["bg"])
+        self.s = None
+
+    def bind(self, root):
+        """S, taken from the first root bound, as Look.bind takes it, and
+        like it never raising."""
+        if self.s is None:
+            try:
+                self.s = self.scale_for(root)
+            except Exception:
+                pass
+        return self.s
+
+    def scale_for(self, widget=None):
+        """S once bound, else from the widget's interpreter, else 1.0."""
+        if self.s is not None:
+            return self.s
+        if widget is not None:
+            return round(float(widget.tk.call("tk", "scaling")) * 72.0 / 96.0, 6)
+        return 1.0
+
+    def px(self, n, widget=None):
+        """n CSS pixels in whole screen pixels, rounded half up, as Look.px."""
+        if not n:
+            return 0
+        if n < 0:
+            return -self.px(-n, widget)
+        return max(1, int(n * self.scale_for(widget) + 0.5 + 1e-6))
+
+    def font(self, role, lit=False, widget=None):
+        """No role has a font of the looks, as on a classic Look, whose fonts
+        stay in the lens's code, so this raises KeyError as Look.font does
+        for a role the look does not draw."""
+        raise KeyError(role)
+
+    def face_font(self, face, lit=False, widget=None):
+        """No face of the looks either, see font."""
+        raise KeyError(face)
+
+    def dress(self, window):
+        """Nothing, where Look.dress tints a window's caption, since nothing of
+        the package is used. The window keeps Windows' own caption, and the
+        lens's timer keeps it out of the picture, see watch_filter."""
+        return None
+
+    def setup_shell(self, window):
+        """Nothing, where Look.setup_shell lays the stack setup's window out
+        as a drawn look's dialogs, which a classic look never asks for. The
+        window is laid out as it always was."""
+        return None
+
+
+# The look the lens is drawn in, see lens_look.choose, the drawn look the theme
+# names. NEURAL_LENS_LOOK=classic, or look = classic in the ini, gives the
+# lens as it looked up to 0.7.0 instead, for the tests, and no setting offers
+# it. A drawn look whose colours, given in themes.json, put text under a
+# contrast of 4.5 says so in one line and draws all the same, see
+# lens_look.weak_line. _T is the theme's ten colours as the look has them,
+# which every part of the lens the look does not draw itself takes. Where the
+# package cannot be imported, or choose fails or gives a look without its ten
+# colours, LOOK is a _ClassicLook and lens_look is None, so the lens uses
+# nothing of the package and draws as it did up to 0.7.0. Code that calls
+# into lens_look tests it first.
+LOOK = None
+if lens_look is not None:
+    try:
+        LOOK = lens_look.choose(THEME_NAME, ALL_THEMES, _INI, os.environ)
+        _bad = [k for k in THEME_KEYS if not _is_colour(LOOK.legacy.get(k))]
+        if _bad:
+            raise ValueError("the look has no colour for %s" % ", ".join(_bad))
+    except Exception as _e:
+        LOOK = None
+        _LOOK_FAULT = 'the look could not be chosen ("%s")' % (str(_e) or type(_e).__name__)
+if LOOK is None:
+    LOOK = _ClassicLook(THEME_NAME, ALL_THEMES[THEME_NAME])
+    lens_look = None
+    try:
+        print("%s, so the lens keeps its classic look" % _LOOK_FAULT, flush=True)
+    except Exception:
+        pass            # an output that cannot take the error's words must not stop the lens
+elif not LOOK.classic:
+    try:
+        _WEAK = lens_look.weak_line(LOOK)
+        if _WEAK:
+            print(_WEAK, flush=True)
+    except Exception:
+        pass            # a line that cannot be made or printed must not stop the lens
+_T = LOOK.legacy
 KEY = "#010203"                     # the colour keyed out of the chrome, never drawn
 BG, FG, ACCENT, DIM, WARN = _T["bg"], _T["fg"], _T["accent"], _T["dim"], _T["warn"]
 CAP = _T["cap"]                     # the window buttons' own shade on the title bar
 HOVER, FIELD, TAB_BG, CLOSE = _T["hover"], _T["field"], _T["tab"], _T["close"]
+
+# Every message the lens shows is its own dialog in the look's colours, and
+# Windows' own box only where that dialog cannot be shown, see
+# lens_look.dialogs.Messages. The calls keep their words, the folder pickers
+# stay Windows' own, and where the looks are not loaded messagebox is tkinter's.
+if lens_look is not None:
+    messagebox = lens_look.dialogs.Messages(messagebox, LOOK)
+
+# The fonts a drawn look is drawn in, which come with the lens in the fonts
+# folder of its assets, are added for this process alone as the module is
+# imported, before Tk makes any font, so every process that imports the lens
+# in a drawn look has them, a harness that builds the lens's windows without
+# _main included. Nothing is installed and no other program sees them. Which
+# face each role found is said at the first root, see Look.bind. Classic
+# keeps the fonts it always had and adds none. The two runs of the lens that
+# never make a window, see _main, add none either. They are the installer's
+# download of the stack, whose every printed line the installer shows on its
+# own page, and the uninstaller's removal of what the setup wrote. A fault
+# never stops the lens, whose looks then draw each face in the next font of
+# its chain, and lens.log says what was added in one line, printed here,
+# after _redirect_output, so the windowed lens has it too.
+_INSTALLER_RUN = any(a in ("--install-stack", "--uninstall-stack") for a in sys.argv[1:])
+_FONTS_SAID = None
+if lens_look is not None and not LOOK.classic and not _INSTALLER_RUN:
+    try:
+        _FONTS_SAID = lens_look.fonts.load_private(_asset("fonts")).line()
+    except Exception as _e:
+        _FONTS_SAID = ('the fonts of the looks could not be added ("%s"), so each face takes the next font of '
+                       'its chain' % (str(_e) or type(_e).__name__))
+    try:
+        print(_FONTS_SAID, flush=True)
+    except Exception:
+        pass            # an output that cannot take the words must not stop the lens
+
+
+def _unseen(window):
+    """A dialog of the lens's withdrawn as it is made, so it is first seen
+    dressed and placed, see _dress and _show. Whether it is to be shown in
+    the end, which it is not where whoever made it made it withdrawn already,
+    as a check that builds the lens's dialogs unseen does."""
+    shown = window.state() != "withdrawn"
+    window.withdraw()
+    return shown
+
+
+def _dress(window):
+    """A dialog's caption, title and border in the look's colours, and the
+    dialog out of the picture the presenter captures, before it is first
+    seen, see Look.dress. Tk makes the window that carries the frame at the
+    first idle moment, hidden while the dialog is withdrawn. Where the looks
+    are not loaded the dialog keeps Windows' own caption and watch_filter
+    keeps it out of the picture, as it always did."""
+    if lens_look is None:
+        return
+    try:
+        window.update_idletasks()
+        LOOK.dress(window)
+    except Exception:
+        pass
+
+
+def _show(window, shown=True):
+    """Show a dialog that _unseen made withdrawn, once it is dressed and
+    placed. wm state normal shows it as Tk shows a window it maps for the
+    first time, on top and not made active, so it takes the foreground from
+    no program, where wm deiconify would ask Windows for it. One that is to
+    stay unseen stays withdrawn."""
+    if shown:
+        window.update_idletasks()       # its place, given while it was withdrawn, before it is seen
+        window.state("normal")
+
+
+# The screen Settings is fitted to in a drawn look, as (width, height), for
+# the tests, which so fit it to a screen of 1920x1080 on any monitor, its
+# taskbar along the foot, see lens_look.settings.screen_room. None fits it to
+# the work area of the monitor the lens is on, where it is placed.
+FIT_SCREEN = None
+
+# The windows a drawn look could not draw, each with its fault, which
+# lens.log says once. Such a window is then made as in the classic look for
+# the rest of the run, see Lens._settings_fault.
+_DRAWN_FAULT = {}
+
+# The small windows a drawn look draws, see lens_look.small, each by its key
+# in _DRAWN_FAULT and its name in lens.log.
+_SMALL_NAMES = {"note": "fullscreen note", "notice": "notice", "readout": "on-screen readout",
+                "tip": "window of an explanation", "tab": "tab of the hidden title bar", "divider": "A/B divider",
+                "pick": "hint of an attach pick", "sheet": "sheet of a region pick"}
+# The dialogs the lens makes itself that a drawn look draws, see
+# lens_look.dialogs, in the same way.
+_DIALOG_NAMES = {"ask": "question of the lens", "profile": "New profile dialog", "download": "download box"}
+
+
+def _drawn_small(part):
+    """Whether a drawn look draws this small window, see _SMALL_NAMES, or this
+    dialog, see _DIALOG_NAMES, which it does in a drawn look until it has met
+    a fault there, see _small_fault."""
+    return not LOOK.classic and lens_look is not None and part not in _DRAWN_FAULT
+
+
+def _small_fault(part, e):
+    """A small window or a dialog that a drawn look could not draw, made as
+    in the classic look, in the look's colours, from now on for the rest of
+    the run. lens.log says so once."""
+    _DRAWN_FAULT[part] = str(e) or type(e).__name__
+    try:
+        print('the %s could not be drawn in the %s look ("%s"), so it is drawn as in the classic look'
+              % (_SMALL_NAMES.get(part) or _DIALOG_NAMES.get(part, part), LOOK.theme, _DRAWN_FAULT[part]),
+              flush=True)
+    except Exception:
+        pass            # an output that cannot take the error's words must not stop the lens
+
+
+def _cleared(window):
+    """A window emptied of what a drawn look began to build in it, so the
+    classic look can build it again, see _small_fault."""
+    try:
+        children = window.winfo_children()
+    except tk.TclError:
+        return
+    for child in children:
+        try:
+            child.destroy()
+        except tk.TclError:
+            pass
+
 
 # The title bar's minimise, maximise, restore and close buttons use Windows'
 # own caption glyphs, from whichever Segoe icon font the machine has, so they
@@ -1761,17 +2035,15 @@ def _set_fullscreen_engine(mode):
 # answers with the step it runs, see check_quality.
 FAST_QUALITY_NAMES = ("Lowest power", "Low power", "Performance", "Balanced", "Quality", "Full")
 FAST_QUALITY_FULL = 5
-# What the step does, for Settings and the NR settings panel. Like every text in
-# Settings it says what the setting does and no more: the watts of each step and
-# the pictures it was measured over are in docs/NOTES.md, Frames a second and
-# power at each step.
-FAST_QUALITY_WORDS = ("A lower step has the network work on a smaller copy of the picture, which saves power and "
-                      "gives up some of the fine detail it adds. At Full it works on the picture at its own size, "
-                      "however large the screen, which gives its strongest change and its slowest run, so on a "
-                      "large screen Full suits a video or a still more than a game. Quality does the same for a "
-                      "picture up to 2560x1440. Until you "
-                      "choose a step, a picture larger than 2560x1440 starts at Balanced and a smaller one at "
-                      "Quality.")
+# What the step does, for Settings and the NR settings panel, in two short
+# sentences that fit the smallest part either shows them in with a line to
+# spare. Like every text in Settings it says what the setting does and no more:
+# the step a picture starts at, the sizes each step works at and what Full costs
+# on a large screen are in README.md, and the watts of each step and the
+# pictures it was measured over in docs/NOTES.md, Frames a second and power at
+# each step.
+FAST_QUALITY_WORDS = ("A lower step runs the network on a smaller copy of the picture, which saves power and loses "
+                      "some fine detail. Full runs it at full size, the strongest change and the slowest run.")
 # Said on the notice when the fast engine answers a step the lens told it with
 # another step, see Lens.check_quality: the step asked for and the step it runs
 QUALITY_REFUSED_WORDS = "The fast engine could not run the %s step, so it runs at %s."
@@ -1851,6 +2123,15 @@ NR_DEFAULTS = {"NRStyle": 0.0, "NRIntensity": 1.0, "NRLocalTone": 1.0, "NRLocalS
 # panel_key, as Settings explains its settings. The six values of a pass are
 # the model's own, and their texts say what each sets and no more. The line at
 # the panel's foot says how the texts come up, see PANEL_HELP.
+# Free the mouse, on the panel and in Settings, Fullscreen, see FREE_MOUSE; the
+# panel's top line, which always names the arrow keys, and what it adds while
+# the program in front holds the mouse, see Lens._panel_line
+FREE_MOUSE_LABEL = "Free the mouse"
+FREE_MOUSE_WHY = ("While the panel is open, the lens brings it to the front, as Alt+Tab does, so you can use the "
+                  "mouse on it. A game may pause until the panel closes and gives it the front back.")
+PANEL_ARROWS = "Use the arrow keys to pick and change a setting."
+PANEL_HELD = "The program in front holds the mouse. Free the mouse lets you use it here."
+PANEL_KEPT = "The program in front kept the mouse, so the keys are the way."
 PANEL_WHY = {
     "profile": "The profile in use, with a star once the lens differs from it. A click, or Enter on the row, opens "
                "the list that loads, saves and ties profiles.",
@@ -1867,6 +2148,7 @@ PANEL_WHY = {
     "skin_auto": "The network chooses the skin structure for this pass itself.",
     "NRAutoMask": "The network's auto mask for this pass, which finds the people in the picture.",
     "tie": "Ticked, this pass runs at the first pass's value, shown greyed. Unticked, the value is this pass's own.",
+    "free": FREE_MOUSE_WHY,
     "passes": "How many passes the network runs, each on the result of the one before, at the values of its own "
               "tab. A change restarts the picture.",
     "shared": SHARED_WHY,
@@ -1874,9 +2156,21 @@ PANEL_WHY = {
     "strength": STRENGTH_WHY,
     "quality": FAST_QUALITY_WORDS,
 }
-# the panel's foot line, with F1 where no hotkey of Settings has it, see _f1_free
+# The explanations of the two buttons a drawn look's panel has beside its
+# profile picker, in the words of the profile list's own entries, see
+# Lens._open_panel_drawn and panel_profile_menu
+PANEL_UPDATE_WHY = "Updates the profile in use with the current settings."
+PANEL_SAVE_AS_WHY = "Saves the current settings as a new profile, under a name you give it."
+# the panel's foot, one line: the keys that work it, then how a setting's
+# explanation comes up, with F1 where no hotkey of Settings has it, see
+# _f1_free. What each setting does is in its own explanation, see PANEL_WHY
+PANEL_KEYS = "The arrow keys pick a setting and change it, and Enter switches a switch."
 PANEL_HELP = "Rest the pointer on a setting%s for what it does."
 PANEL_HELP_F1 = ", or press F1 with one picked,"
+# what a drawn look's panel shows in the explanation's part while no row is
+# picked. Paper shows the first sentence under the head and the second in that
+# part, see lens_look.panel.Panel.finish
+PANEL_IDLE = "Pick a setting with the arrow keys or the pointer. What it does shows here."
 # Left and Right move a slider on the panel by a hundredth a press, so a single
 # press is always the finest step. A key held down moves it further with each
 # repeat the longer it is held, which at Windows' default repeat rate crosses
@@ -1893,6 +2187,9 @@ PANEL_HOLD_STEPS = ((0.0, 0.01), (0.6, 0.02), (1.5, 0.05))
 # Segoe UI does not. See Lens._panel_reset.
 PANEL_RESET = 1.0
 RESET_GLYPH, RESET_FONT = "↺", ("Segoe UI Symbol", 12)
+# what that button does: its own explanation in the classic look, and the line
+# under a slider's explanation in a drawn look
+PANEL_RESET_WHY = "The button beside a number puts its slider at %.2f." % PANEL_RESET
 # Load a profile by itself when the program it is tied to comes to the front,
 # see Lens.check_auto_profile. Off unless the ini says auto_profile = 1.
 AUTO_PROFILE = str(_INI.get("auto_profile", "0")).strip().lower() in ("1", "yes", "on", "true")
@@ -1938,6 +2235,19 @@ def _program_name(names):
     is shown without a name. None for no program, see _program."""
     prog = _program(names)
     return None if prog is None else (prog[0] or prog[1])
+
+
+# Said while the switch that loads a tied profile by itself is on and no
+# profile is tied to a program, so it has nothing to load: beside the switch
+# on the Profiles page of Settings, and greyed in the NR settings panel's
+# profile list, where the entry that ties one follows it
+NO_TIE_WORDS = "no profile is tied to a program yet"
+
+
+def _none_tied(profiles):
+    """Whether none of profiles, the profiles by name, is tied to a program,
+    see _program."""
+    return not any(isinstance(p, dict) and _program(p.get("program")) for p in profiles.values())
 
 
 # Keep the picture ready while nothing changes: the presenter presents thirty
@@ -2006,6 +2316,62 @@ def _set_fs_behind_warn(on):
     global FS_BEHIND_WARN
     FS_BEHIND_WARN = bool(on)
     _save_ini("fs_behind_warn", None if FS_BEHIND_WARN else "0")
+
+
+# free_mouse = 1 has the NR settings panel take the foreground while it is
+# open, as Alt+Tab would, so a program that holds the mouse, a game that hides
+# the cursor and keeps it in its window, lets go of it and the panel can be
+# pointed at and clicked. Off by default: a program that loses the front may
+# pause, mute or slow, as on Alt+Tab, so the person chooses it, on the panel
+# or in Settings. Closing the panel gives the front back to the window that
+# had it, and only while a window of the lens's own still has it, see
+# Lens._panel_front and _panel_front_back. The held mouse is only ever read,
+# see mouse_held: the lens never moves, clips, shows or hides the cursor.
+FREE_MOUSE = str(_INI.get("free_mouse", "0")).strip().lower() in ("1", "yes", "on", "true")
+
+
+def _set_free_mouse(on):
+    """Switch Free the mouse on or off, from the panel or Settings, and record
+    it in the ini, where off is the default and is left unwritten."""
+    global FREE_MOUSE
+    FREE_MOUSE = bool(on)
+    _save_ini("free_mouse", "1" if FREE_MOUSE else None)
+
+
+class CURSORINFO(ctypes.Structure):
+    _fields_ = [("cbSize", w.DWORD), ("flags", w.DWORD), ("hCursor", w.HANDLE), ("ptScreenPos", w.POINT)]
+
+
+CURSOR_SHOWING = 0x00000001
+SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN = 76, 77, 78, 79
+
+
+def mouse_held(flags=None, clip=None, screen=None):
+    """Whether the program in front holds the mouse: the cursor is not
+    showing, as a game hides it, or it is clipped to less than the whole
+    desktop, as a game keeps it in its window. Read only, through the calls
+    every program may make, and nothing is changed. A test gives the three
+    readings itself: the cursor's flags, the clip box as (left, top, right,
+    bottom) and the desktop as (width, height)."""
+    try:
+        if flags is None:
+            ci = CURSORINFO()
+            ci.cbSize = ctypes.sizeof(CURSORINFO)
+            if not _u32.GetCursorInfo(ctypes.byref(ci)):
+                return False
+            flags = ci.flags
+        if not flags & CURSOR_SHOWING:
+            return True
+        if clip is None:
+            r = w.RECT()
+            if not _u32.GetClipCursor(ctypes.byref(r)):
+                return False
+            clip = (r.left, r.top, r.right, r.bottom)
+        if screen is None:
+            screen = (_u32.GetSystemMetrics(SM_CXVIRTUALSCREEN), _u32.GetSystemMetrics(SM_CYVIRTUALSCREEN))
+        return (clip[2] - clip[0]) < screen[0] or (clip[3] - clip[1]) < screen[1]
+    except Exception:
+        return False
 
 
 # Said when Windows HDR is on for the lens's monitor while the ReShade engine
@@ -2449,6 +2815,9 @@ for _name, _res, _args in (
         ("DispatchMessageW", LRESULT, [ctypes.POINTER(w.MSG)]),
         ("PostThreadMessageW", w.BOOL, [w.DWORD, ctypes.c_uint, w.WPARAM, w.LPARAM]),
         ("GetCursorPos", w.BOOL, [ctypes.POINTER(w.POINT)]),
+        ("GetCursorInfo", w.BOOL, [ctypes.c_void_p]),
+        ("GetClipCursor", w.BOOL, [ctypes.POINTER(w.RECT)]),
+        ("GetSystemMetrics", ctypes.c_int, [ctypes.c_int]),
         ("MonitorFromWindow", ctypes.c_void_p, [w.HWND, w.DWORD]),
         ("MonitorFromPoint", ctypes.c_void_p, [w.POINT, w.DWORD])):
     getattr(_u32, _name).restype, getattr(_u32, _name).argtypes = _res, _args
@@ -3133,24 +3502,30 @@ class PopupMenu:
         t = lens._own_window()
         self.win, self.name = t, name
         self.labels, self.cmds, self.lit, self.live = [], [], None, None
-        t.configure(bg=ACCENT)
-        box = tk.Frame(t, bg=BG)
-        box.pack(padx=1, pady=1)
-        for item in items:
-            if item is None:
-                tk.Frame(box, bg=HOVER, height=1).pack(fill="x", padx=6, pady=3)
-                continue
-            text, command, enabled = item
-            lbl = tk.Label(box, text=text, bg=BG, fg=FG if enabled else DIM, anchor="w",
-                           padx=14, pady=4, font=("Segoe UI", 10))
-            lbl.pack(fill="x")
-            n = len(self.labels)
-            self.labels.append(lbl)
-            self.cmds.append(command if enabled else None)
-            if enabled and command is not None:
-                lbl.bind("<Enter>", lambda e, n=n: self.light(n))
-                lbl.bind("<Leave>", lambda e, n=n: self.light(None) if self.lit == n else None)
-                lbl.bind("<Button-1>", lambda e, n=n: self.choose(n, "click"))
+        # a drawn look's entries, drawn as its design draws them, see
+        # _open_drawn. Where they cannot be drawn they are made as below
+        if not LOOK.classic and lens_look is not None and "menu" not in _DRAWN_FAULT:
+            if not self._open_drawn(t, items, name):
+                return self.open(items, name)
+        else:
+            t.configure(bg=ACCENT)
+            box = tk.Frame(t, bg=BG)
+            box.pack(padx=1, pady=1)
+            for item in items:
+                if item is None:
+                    tk.Frame(box, bg=HOVER, height=1).pack(fill="x", padx=6, pady=3)
+                    continue
+                text, command, enabled = item
+                lbl = tk.Label(box, text=text, bg=BG, fg=FG if enabled else DIM, anchor="w",
+                               padx=14, pady=4, font=("Segoe UI", 10))
+                lbl.pack(fill="x")
+                n = len(self.labels)
+                self.labels.append(lbl)
+                self.cmds.append(command if enabled else None)
+                if enabled and command is not None:
+                    lbl.bind("<Enter>", lambda e, n=n: self._pointer_light(n))
+                    lbl.bind("<Leave>", lambda e, n=n: self.light(None) if self.lit == n else None)
+                    lbl.bind("<Button-1>", lambda e, n=n: self.choose(n, "click"))
         t.update_idletasks()
         wd, ht = t.winfo_reqwidth(), t.winfo_reqheight()
         bx, top, bottom = lens.menu_anchor()
@@ -3168,6 +3543,50 @@ class PopupMenu:
         self.pressed = bool(u.GetAsyncKeyState(0x01) & 0x8000)
         lens.root.after(30, self.watch)
         lens.sync_hotkeys()         # the arrow keys, Enter and Escape, over a fullscreen lens
+
+    def _open_drawn(self, t, items, name):
+        """A drawn look's entries in t, each a Label of the menu's box with the
+        whole text the code built, drawn as the look's design draws it, see
+        lens_look.menus.Menu. The pointer lights an entry and a click chooses
+        it as in the classic look, and the arrow keys light them by light as
+        always. False where they could not be drawn, see _menu_fault."""
+        try:
+            menu = t.look_menu = lens_look.menus.Menu(
+                t, LOOK, name, items, enter=self._pointer_light,
+                leave=lambda n: self.light(None) if self.lit == n else None,
+                click=lambda n: self.choose(n, "click"))
+        except Exception as e:
+            self._menu_fault(t, e)
+            return False
+        self.labels = list(menu.labels)
+        self.cmds = [item[1] if item[2] else None for item in items if item is not None]
+        return True
+
+    def _menu_fault(self, t, e):
+        """The window of a menu or a list that a drawn look could not draw,
+        taken away, so open makes it again as in the classic look, in the
+        look's colours. lens.log says so once, and the menu and the lists are
+        made so for the rest of the run, as the panel is, see
+        Lens._panel_fault."""
+        _DRAWN_FAULT["menu"] = str(e) or type(e).__name__
+        try:
+            print('the %s could not be drawn in the %s look ("%s"), so the menu and the lists are drawn as in the '
+                  'classic look' % (self.name, LOOK.theme, _DRAWN_FAULT["menu"]), flush=True)
+        except Exception:
+            pass            # an output that cannot take the error's words must not stop the lens
+        self.labels, self.cmds = [], []
+        try:
+            t.destroy()
+        except tk.TclError:
+            pass
+
+    def _pointer_light(self, n):
+        """The pointer came onto an entry: it lights, unless the program in
+        front holds the mouse, when a pointer it keeps putting back is no
+        pointer of the person's and the arrow keys keep their entry, see
+        mouse_held."""
+        if not mouse_held():
+            self.light(n)
 
     def light(self, n):
         """Light this entry and no other, for the pointer or the arrow keys
@@ -3305,6 +3724,16 @@ class Hints:
     it can never take the foreground from the program in front, a click gives
     nothing the keyboard, and the keys that work the panel, which never reach
     Tk, hide it through the panel's own key handling, see Lens.panel_key.
+
+    Settings in a drawn look shows the explanation in a part of its own
+    instead, a pane, a margin note or a strip, where the screen leaves room
+    for it, see lens_look.settings.SettingsFrame, which sets mode to pane
+    and select to what shows a setting there. Then the pointer picks the
+    setting it is on at once, F1 picks the setting that has the keyboard,
+    and no window comes up by the pointer. titles and sections are what that
+    part shows beside an explanation, each setting's label, see
+    settings_dialog's tip, and each heading with its explanation and the
+    words beside it, see section.
     """
 
     def __init__(self, lens, dialog, own=False):
@@ -3315,6 +3744,12 @@ class Hints:
         self.over = None            # the widget with a text that the pointer is on
         self.timer = None           # the rest that is being timed
         self.win = None             # the window, while an explanation shows
+        # the explanation in a part of the dialog's own, see the docstring
+        self.mode = "popup"         # popup, the window by the pointer, or pane, that part
+        self.titles = {}            # {widget: the label of the setting it is part of}
+        self.sections = []          # each heading as a dict of page, title, why, beside and row, in order
+        self.section_of = {}        # {widget: the index in sections of the heading it is under}
+        self.select = None          # in pane mode, select(widget, how) shows that widget's setting there
         # bound on the dialog, which every widget in it passes its events on to
         for seq in ("<Motion>", "<Enter>", "<Leave>"):
             dialog.bind(seq, self.moved, add="+")
@@ -3325,8 +3760,22 @@ class Hints:
         dialog.bind("<F1>", self.key)
 
     def add(self, widget, text):
-        """Give this widget, and everything inside it, an explanation."""
+        """Give this widget, and everything inside it, an explanation, under
+        the last heading made, see section."""
         self.texts[widget] = text
+        if self.sections:
+            self.section_of[widget] = len(self.sections) - 1
+
+    def section(self, page, title, why, beside, row):
+        """A heading of a page, its explanation, the words beside it and its
+        row, which the settings given an explanation after it are under."""
+        self.sections.append({"page": page, "title": title, "why": why or "", "beside": beside or "", "row": row})
+
+    def picked(self, widget, how):
+        """In pane mode, the setting of this widget shown in the dialog's own
+        part for the explanation, how being pointer or key."""
+        if self.select is not None:
+            self.select(widget, how)
 
     def under(self):
         """The widget with an explanation that the pointer is on, or None."""
@@ -3345,7 +3794,19 @@ class Hints:
         dialog of a pointer without moving one."""
         x, y = getattr(event, "x_root", None), getattr(event, "y_root", None)
         self.at = (x, y) if isinstance(x, int) and isinstance(y, int) else self.dialog.winfo_pointerxy()
+        # on the panel, a pointer the program in front holds and keeps putting
+        # back is no pointer of the person's, see Lens._watch_mouse
+        if self.own and getattr(self.lens, "mouse_held", False):
+            return
         at = self.under()
+        if self.mode == "pane":
+            # the setting the pointer is on is picked at once, and the one
+            # picked last stays while the pointer is on nothing with a text
+            if at is not self.over:
+                self.over = at
+                if at is not None:
+                    self.picked(at, "pointer")
+            return
         if at is not self.over:
             self.hide()
             self.over = at
@@ -3372,9 +3833,12 @@ class Hints:
         self.hide()
         if self.own:
             return                  # a window that never takes the keyboard gives it to nothing
-        if getattr(event, "num", None) == 1 and isinstance(event.widget, (tk.Checkbutton, tk.Radiobutton,
-                                                                          tk.Button, tk.Scale)):
-            event.widget.focus_set()
+        # in a drawn look a click lands on the face drawn over a control or
+        # beside it, which names that control as its model, see model_of in
+        # the looks' kit of widgets
+        at = getattr(getattr(event, "widget", None), "model", None) or getattr(event, "widget", None)
+        if getattr(event, "num", None) == 1 and isinstance(at, (tk.Checkbutton, tk.Radiobutton, tk.Button, tk.Scale)):
+            at.focus_set()
 
     def key(self, _event=None):
         """F1: the explanation of the setting that has the keyboard, below it,
@@ -3393,10 +3857,18 @@ class Hints:
         a widget with no text around it, the setting under the pointer gets
         it, beside the pointer. The NR settings panel, which never has the
         keyboard, asks it for the setting its arrow keys are on, see
-        Lens.panel_key."""
+        Lens.panel_key. In pane mode the setting is picked instead, the one
+        under the pointer where no setting has the keyboard."""
         while at is not None and at not in self.texts:
             at = None if at is self.dialog else at.master
         self.hide()
+        if self.mode == "pane":
+            if at is None:
+                self.at = self.dialog.winfo_pointerxy()
+                at = self.under()
+            if at is not None:
+                self.picked(at, "key")
+            return "break"
         if at is not None:
             self.over = at
             self.show(at, at=(at.winfo_rootx() + 8, at.winfo_rooty() + at.winfo_height()), top=at.winfo_rooty())
@@ -3430,7 +3902,9 @@ class Hints:
         place, or beside the point given, which is how a test asks for one.
         top is the top edge of a setting that the point lies below, which the
         window goes above where the monitor ends below. Returns the window, or
-        None for a widget that has no text."""
+        None for a widget that has no text. In pane mode nothing calls it, so
+        no window comes up by the pointer, and a test that asks for one gets
+        it as in popup mode."""
         self.hide()
         text = self.texts.get(widget)
         if not text:
@@ -3442,9 +3916,12 @@ class Hints:
         t.overrideredirect(True)
         t.attributes("-topmost", True)
         t.attributes("-alpha", 0.0)         # unseen until it is out of the picture, see below
-        t.configure(bg=ACCENT)
-        tk.Label(t, text=_kept_together(text), bg=FIELD, fg=FG, font=("Segoe UI", 11), justify="left",
-                 wraplength=HINT_WRAP, padx=14, pady=10).pack(padx=1, pady=1)
+        # a drawn look's window, as its design draws it, see _show_drawn.
+        # Where it cannot be drawn it is made as below
+        if not (_drawn_small("tip") and self._show_drawn(t, widget, text)):
+            t.configure(bg=ACCENT)
+            tk.Label(t, text=_kept_together(text), bg=FIELD, fg=FG, font=("Segoe UI", 11), justify="left",
+                     wraplength=HINT_WRAP, padx=14, pady=10).pack(padx=1, pady=1)
         t.update_idletasks()
         wd, ht = t.winfo_reqwidth(), t.winfo_reqheight()
         mx, my, mw, mh = monitor_rect(px, py)
@@ -3466,6 +3943,19 @@ class Hints:
         t.update_idletasks()
         self.lens._own_styles(t, through=True)      # again, should the change have cost the window its styles
         return t
+
+    def _show_drawn(self, t, widget, text):
+        """The explanation's window in a drawn look, its words the window's
+        first child as in the classic look, under the setting's label where
+        the look draws one, see lens_look.small.tip. False where it could not
+        be drawn, its parts taken away again, see _small_fault."""
+        try:
+            lens_look.small.tip(t, LOOK, _kept_together(text), self.titles.get(widget), HINT_WRAP)
+        except Exception as e:
+            _small_fault("tip", e)
+            _cleared(t)
+            return False
+        return True
 
 
 class Lens:
@@ -3526,6 +4016,11 @@ class Lens:
         self.panel_at = None        # where it was last put, for the next time it opens
         self.panel_drag = None
         self.panel_rows = []        # its settings in order, for the arrow keys, see panel_key
+        # Free the mouse, see FREE_MOUSE: the window in front when the panel
+        # took the front, whether it held, and the watch of the held mouse
+        self.panel_front_prev, self.panel_front_held = None, None
+        self.mouse_held, self.mouse_watch = False, None
+        self.mouse_pins = 0             # readings in a row with the pointer pinned to the front window's centre
         self.panel_row = None       # the one the arrow keys are on
         self.panel_said = {}        # {key: (value, how, timer)}: a change on it still to be logged
         self.panel_pass_at = 0.0    # when the arrow keys last changed the pass count on it
@@ -3635,89 +4130,93 @@ class Lens:
         self.bar = bar
         self.hole = tk.Frame(t, bg=KEY)         # the picture shows through this
 
-        self.menu_btn = tk.Label(bar, text=" \u2630 ", bg=BG, fg=FG, font=("Segoe UI", 12))
-        self.menu_btn.pack(side="left", padx=(6, 0))
-        self.menu_btn.bind("<Button-1>", self.menu)
-        # the title, the readout and the profile selector go onto the bar after
-        # its buttons, see below. The first two start at their left end, so
-        # that cut short they still read from the start. The title gives way
-        # to the HDR warning's sentence where the bar has no room for both,
-        # see hdr_bar_words
-        title = self.bar_title = tk.Label(bar, text="  DLSS 5 Neural Lens", bg=BG, fg=ACCENT,
-                                          font=("Segoe UI", 10, "bold"), anchor="w")
-        self.info = tk.Label(bar, text="%d x %d" % (cw, ch), bg=BG, fg=DIM,
-                             font=("Consolas", 9), anchor="w")
-        # the profile selector: the name of the profile in use, or Profile
-        self.prof_btn = tk.Label(bar, text="▾ Profile", bg=BG, fg=DIM, font=("Segoe UI", 9), padx=4)
-        self.prof_btn.bind("<Button-1>", lambda e: self.profile_menu())
-        self.prof_btn.bind("<Enter>", lambda e: self.prof_btn.config(bg=HOVER))
-        self.prof_btn.bind("<Leave>", lambda e: self.prof_btn.config(bg=BG))
+        # a drawn look's bar and frame, as its design draws them, see
+        # _bar_drawn. Where they cannot be drawn the bar is made as below
+        self.look_bar = None
+        if LOOK.classic or lens_look is None or not self._bar_drawn(t, bar, cw, ch, fullscreen):
+            self.menu_btn = tk.Label(bar, text=" \u2630 ", bg=BG, fg=FG, font=("Segoe UI", 12))
+            self.menu_btn.pack(side="left", padx=(6, 0))
+            self.menu_btn.bind("<Button-1>", self.menu)
+            # the title, the readout and the profile selector go onto the bar after
+            # its buttons, see below. The first two start at their left end, so
+            # that cut short they still read from the start. The title gives way
+            # to the HDR warning's sentence where the bar has no room for both,
+            # see hdr_bar_words
+            title = self.bar_title = tk.Label(bar, text="  DLSS 5 Neural Lens", bg=BG, fg=ACCENT,
+                                              font=("Segoe UI", 10, "bold"), anchor="w")
+            self.info = tk.Label(bar, text="%d x %d" % (cw, ch), bg=BG, fg=DIM,
+                                 font=("Consolas", 9), anchor="w")
+            # the profile selector: the name of the profile in use, or Profile
+            self.prof_btn = tk.Label(bar, text="▾ Profile", bg=BG, fg=DIM, font=("Segoe UI", 9), padx=4)
+            self.prof_btn.bind("<Button-1>", lambda e: self.profile_menu())
+            self.prof_btn.bind("<Enter>", lambda e: self.prof_btn.config(bg=HOVER))
+            self.prof_btn.bind("<Leave>", lambda e: self.prof_btn.config(bg=BG))
 
-        # the Home menu's NR style and overall intensity, on the bar when Settings
-        # asks for them. Both follow the add-on's section, which it writes within a
-        # second of a change in its overlay. The style is picked here and restarts
-        # the picture, since the add-on reads its section only when it starts; the
-        # intensity is shown only, the Home menu being the live way to move it
-        self.style_btn = tk.Label(bar, text="▾ Default", bg=BG, fg=DIM, font=("Segoe UI", 9), padx=4)
-        self.style_btn.bind("<Button-1>", lambda e: self.style_menu())
-        self.style_btn.bind("<Enter>", lambda e: self.style_btn.config(bg=HOVER))
-        self.style_btn.bind("<Leave>", lambda e: self.style_btn.config(bg=BG))
-        self.intensity_lbl = tk.Label(bar, text="intensity 1.00", bg=BG, fg=DIM, font=("Consolas", 9), padx=4)
+            # the Home menu's NR style and overall intensity, on the bar when Settings
+            # asks for them. Both follow the add-on's section, which it writes within a
+            # second of a change in its overlay. The style is picked here and restarts
+            # the picture, since the add-on reads its section only when it starts; the
+            # intensity is shown only, the Home menu being the live way to move it
+            self.style_btn = tk.Label(bar, text="▾ Default", bg=BG, fg=DIM, font=("Segoe UI", 9), padx=4)
+            self.style_btn.bind("<Button-1>", lambda e: self.style_menu())
+            self.style_btn.bind("<Enter>", lambda e: self.style_btn.config(bg=HOVER))
+            self.style_btn.bind("<Leave>", lambda e: self.style_btn.config(bg=BG))
+            self.intensity_lbl = tk.Label(bar, text="intensity 1.00", bg=BG, fg=DIM, font=("Consolas", 9), padx=4)
 
-        # the caption buttons, right to left as on every window: close,
-        # maximise or restore, minimise. They sit on a shade of their own, so
-        # they read as the window's buttons rather than as more pass controls
-        try:
-            capfont, self.glyphs = _caption_glyphs(set(tkfont.families(root)))
-        except Exception:
-            capfont, self.glyphs = ("Segoe UI", 12), CAPTION_PLAIN
-        self.capfont = capfont
-        self.x_btn = tk.Label(bar, text=self.glyphs["close"], bg=CAP, fg=FG, font=capfont, padx=11)
-        self.x_btn.pack(side="right", fill="y")
-        self.x_btn.bind("<Button-1>", lambda e: self.quit(how="close button"))
-        self.x_btn.bind("<Enter>", lambda e: self.x_btn.config(bg=CLOSE))
-        self.x_btn.bind("<Leave>", lambda e: self.x_btn.config(bg=CAP))
-        self.max_btn = tk.Label(bar, text=self.glyphs["restore" if fullscreen else "max"], bg=CAP,
-                                fg=FG, font=capfont, padx=11)
-        self.max_btn.pack(side="right", fill="y")
-        self.max_btn.bind("<Button-1>", lambda e: self.toggle_fullscreen("button"))
-        self.min_btn = tk.Label(bar, text=self.glyphs["min"], bg=CAP, fg=FG, font=capfont, padx=11)
-        self.min_btn.pack(side="right", fill="y")
-        self.min_btn.bind("<Button-1>", lambda e: self.minimize("button"))
-        for b in (self.max_btn, self.min_btn):
-            b.bind("<Enter>", lambda e, b=b: b.config(bg=HOVER))
-            b.bind("<Leave>", lambda e, b=b: b.config(bg=CAP))
-        # a line between the caption buttons and the pass controls: without it
-        # the minimise glyph reads as the minus of the pass count
-        tk.Frame(bar, bg=HOVER, width=1).pack(side="right", fill="y", padx=(4, 6), pady=9)
+            # the caption buttons, right to left as on every window: close,
+            # maximise or restore, minimise. They sit on a shade of their own, so
+            # they read as the window's buttons rather than as more pass controls
+            try:
+                capfont, self.glyphs = _caption_glyphs(set(tkfont.families(root)))
+            except Exception:
+                capfont, self.glyphs = ("Segoe UI", 12), CAPTION_PLAIN
+            self.capfont = capfont
+            self.x_btn = tk.Label(bar, text=self.glyphs["close"], bg=CAP, fg=FG, font=capfont, padx=11)
+            self.x_btn.pack(side="right", fill="y")
+            self.x_btn.bind("<Button-1>", lambda e: self.quit(how="close button"))
+            self.x_btn.bind("<Enter>", lambda e: self.x_btn.config(bg=CLOSE))
+            self.x_btn.bind("<Leave>", lambda e: self.x_btn.config(bg=CAP))
+            self.max_btn = tk.Label(bar, text=self.glyphs["restore" if fullscreen else "max"], bg=CAP,
+                                    fg=FG, font=capfont, padx=11)
+            self.max_btn.pack(side="right", fill="y")
+            self.max_btn.bind("<Button-1>", lambda e: self.toggle_fullscreen("button"))
+            self.min_btn = tk.Label(bar, text=self.glyphs["min"], bg=CAP, fg=FG, font=capfont, padx=11)
+            self.min_btn.pack(side="right", fill="y")
+            self.min_btn.bind("<Button-1>", lambda e: self.minimize("button"))
+            for b in (self.max_btn, self.min_btn):
+                b.bind("<Enter>", lambda e, b=b: b.config(bg=HOVER))
+                b.bind("<Leave>", lambda e, b=b: b.config(bg=CAP))
+            # a line between the caption buttons and the pass controls: without it
+            # the minimise glyph reads as the minus of the pass count
+            tk.Frame(bar, bg=HOVER, width=1).pack(side="right", fill="y", padx=(4, 6), pady=9)
 
-        # plus and minus only choose a number; Set restarts the presenter at it,
-        # so going from one pass to three is one restart rather than two
-        self.set_btn = tk.Label(bar, text=" Set ", bg=BG, fg=DIM, font=("Segoe UI", 10, "bold"))
-        self.set_btn.pack(side="right", padx=(2, 4))
-        self.set_btn.bind("<Button-1>", lambda e: self.apply_passes())
-        self.plus = tk.Label(bar, text=" + ", bg=BG, fg=FG, font=("Segoe UI", 13, "bold"))
-        self.plus.pack(side="right")
-        self.plus.bind("<Button-1>", lambda e: self.bump_passes(1))
-        self.pass_lbl = tk.Label(bar, text="1 pass", bg=BG, fg=ACCENT, font=("Consolas", 9))
-        self.pass_lbl.pack(side="right", padx=2)
-        self.minus = tk.Label(bar, text=" \u2212 ", bg=BG, fg=FG, font=("Segoe UI", 13, "bold"))
-        self.minus.pack(side="right")
-        self.minus.bind("<Button-1>", lambda e: self.bump_passes(-1))
-        for b in (self.plus, self.minus, self.set_btn):
-            b.bind("<Enter>", lambda e, b=b: b.config(bg=HOVER))
-            b.bind("<Leave>", lambda e, b=b: b.config(bg=BG))
+            # plus and minus only choose a number; Set restarts the presenter at it,
+            # so going from one pass to three is one restart rather than two
+            self.set_btn = tk.Label(bar, text=" Set ", bg=BG, fg=DIM, font=("Segoe UI", 10, "bold"))
+            self.set_btn.pack(side="right", padx=(2, 4))
+            self.set_btn.bind("<Button-1>", lambda e: self.apply_passes())
+            self.plus = tk.Label(bar, text=" + ", bg=BG, fg=FG, font=("Segoe UI", 13, "bold"))
+            self.plus.pack(side="right")
+            self.plus.bind("<Button-1>", lambda e: self.bump_passes(1))
+            self.pass_lbl = tk.Label(bar, text="1 pass", bg=BG, fg=ACCENT, font=("Consolas", 9))
+            self.pass_lbl.pack(side="right", padx=2)
+            self.minus = tk.Label(bar, text=" \u2212 ", bg=BG, fg=FG, font=("Segoe UI", 13, "bold"))
+            self.minus.pack(side="right")
+            self.minus.bind("<Button-1>", lambda e: self.bump_passes(-1))
+            for b in (self.plus, self.minus, self.set_btn):
+                b.bind("<Enter>", lambda e, b=b: b.config(bg=HOVER))
+                b.bind("<Leave>", lambda e, b=b: b.config(bg=BG))
 
-        # Tk's packer hands out the bar's room in the order things went onto it,
-        # and leaves out whatever comes after the room is used up. So the words
-        # go on last: a lens too narrow for all of it cuts its title, its readout
-        # and the profile selector short before any of its buttons. Where all of
-        # it fits, the bar looks the same either way, since each side keeps its
-        # own order
-        title.pack(side="left")
-        self.info.pack(side="left", padx=10)
-        self.prof_btn.pack(side="left")
-        self.show_bar_mirrors()
+            # Tk's packer hands out the bar's room in the order things went onto it,
+            # and leaves out whatever comes after the room is used up. So the words
+            # go on last: a lens too narrow for all of it cuts its title, its readout
+            # and the profile selector short before any of its buttons. Where all of
+            # it fits, the bar looks the same either way, since each side keeps its
+            # own order
+            title.pack(side="left")
+            self.info.pack(side="left", padx=10)
+            self.prof_btn.pack(side="left")
+            self.show_bar_mirrors()
 
         # the frame the lens is resized by: a strip down each side and one along
         # the bottom, inside the border's line. Which way a drag on one resizes
@@ -3730,6 +4229,9 @@ class Lens:
             g.bind("<B1-Motion>", self._grip_move)
             g.bind("<ButtonRelease-1>", self._grip_up)
             self.grips[side] = g
+        # a drawn look's grips are the colour of its bar, see _bar_drawn
+        if self.look_bar is not None:
+            self.look_bar.grips(self.grips.values())
 
         # everything that answers a click of its own keeps that click; the rest of
         # the bar, the intensity readout included, drags the lens
@@ -4585,12 +5087,16 @@ class Lens:
         hint = tk.Toplevel(self.root)
         hint.overrideredirect(True)
         hint.attributes("-topmost", True)
-        hint.configure(bg=ACCENT)
-        lbl = tk.Label(hint, text=("Click the window to attach the lens to.  Escape cancels."
-                                   if not region else
-                                   "Click the window, then drag the region inside it.  Escape cancels."),
-                       bg=BG, fg=FG, font=("Segoe UI", 11), padx=16, pady=8)
-        lbl.pack(padx=1, pady=1)
+        words = ("Click the window to attach the lens to.  Escape cancels."
+                 if not region else
+                 "Click the window, then drag the region inside it.  Escape cancels.")
+        # a drawn look's hint, as its design draws it, see _pick_drawn. Where
+        # it cannot be drawn it is made as below
+        lbl = self._pick_drawn(hint, words) if _drawn_small("pick") else None
+        if lbl is None:
+            hint.configure(bg=ACCENT)
+            lbl = tk.Label(hint, text=words, bg=BG, fg=FG, font=("Segoe UI", 11), padx=16, pady=8)
+            lbl.pack(padx=1, pady=1)
         hint.update_idletasks()
         x, y = self.inner()
         mx, my, mw, mh = monitor_rect(x + self.cw // 2, y + self.ch // 2)
@@ -4602,6 +5108,18 @@ class Lens:
         self.picking = {"region": region, "hint": hint, "label": lbl, "down": bool(u.GetAsyncKeyState(0x01) & 0x8000),
                         "target": None, "overlay": None, "canvas": None, "start": None, "box": None}
         self.root.after(30, self._pick_tick)
+
+    def _pick_drawn(self, hint, words):
+        """The pick's hint in a drawn look, as its design draws it, and the
+        Label the pick changes the words of, which keeps the whole sentence
+        and draws its key as a cap, see lens_look.small.pick_hint. None where
+        it could not be drawn, its parts taken away again, see _small_fault."""
+        try:
+            return lens_look.small.pick_hint(hint, LOOK, words)
+        except Exception as e:
+            _small_fault("pick", e)
+            _cleared(hint)
+            return None
 
     def _pick_end(self):
         p, self.picking = self.picking, None
@@ -4660,16 +5178,19 @@ class Lens:
         ov.overrideredirect(True)
         ov.attributes("-topmost", True)
         ov.attributes("-alpha", 0.35)
-        ov.configure(bg=FIELD)
+        # the sheet and the rectangle in a drawn look's colours, see
+        # _sheet_drawn, and else as they always were
+        sheet, edge, line = (self._sheet_drawn(ov) if _drawn_small("sheet") else None) or (FIELD, ACCENT, 2)
+        ov.configure(bg=sheet)
         ov.geometry("%dx%d+%d+%d" % (cw, ch, cx, cy))
-        cv = tk.Canvas(ov, bg=FIELD, highlightthickness=0, cursor="crosshair")
+        cv = tk.Canvas(ov, bg=sheet, highlightthickness=0, cursor="crosshair")
         cv.pack(fill="both", expand=True)
         p["overlay"], p["canvas"] = ov, cv
         p["label"].config(text="Drag the region the lens should cover.  Escape cancels.")
 
         def down(e):
             p["start"] = (e.x, e.y)
-            p["box"] = cv.create_rectangle(e.x, e.y, e.x, e.y, outline=ACCENT, width=2)
+            p["box"] = cv.create_rectangle(e.x, e.y, e.x, e.y, outline=edge, width=line)
 
         def move(e):
             if p["start"] is not None:
@@ -4697,6 +5218,17 @@ class Lens:
         cv.bind("<B1-Motion>", move)
         cv.bind("<ButtonRelease-1>", up)
         ov.update()
+
+    @staticmethod
+    def _sheet_drawn(ov):
+        """The region's sheet, the rectangle dragged on it and its width in a
+        drawn look, see lens_look.small.sheet_colours, or None where they
+        could not be had, see _small_fault."""
+        try:
+            return lens_look.small.sheet_colours(LOOK, ov)
+        except Exception as e:
+            _small_fault("sheet", e)
+            return None
 
     @staticmethod
     def target_client(h):
@@ -4959,9 +5491,13 @@ class Lens:
         tab = tk.Toplevel(self.root)
         self.tab = tab
         tab.overrideredirect(True)
-        tab.configure(bg=ACCENT)
-        lbl = tk.Label(tab, text="☰", bg=ACCENT, fg=FIELD, font=("Segoe UI", 8))
-        lbl.place(x=0, y=0, width=TAB_W, height=TAB_H)
+        # a drawn look's tab, as its design draws it, see _tab_drawn. Where it
+        # cannot be drawn it is made as below
+        lbl = self._tab_drawn(tab) if _drawn_small("tab") else None
+        if lbl is None:
+            tab.configure(bg=ACCENT)
+            lbl = tk.Label(tab, text="☰", bg=ACCENT, fg=FIELD, font=("Segoe UI", 8))
+            lbl.place(x=0, y=0, width=TAB_W, height=TAB_H)
         for wdg in (tab, lbl):
             wdg.bind("<ButtonPress-1>", self._tab_down)
             wdg.bind("<B1-Motion>", self._tab_move)
@@ -4977,6 +5513,19 @@ class Lens:
         th = u.GetParent(tab.winfo_id()) or tab.winfo_id()
         u.SetWindowLongPtrW(th, GWL_EXSTYLE, u.GetWindowLongPtrW(th, GWL_EXSTYLE) | WS_EX_NOACTIVATE)
         u.SetWindowDisplayAffinity(th, WDA_EXCLUDEFROMCAPTURE)
+
+    @staticmethod
+    def _tab_drawn(tab):
+        """The tab's Label in a drawn look, its glyph and size as in the
+        classic look and its colours the design's, see lens_look.small.tab.
+        None where it could not be drawn, its parts taken away again, see
+        _small_fault."""
+        try:
+            return lens_look.small.tab(tab, LOOK, chr(0x2630), ("Segoe UI", 8), TAB_W, TAB_H)
+        except Exception as e:
+            _small_fault("tab", e)
+            _cleared(tab)
+            return None
 
     def place_tab(self, x, y, cw):
         if self.tab is None:
@@ -5147,6 +5696,7 @@ class Lens:
         import urllib.request
         dest = os.path.join(tempfile.gettempdir(), "NeuralLens-Setup-%s.exe" % version)
         box = tk.Toplevel(self.root)
+        shown = _unseen(box)
         box.title("Neural Lens update")
         box.attributes("-topmost", True)
         box.configure(bg=BG)
@@ -5154,7 +5704,17 @@ class Lens:
         note = tk.Label(box, text="Downloading Neural Lens %s ..." % version, bg=BG, fg=FG,
                         font=("Segoe UI", 10), width=48, anchor="w")
         note.grid(row=0, column=0, padx=14, pady=14)
+        # a drawn look draws the box as its design does, the words in its type
+        # and a bar under them that follows the percentage, see
+        # lens_look.dialogs.Progress, or where it cannot, as here
+        if _drawn_small("download"):
+            try:
+                lens_look.dialogs.Progress(box, LOOK, note)
+            except Exception as e:
+                _small_fault("download", e)
+        _dress(box)
         self._place_over_lens(box)
+        _show(box, shown)
         state = {"done": 0, "total": int(asset_size or 0), "error": None, "finished": False}
 
         def work():
@@ -5601,48 +6161,73 @@ class Lens:
             return
         self.close_note()
         t = self.note_win = self._own_window()
-        t.configure(bg=ACCENT)
-        box = tk.Frame(t, bg=BG)
-        box.pack(padx=1, pady=1)
-        tk.Label(box, text="Fullscreen", bg=BG, fg=FG, font=("Segoe UI", 12, "bold")).pack(
-            anchor="w", padx=18, pady=(14, 6))
-        font = ("Segoe UI", 11)
+        # a drawn look's note, as its design draws it, see _note_drawn. Where
+        # it cannot be drawn it is made as below
+        if not (_drawn_small("note") and self._note_drawn(t, held, twice)):
+            t.configure(bg=ACCENT)
+            box = tk.Frame(t, bg=BG)
+            box.pack(padx=1, pady=1)
+            tk.Label(box, text="Fullscreen", bg=BG, fg=FG, font=("Segoe UI", 12, "bold")).pack(
+                anchor="w", padx=18, pady=(14, 6))
+            font = ("Segoe UI", 11)
 
-        def line(text, colour=FG):
-            lbl = tk.Label(box, text=text, bg=BG, fg=colour, font=font, justify="left", wraplength="330p")
-            lbl.pack(anchor="w", padx=18, pady=(0, 6))
-            return lbl
+            def line(text, colour=FG):
+                lbl = tk.Label(box, text=text, bg=BG, fg=colour, font=font, justify="left", wraplength="330p")
+                lbl.pack(anchor="w", padx=18, pady=(0, 6))
+                return lbl
 
-        t.first, t.nr_on = line(self.note_first()), self.nr_on     # see note_nr
-        # the keys one to a line, each after a bullet in a column of its own, so
-        # a line that wraps goes on under its words and not under the bullet
-        listed = tk.Frame(box, bg=BG)
-        listed.pack(anchor="w", padx=18, pady=(0, 6))
-        for i, text in enumerate(self.keys_list()):
-            tk.Label(listed, text="•", bg=BG, fg=FG, font=font).grid(row=i, column=0, sticky="nw", padx=(0, 8))
-            tk.Label(listed, text=text, bg=BG, fg=FG, font=font, justify="left", wraplength="316p").grid(
-                row=i, column=1, sticky="w", pady=(0, 2))
-        line(NOTE_TASKBAR)
-        for text in (held, twice):
-            if text:
-                line(text, WARN)
-        row = tk.Frame(box, bg=BG)
-        row.pack(fill="x", padx=18, pady=(8, 14))
-        # only while the note is switched on, since one that shows because
-        # another program holds a key would come back all the same
-        if self.fs_note:
-            quiet = tk.BooleanVar(master=t, value=False)
-            tk.Checkbutton(row, text="Don't show this again", variable=quiet,
-                           command=lambda: self.set_note(not quiet.get(), "Don't show this again"), bg=BG, fg=FG,
-                           selectcolor=FIELD, activebackground=BG, activeforeground=FG,
-                           font=("Segoe UI", 10)).pack(side="left")
-        tk.Button(row, text="OK", command=lambda: self.close_note("OK"), relief="flat", bg=ACCENT,
-                  fg=FIELD, activebackground=HOVER, font=("Segoe UI", 10), padx=18).pack(side="right")
+            t.first, t.nr_on = line(self.note_first()), self.nr_on     # see note_nr
+            # the keys one to a line, each after a bullet in a column of its own, so
+            # a line that wraps goes on under its words and not under the bullet
+            listed = tk.Frame(box, bg=BG)
+            listed.pack(anchor="w", padx=18, pady=(0, 6))
+            for i, text in enumerate(self.keys_list()):
+                tk.Label(listed, text="•", bg=BG, fg=FG, font=font).grid(row=i, column=0, sticky="nw", padx=(0, 8))
+                tk.Label(listed, text=text, bg=BG, fg=FG, font=font, justify="left", wraplength="316p").grid(
+                    row=i, column=1, sticky="w", pady=(0, 2))
+            line(NOTE_TASKBAR)
+            for text in (held, twice):
+                if text:
+                    line(text, WARN)
+            row = tk.Frame(box, bg=BG)
+            row.pack(fill="x", padx=18, pady=(8, 14))
+            # only while the note is switched on, since one that shows because
+            # another program holds a key would come back all the same
+            if self.fs_note:
+                quiet = tk.BooleanVar(master=t, value=False)
+                tk.Checkbutton(row, text="Don't show this again", variable=quiet,
+                               command=lambda: self.set_note(not quiet.get(), "Don't show this again"), bg=BG, fg=FG,
+                               selectcolor=FIELD, activebackground=BG, activeforeground=FG,
+                               font=("Segoe UI", 10)).pack(side="left")
+            tk.Button(row, text="OK", command=lambda: self.close_note("OK"), relief="flat", bg=ACCENT,
+                      fg=FIELD, activebackground=HOVER, activeforeground=FG, font=("Segoe UI", 10),
+                      padx=18).pack(side="right")
         self._place_note(t)
         print("the fullscreen note is up%s%s" % (", with a key held by another program" if held else "",
                                                 ", with a key held for another of the lens's actions" if twice
                                                 else ""), flush=True)
         self.sync_hotkeys()             # Enter and Escape close it
+
+    def _note_drawn(self, t, held, twice):
+        """The note in a drawn look, as its design draws it, see
+        lens_look.small.note: the same words, each line of keys_list after
+        the cap of the key it starts with, Don't show this again and OK, and
+        the note no larger than it may be in the room Settings is fitted to,
+        see _settings_room. False where it could not be drawn, its parts
+        taken away again, see _small_fault."""
+        try:
+            keys = [self.key_for(a) for a in ("lens_menu", "nr_panel", "nr_toggle", "readout_toggle")]
+            first = lens_look.small.note(
+                t, LOOK, "Fullscreen", self.note_first(), self.keys_list(), keys, NOTE_TASKBAR, (held, twice),
+                "Don't show this again" if self.fs_note else None,
+                lambda ticked: self.set_note(not ticked, "Don't show this again"), "OK",
+                lambda: self.close_note("OK"), self._settings_room(t))
+        except Exception as e:
+            _small_fault("note", e)
+            _cleared(t)
+            return False
+        t.first, t.nr_on = first, self.nr_on     # see note_nr
+        return True
 
     def _place_note(self, t):
         """Size the note to what it holds, over the middle of the lens's
@@ -5994,6 +6579,63 @@ class Lens:
             self.front_program = self.auto_front = names
             self.check_auto_profile(fg, names)
 
+    def _bar_drawn(self, t, bar, cw, ch, fullscreen):
+        """The title bar and the frame in a drawn look, as its design draws
+        them, see lens_look.bar.Bar: the same widgets under the same names,
+        with the same words, the colours the code gives them and the same
+        clicks as in the classic look, the pass count between its buttons in
+        a well, and the frame's line and the bar in the look's colours. The
+        lens binds the drag on the bar and puts the style and the intensity
+        on it as it always did. False where they could not be drawn, the
+        bar's parts taken away again, see _bar_fault."""
+        try:
+            try:
+                capfont, glyphs = _caption_glyphs(set(tkfont.families(self.root)))
+            except Exception:
+                capfont, glyphs = ("Segoe UI", 12), CAPTION_PLAIN
+            self.capfont, self.glyphs = capfont, glyphs
+            chevron = chr(0x25be) + " "
+            words = {"menu_btn": " %s " % chr(0x2630), "bar_title": "  DLSS 5 Neural Lens",
+                     "info": "%d x %d" % (cw, ch), "prof_btn": chevron + "Profile", "style_btn": chevron + "Default",
+                     "intensity_lbl": "intensity 1.00", "x_btn": glyphs["close"],
+                     "max_btn": glyphs["restore" if fullscreen else "max"], "min_btn": glyphs["min"],
+                     "set_btn": " Set ", "plus": " + ", "pass_lbl": "1 pass", "minus": " %s " % chr(0x2212)}
+            clicks = {"menu_btn": self.menu, "prof_btn": lambda e: self.profile_menu(),
+                      "style_btn": lambda e: self.style_menu(), "x_btn": lambda e: self.quit(how="close button"),
+                      "max_btn": lambda e: self.toggle_fullscreen("button"),
+                      "min_btn": lambda e: self.minimize("button"), "set_btn": lambda e: self.apply_passes(),
+                      "plus": lambda e: self.bump_passes(1), "minus": lambda e: self.bump_passes(-1)}
+            self.look_bar = lens_look.bar.Bar(t, bar, LOOK, words, clicks, capfont, BAR)
+            p = self.look_bar.parts
+            self.menu_btn, self.bar_title, self.info = p["menu_btn"], p["bar_title"], p["info"]
+            self.prof_btn, self.style_btn, self.intensity_lbl = p["prof_btn"], p["style_btn"], p["intensity_lbl"]
+            self.x_btn, self.max_btn, self.min_btn = p["x_btn"], p["max_btn"], p["min_btn"]
+            self.set_btn, self.plus, self.pass_lbl, self.minus = p["set_btn"], p["plus"], p["pass_lbl"], p["minus"]
+            self.show_bar_mirrors()
+        except Exception as e:
+            self._bar_fault(t, bar, e)
+            return False
+        return True
+
+    def _bar_fault(self, t, bar, e):
+        """The title bar made again as in the classic look, in the look's
+        colours, where a drawn look could not build it, see _bar_drawn: what
+        it began to build taken away and the bar and the frame's line in the
+        colours the classic look gives them. lens.log says so once."""
+        _DRAWN_FAULT["bar"] = str(e) or type(e).__name__
+        try:
+            print('the title bar could not be drawn in the %s look ("%s"), so it is drawn as in the classic look'
+                  % (LOOK.theme, _DRAWN_FAULT["bar"]), flush=True)
+        except Exception:
+            pass            # an output that cannot take the error's words must not stop the lens
+        self.look_bar = None
+        _cleared(bar)
+        try:
+            t.configure(bg=ACCENT)
+            bar.configure(bg=BG)
+        except tk.TclError:
+            pass
+
     def show_bar_mirrors(self):
         """Put the Home menu's style and intensity on the bar, or take them off,
         as Settings says, and read them once."""
@@ -6090,8 +6732,15 @@ class Lens:
         self.update_profile_label()
 
     def profile_save_as(self):
-        """Ask for a name, then store the current settings under it."""
+        """Ask for a name, then store the current settings under it. A drawn
+        look draws the dialog as its design does, see _profile_drawn, and
+        where it cannot the dialog is made as in the classic look."""
+        ent = self._profile_drawn() if _drawn_small("profile") else None
+        if ent is not None:
+            ent.focus_force()               # the person asked for this window, as below
+            return
         d = tk.Toplevel(self.root)
+        shown = _unseen(d)
         d.title("New profile")
         d.attributes("-topmost", True)
         d.configure(bg=BG)
@@ -6102,7 +6751,11 @@ class Lens:
         while "Profile %d" % n in self.profiles["profiles"]:
             n += 1
         var.set("Profile %d" % n)
-        ent = tk.Entry(d, textvariable=var, width=32, bg=FIELD, fg=FG, insertbackground=FG, relief="flat")
+        # the name selected in the shade of the lens's lists, and a line in the
+        # accent round the field while it has the keyboard
+        ent = tk.Entry(d, textvariable=var, width=32, bg=FIELD, fg=FG, insertbackground=FG, relief="flat",
+                       selectbackground=HOVER, selectforeground=FG, highlightthickness=1,
+                       highlightbackground=BG, highlightcolor=ACCENT)
         ent.grid(row=1, column=0, columnspan=2, sticky="we", padx=12)
         ent.selection_range(0, "end")
 
@@ -6112,15 +6765,60 @@ class Lens:
             if name:
                 self.profile_store(name, "Enter" if event else "Save")
 
-        tk.Button(d, text="Save", command=save, relief="flat", bg=ACCENT, fg=FIELD).grid(
-            row=2, column=0, sticky="e", padx=(12, 4), pady=12)
-        tk.Button(d, text="Cancel", command=d.destroy, relief="flat", bg=HOVER, fg=FG).grid(
-            row=2, column=1, sticky="w", padx=(4, 12), pady=12)
+        # pressed, a button takes the window buttons' shade, as the buttons of
+        # Settings do
+        tk.Button(d, text="Save", command=save, relief="flat", bg=ACCENT, fg=FIELD, activebackground=CAP,
+                  activeforeground=FG).grid(row=2, column=0, sticky="e", padx=(12, 4), pady=12)
+        tk.Button(d, text="Cancel", command=d.destroy, relief="flat", bg=HOVER, fg=FG, activebackground=CAP,
+                  activeforeground=FG).grid(row=2, column=1, sticky="w", padx=(4, 12), pady=12)
         ent.bind("<Return>", save)
+        _dress(d)
         d.update_idletasks()
         x, y = self.inner()
         d.geometry("+%d+%d" % (x + 40, y + 40))
+        _show(d, shown)
         ent.focus_force()
+
+    def _profile_drawn(self):
+        """New profile in a drawn look, see lens_look.dialogs.name_box, with
+        the words, the name offered, Save, Cancel, Enter saving and the place
+        of the classic dialog in profile_save_as, and Escape cancelling, as
+        the design draws it. Returns its field, which profile_save_as gives
+        the keyboard, or None where it could not be drawn, which lens.log says
+        once, see _small_fault."""
+        d = tk.Toplevel(self.root)
+        shown = _unseen(d)
+        d.title("New profile")
+        d.attributes("-topmost", True)
+        var = tk.StringVar(master=d, value="")
+        n = 1
+        while "Profile %d" % n in self.profiles["profiles"]:
+            n += 1
+        var.set("Profile %d" % n)
+
+        def save(*event):
+            name = var.get().strip()
+            d.destroy()
+            if name:
+                self.profile_store(name, "Enter" if event else "Save")
+
+        try:
+            ent = lens_look.dialogs.name_box(d, LOOK, "A name for these settings, such as Video, Text or Photo", var,
+                                             (("Save", save), ("Cancel", d.destroy)))
+        except Exception as e:
+            try:
+                d.destroy()
+            except tk.TclError:
+                pass
+            _small_fault("profile", e)
+            return None
+        ent.selection_range(0, "end")
+        _dress(d)
+        d.update_idletasks()
+        x, y = self.inner()
+        d.geometry("+%d+%d" % (x + 40, y + 40))
+        _show(d, shown)
+        return ent
 
     def profile_delete(self, name, how=None):
         """Delete this profile. how is the way the person at the lens asked,
@@ -6306,9 +7004,12 @@ class Lens:
             d = tk.Toplevel(self.root)
             d.overrideredirect(True)
             d.attributes("-topmost", True)
-            d.configure(bg=BG, cursor="sb_h_double_arrow")
-            # a wider grab area than the line itself, so it is easy to catch
-            tk.Frame(d, bg=ACCENT).place(x=DIVIDER // 2 - 2, y=0, width=4, relheight=1.0)
+            # a drawn look's divider, as its design draws it, see
+            # _divider_drawn. Where it cannot be drawn it is made as below
+            if not (_drawn_small("divider") and self._divider_drawn(d)):
+                d.configure(bg=BG, cursor="sb_h_double_arrow")
+                # a wider grab area than the line itself, so it is easy to catch
+                tk.Frame(d, bg=ACCENT).place(x=DIVIDER // 2 - 2, y=0, width=4, relheight=1.0)
             d.bind("<ButtonPress-1>", self._split_down)
             x, y = self.inner()
             d.geometry("%dx%d+%d+%d" % (DIVIDER, self.ch, x + self.cw // 2 - DIVIDER // 2, y))
@@ -6329,6 +7030,21 @@ class Lens:
             self.divider = None
         self.apply_split()
         self.place_divider()
+
+    @staticmethod
+    def _divider_drawn(d):
+        """The divider's window in a drawn look, the same width and the same
+        pointer as in the classic look, its line and handle the design's, see
+        lens_look.small.divider. False where it could not be drawn, its parts
+        taken away again, see _small_fault."""
+        try:
+            d.configure(cursor="sb_h_double_arrow")
+            lens_look.small.divider(d, LOOK, DIVIDER)
+        except Exception as e:
+            _small_fault("divider", e)
+            _cleared(d)
+            return False
+        return True
 
     def apply_split(self):
         """Clip the presenter to the left of the divider, or unclip it."""
@@ -6888,15 +7604,22 @@ class Lens:
             t, new = self.notice, self.notice is None
             if new:
                 t = self.notice = self._own_window()
-                t.configure(bg=ACCENT)
-                tk.Frame(t, bg=BG).pack(padx=1, pady=1)
-            box = t.winfo_children()[0]
-            for c in box.winfo_children():
-                c.destroy()
-            for i, (text, colour) in enumerate(lines):
-                tk.Label(box, text=text, bg=BG, fg=colour, font=("Segoe UI", 11), justify="left",
-                         wraplength=max(300, min(1200, mw - 120)), padx=16,
-                         pady=6).pack(anchor="w", pady=(2 if i else 0, 0))
+            # a drawn look's notice, as its design draws it, see _notice_drawn.
+            # Where it cannot be drawn it is made again as below
+            if _drawn_small("notice"):
+                if not self._notice_drawn(t, new, lines, max(300, min(1200, mw - 120))):
+                    return self.show_notice()
+            else:
+                if new:
+                    t.configure(bg=ACCENT)
+                    tk.Frame(t, bg=BG).pack(padx=1, pady=1)
+                box = t.winfo_children()[0]
+                for c in box.winfo_children():
+                    c.destroy()
+                for i, (text, colour) in enumerate(lines):
+                    tk.Label(box, text=text, bg=BG, fg=colour, font=("Segoe UI", 11), justify="left",
+                             wraplength=max(300, min(1200, mw - 120)), padx=16,
+                             pady=6).pack(anchor="w", pady=(2 if i else 0, 0))
             t.update_idletasks()
             wd, ht = t.winfo_reqwidth(), t.winfo_reqheight()
             t.geometry("%dx%d+%d+%d" % (wd, ht, mx + max(0, (mw - wd) // 2), my + 24))
@@ -6907,6 +7630,26 @@ class Lens:
                 self._own_styles(t, through=True)
         except Exception:
             pass
+
+    def _notice_drawn(self, t, new, lines, wrap):
+        """The notice's lines in a drawn look, as its design draws them, each
+        still a Label of the box that is the window's first child, see
+        lens_look.small.notice_lines, the box made first in a new window. False
+        where it could not be drawn, the window then taken away, so the notice
+        is made again as in the classic look, see _small_fault."""
+        try:
+            if new:
+                lens_look.small.notice_box(t, LOOK)
+            lens_look.small.notice_lines(t.winfo_children()[0], LOOK, lines, wrap)
+        except Exception as e:
+            _small_fault("notice", e)
+            self.notice, self.notice_lines = None, []
+            try:
+                t.destroy()
+            except tk.TclError:
+                pass
+            return False
+        return True
 
     def _own_styles(self, win, through=False, top=True):
         """Give a window of the lens's own what they all have: it never takes the
@@ -6922,6 +7665,170 @@ class Lens:
         u.SetWindowDisplayAffinity(h, WDA_EXCLUDEFROMCAPTURE)
         if top:
             u.SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+
+    def _is_own(self, hwnd):
+        """Whether a window is this process's own."""
+        pid = w.DWORD(0)
+        u.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        return pid.value == os.getpid()
+
+    def _panel_shown(self, t):
+        """The NR settings panel has just been shown: the watch of the held
+        mouse starts, and with Free the mouse on the panel takes the front,
+        see FREE_MOUSE. The panel's top line is set either way."""
+        if self.mouse_watch is None:
+            self.mouse_held = mouse_held()
+            self.mouse_watch = self.root.after(250, self._watch_mouse)
+        if FREE_MOUSE:
+            self._panel_front(t)
+        self._panel_line()
+
+    def _watch_mouse(self):
+        """While the panel is open: whether the program in front holds the
+        mouse, read a few times a second, for the panel's top line and for the
+        pointer, which the panel ignores while the mouse is held."""
+        self.mouse_watch = None
+        if self.panel is None:
+            return
+        # a game that neither hides the cursor where the panel is nor clips it
+        # to less than the desktop still shows by putting the pointer back to
+        # its window's centre every frame, so two readings in a row there
+        # count as held too
+        self.mouse_pins = self.mouse_pins + 1 if self._mouse_pinned() else 0
+        held = mouse_held() or self.mouse_pins >= 2
+        if held != self.mouse_held:
+            self.mouse_held = held
+            self._panel_line()
+        self.mouse_watch = self.root.after(250, self._watch_mouse)
+
+    def _mouse_pinned(self):
+        """Whether the pointer sits at the centre of the client area of the
+        window in front, where a game that keeps putting it back holds it.
+        Read only, through GetCursorPos and the window's client rectangle;
+        false for a window of the lens's own."""
+        try:
+            front = u.GetForegroundWindow()
+            if not front or self._is_own(front):
+                return False
+            r = w.RECT()
+            if not u.GetClientRect(front, ctypes.byref(r)) or r.right <= r.left or r.bottom <= r.top:
+                return False
+            at = w.POINT(0, 0)
+            u.ClientToScreen(front, ctypes.byref(at))
+            cx, cy = at.x + (r.right - r.left) // 2, at.y + (r.bottom - r.top) // 2
+            now = w.POINT()
+            u.GetCursorPos(ctypes.byref(now))
+            return abs(now.x - cx) <= 1 and abs(now.y - cy) <= 1
+        except Exception:
+            return False
+
+    def _panel_front(self, t):
+        """Give the NR settings panel the foreground, as Alt+Tab would, so the
+        program in front lets go of the mouse: the window in front is
+        remembered for _panel_front_back, the panel's window loses the style
+        that keeps it from ever being active, and it is made the foreground
+        window, which Windows allows a process right after its own input, the
+        hotkey that opened the panel or a click on the lens. One line in the
+        log says whether it held, read a moment later."""
+        if t is None:
+            return
+        try:
+            front = u.GetForegroundWindow()
+            if self.panel_front_prev is None and front and not self._is_own(front):
+                self.panel_front_prev = front
+            h = u.GetParent(t.winfo_id()) or t.winfo_id()
+            ex = u.GetWindowLongPtrW(h, GWL_EXSTYLE)
+            if ex & WS_EX_NOACTIVATE:
+                u.SetWindowLongPtrW(h, GWL_EXSTYLE, ex & ~WS_EX_NOACTIVATE)
+            u.SetForegroundWindow(h)
+            self.root.after(150, lambda: self._panel_front_said(h))
+        except Exception as exc:
+            self.panel_front_held = False
+            print("the NR settings panel could not take the front, %s (free mouse)" % exc, flush=True)
+
+    def _panel_front_said(self, h):
+        """Whether the panel holds the front, a moment after it was asked for."""
+        if self.panel is None:
+            return
+        held = u.GetForegroundWindow() == h
+        self.panel_front_held = held
+        print("the NR settings panel took the front (free mouse)" if held
+              else "the NR settings panel could not take the front, the program in front kept it (free mouse)",
+              flush=True)
+        self._panel_line()
+
+    def _panel_front_back(self):
+        """Give the foreground back, on closing the panel or on switching Free
+        the mouse off: only to the window that had it when the panel took it,
+        and only while a window of the lens's own still has it, never pulled
+        back from somewhere the person went meanwhile. The panel, where it
+        stays open, is made again never to be active."""
+        prev, self.panel_front_prev = self.panel_front_prev, None
+        self.panel_front_held = None
+        if self.panel is not None:
+            try:
+                self._own_styles(self.panel)
+            except Exception:
+                pass
+        if not prev:
+            return
+        try:
+            front = u.GetForegroundWindow()
+            if front and self._is_own(front) and u.IsWindow(prev):
+                u.SetForegroundWindow(prev)
+                print("the front given back (free mouse)", flush=True)
+            else:
+                print("the front left where it went (free mouse)", flush=True)
+        except Exception as exc:
+            print("the front not given back, %s (free mouse)" % exc, flush=True)
+
+    def _panel_line(self):
+        """The panel's top line: the arrow keys always; while the program in
+        front holds the mouse and Free the mouse is off, the switch that frees
+        it; while it is on but the front could not be taken, that the keys
+        are the way. In a drawn look the line is the panel's idle line, shown
+        while no row is picked."""
+        if self.panel is None:
+            return
+        p = getattr(self.panel, "look_panel", None)
+        words = PANEL_IDLE if p is not None else PANEL_ARROWS
+        if self.mouse_held and not FREE_MOUSE:
+            words += " " + PANEL_HELD
+        elif self.mouse_held and FREE_MOUSE and self.panel_front_held is False:
+            words += " " + PANEL_KEPT
+        try:
+            top = self.panel_ui.get("top")
+            if top is not None and top.cget("text") != words:
+                top.config(text=words)
+                self._panel_fit()       # the line may now take two lines, or one again
+            if p is not None and words != getattr(p, "idle_words", None):
+                p.idle_words = words
+                p.set_idle(words, self.panel_row is None)
+        except Exception:
+            pass
+
+    def _panel_keyed(self):
+        """An arrow key picked a row: in a drawn look the pointer picks one
+        again only once it has really moved, see lens_look.panel.Panel.keyed."""
+        p = getattr(self.panel, "look_panel", None) if self.panel is not None else None
+        if p is not None:
+            try:
+                p.keyed()
+            except Exception:
+                pass
+
+    def _panel_free(self, how="mouse"):
+        """The Free the mouse switch on the panel, see FREE_MOUSE: on, the
+        panel takes the front at once; off, it gives it back."""
+        on = bool(self.panel_ui["free"].get())
+        if on != FREE_MOUSE:
+            self.act("free mouse %s (%s)" % ("on" if on else "off", how))
+            _set_free_mouse(on)
+            if on:
+                self._panel_front(self.panel)
+            else:
+                self._panel_front_back()
+        self._panel_line()
 
     def _own_window(self):
         """A window of the lens's own for the menu, the NR settings panel, the
@@ -7108,8 +8015,11 @@ class Lens:
             t, new = self.readout_win, self.readout_win is None
             if new:
                 t = self.readout_win = self._own_window()
-                t.configure(bg=ACCENT)
-                tk.Label(t, bg=BG, fg=FG, font=("Segoe UI", 11), padx=10, pady=3).pack(padx=1, pady=1)
+                # a drawn look's readout, as its design draws it, see
+                # _readout_drawn. Where it cannot be drawn it is made as below
+                if not (_drawn_small("readout") and self._readout_drawn(t)):
+                    t.configure(bg=ACCENT)
+                    tk.Label(t, bg=BG, fg=FG, font=("Segoe UI", 11), padx=10, pady=3).pack(padx=1, pady=1)
             t.winfo_children()[0].config(text=text)
             t.update_idletasks()
             wd, ht = t.winfo_reqwidth(), t.winfo_reqheight()
@@ -7127,6 +8037,20 @@ class Lens:
                 self._own_styles(t, through=True, top=False)
         except Exception:
             pass
+
+    @staticmethod
+    def _readout_drawn(t):
+        """The readout's Label in a drawn look, still the window's first
+        child, in the design's colours and type, see lens_look.small.readout.
+        False where it could not be drawn, its parts taken away again, see
+        _small_fault."""
+        try:
+            lens_look.small.readout(t, LOOK)
+        except Exception as e:
+            _small_fault("readout", e)
+            _cleared(t)
+            return False
+        return True
 
     def toggle_readout(self, how=None):
         """Hide the on-screen readout, or show it, from its key while the lens
@@ -8064,13 +8988,19 @@ class Lens:
         else:
             self.open_panel(how)
 
-    def quality_control(self, parent, command=None, font=("Segoe UI", 10)):
+    def quality_control(self, parent, command=None, font=("Segoe UI", 10), drawn=None):
         """The fast engine's quality step as a slider with six positions, and
         a label that names the step it is on, for Settings and for the NR
         settings panel. command, when given, is called with a step the slider
-        is moved to. Returns the slider and the label, for the caller to place."""
-        name = tk.Label(parent, text=FAST_QUALITY_NAMES[self.quality_now()], bg=BG, fg=FG, font=font,
-                        width=12, anchor="w")
+        is moved to. Returns the slider and the label, for the caller to place.
+        drawn, from Settings in a drawn look, makes the two as that look draws
+        them, a slider with its face and the label in the look's type, see
+        lens_look.settings.Rows.quality."""
+        if drawn is None:
+            name = tk.Label(parent, text=FAST_QUALITY_NAMES[self.quality_now()], bg=BG, fg=FG, font=font,
+                            width=12, anchor="w")
+        else:
+            name = drawn.quality_name(parent, FAST_QUALITY_NAMES[self.quality_now()], font)
 
         def moved(value):
             step = max(0, min(len(FAST_QUALITY_NAMES) - 1, int(float(value))))
@@ -8078,9 +9008,12 @@ class Lens:
             if command is not None:
                 command(step)
 
-        scale = tk.Scale(parent, from_=0, to=len(FAST_QUALITY_NAMES) - 1, resolution=1, orient="horizontal",
-                         showvalue=False, length=240, width=14, sliderlength=26, bg=DIM, troughcolor=FIELD,
-                         activebackground=ACCENT, highlightthickness=0, bd=0, sliderrelief="flat", command=moved)
+        if drawn is None:
+            scale = tk.Scale(parent, from_=0, to=len(FAST_QUALITY_NAMES) - 1, resolution=1, orient="horizontal",
+                             showvalue=False, length=240, width=14, sliderlength=26, bg=DIM, troughcolor=FIELD,
+                             activebackground=ACCENT, highlightthickness=0, bd=0, sliderrelief="flat", command=moved)
+        else:
+            scale = drawn.quality_scale(parent, FAST_QUALITY_NAMES, moved)
         scale.set(self.quality_now())
         return scale, name
 
@@ -8175,6 +9108,10 @@ class Lens:
                 or self.engine != "fast"):
             return
         self.popup.close()
+        # a drawn look's panel, with the same controls in its own layout, see
+        # _open_panel_drawn. Where it cannot be built it is made as below
+        if not LOOK.classic and lens_look is not None and "panel" not in _DRAWN_FAULT:
+            return self._open_panel_drawn(how)
         t = self._own_window()
         self.panel = t
         t.configure(bg=ACCENT)
@@ -8200,6 +9137,12 @@ class Lens:
         head = tk.Frame(box, bg=CAP)
         head.grid(row=0, column=0, columnspan=4, sticky="we")
         name = tk.Label(head, text="  NR settings", bg=CAP, fg=FG, font=("Segoe UI", 10, "bold"), pady=5)
+        # the top line, under the title across the head: the arrow keys, and
+        # while the program in front holds the mouse, the switch that frees it,
+        # see _panel_line; packed first so it spans the head's width
+        ui["top"] = tk.Label(head, text=PANEL_ARROWS, bg=CAP, fg=DIM, font=small, justify="left", anchor="w",
+                             wraplength=430, padx=8, pady=2)
+        ui["top"].pack(side="bottom", fill="x")
         name.pack(side="left")
         key = self.key_for("nr_panel")
         hint = tk.Label(head, text="%s or Escape closes it" % key if key else "Escape closes it", bg=CAP, fg=DIM,
@@ -8210,7 +9153,7 @@ class Lens:
         cross.bind("<Button-1>", lambda e: self.close_panel("cross"))
         cross.bind("<Enter>", lambda e: cross.config(bg=CLOSE))
         cross.bind("<Leave>", lambda e: cross.config(bg=CAP))
-        for wdg in (head, name, hint):
+        for wdg in (head, name, hint, ui["top"]):
             wdg.bind("<ButtonPress-1>", self._panel_down)
             wdg.bind("<B1-Motion>", self._panel_move)
             wdg.bind("<ButtonRelease-1>", self._panel_up)
@@ -8236,11 +9179,21 @@ class Lens:
         ui["program"].pack(side="left", padx=(10, 0))
         why("profile", prow)
         ui["auto"] = tk.BooleanVar(master=t, value=bool(AUTO_PROFILE))
-        auto_box = tk.Checkbutton(box, text="Load the profile tied to the program in front",
+        # the auto-load switch and, under it, Free the mouse, see FREE_MOUSE and
+        # _panel_free, in one row of the grid
+        srow = tk.Frame(box, bg=BG)
+        srow.grid(row=2, column=0, columnspan=4, sticky="w", padx=8, pady=(2, 0))
+        auto_box = tk.Checkbutton(srow, text="Load the profile tied to the program in front",
                                   variable=ui["auto"], command=self._panel_auto, **tick)
-        auto_box.grid(row=2, column=0, columnspan=4, sticky="w", padx=8, pady=(2, 0))
+        auto_box.pack(anchor="w")
         ui["auto_box"] = auto_box
         why("auto", auto_box)
+        ui["free"] = tk.BooleanVar(master=t, value=bool(FREE_MOUSE))
+        free_box = tk.Checkbutton(srow, text=FREE_MOUSE_LABEL, variable=ui["free"], command=self._panel_free,
+                                  **tick)
+        free_box.pack(anchor="w", pady=(2, 0))
+        ui["free_box"] = free_box
+        why("free", free_box)
 
         ui["nr"] = tk.BooleanVar(master=t, value=bool(self.nr_on))
         nr_keys = _either(self.nr_keys())
@@ -8315,6 +9268,7 @@ class Lens:
             ui[nr_key + " reset"] = reset
             tie(row, nr_key)
             why(nr_key, ui[nr_key + " word"], scale, cell)
+            hints.add(reset, PANEL_RESET_WHY)       # the button's own, inside the slider's cell
             row += 1
         ui["skin_auto"] = tk.BooleanVar(master=t, value=False)
         skin_box = tk.Checkbutton(box, text="Leave skin structure to the model", variable=ui["skin_auto"],
@@ -8392,22 +9346,11 @@ class Lens:
         ui["quality"].grid(row=row + 7, column=1, sticky="w", pady=(6, 0))
         ui["quality_name"].grid(row=row + 7, column=2, columnspan=2, sticky="w", padx=(8, 12), pady=(4, 0))
         why("quality", ui["quality_word"], ui["quality"], ui["quality_name"])
-        # the foot: the quality step's words, what the ReShade engine does with
-        # these settings, the keys, and how a setting's explanation comes up,
-        # see PANEL_HELP. The switch on the tab of pass 2 and the one under the
-        # pass count are the fast engine's alone, see SHARED_KEY and
-        # STRENGTH_SWITCH_KEY, and the line names them by their labels. The
-        # ReShade engine gives the first one's look with the add-on's Denoise
-        # before upscaling, see docs/NOTES.md, so the line says only that the
-        # switches do nothing there
-        texts = (FAST_QUALITY_WORDS,
-                 "A change shows in the picture at once and is kept. On the ReShade engine every pass runs at the "
-                 "first pass's values, apart from the intensity of passes 2 to 4, and the switches %s and %s do "
-                 "nothing." % (SHARED_LABEL, STRENGTH_SWITCH_LABEL),
-                 "The arrow keys pick a setting and change it, and Enter switches a switch. A slider moves faster "
-                 "the longer Left or Right is held. The button beside a number puts its slider at %.2f."
-                 % PANEL_RESET,
-                 PANEL_HELP % (PANEL_HELP_F1 if _f1_free() else ""))
+        # the foot, one line: the keys that work the panel and how a setting's
+        # explanation comes up, see PANEL_KEYS and PANEL_HELP. What a setting
+        # does, the quality step's included, is its own explanation, and what
+        # the ReShade engine makes of these settings is in README.md
+        texts = (PANEL_KEYS + " " + PANEL_HELP % (PANEL_HELP_F1 if _f1_free() else ""),)
         ui["foot"] = []                 # the foot's lines, for a test to read
         for i, text in enumerate(texts):
             foot = tk.Label(box, text=text, bg=BG, fg=DIM, font=small, justify="left", wraplength=430)
@@ -8435,10 +9378,161 @@ class Lens:
         t.geometry("%dx%d+%d+%d" % (wd, ht, max(mx, min(px, mx + mw - wd)), max(my, min(py, my + mh - ht))))
         self._show_own(t, 0.99)
         ui["shown"] = True              # from here its size follows its contents, see _panel_fit
+        self._panel_shown(t)
         if how:
             self.act("NR settings opened (%s)" % how)
         print("NR settings panel opened", flush=True)
         self.sync_hotkeys()             # the arrow keys, Enter and Escape work it now
+
+    def _open_panel_drawn(self, how=None):
+        """open_panel in a drawn look. It makes the same controls with the
+        same words, variables, commands and panel_ui keys by lens_look.panel,
+        in the look's layout and in the order of its drawing, with Update and Save
+        as beside the profile picker, Slate's arrows either side of the
+        picker and its segments for the pass count. The explanation of the
+        row the arrow keys or the pointer pick shows in the panel's own part,
+        see Hints, and the keys that work the panel show in its footer, both
+        in place of the foot's lines, which are made and not shown. The words
+        are open_panel's, kept the same as there, which a pure check holds
+        them to. The window, its place and how it is shown are open_panel's
+        too. Where the panel cannot be built, lens.log says why and it is
+        made as in the classic look, see _panel_fault."""
+        t = self._own_window()
+        self.panel = t
+        ui = self.panel_ui = {}
+        self.panel_rows, self.panel_row, self.panel_tabs = [], None, []
+        self.panel_pass = max(1, min(max(1, self.passes), self.panel_pass))
+        hints = t.hints = Hints(self, t, own=True)
+        x, y = self.inner()
+        mx, my, mw, mh = monitor_rect(x + self.cw // 2, y + self.ch // 2)
+        try:
+            p = t.look_panel = lens_look.panel.Panel(t, LOOK, ui, hints, mh, rows=lambda: self.panel_rows,
+                                                      light=self.panel_light)
+            key = self.key_for("nr_panel")
+            p.held = lambda: self.mouse_held     # a held mouse picks no row, see Panel.picked
+            p.fitted = self._panel_fit           # the window's size once the explanation's part grows for a text
+            p.head("NR settings", "%s or Escape closes it" % key if key else "Escape closes it",
+                   lambda: self.close_panel("cross"), (self._panel_down, self._panel_move, self._panel_up),
+                   self.glyphs["close"], self.capfont)
+            text, colour = self.profile_label()
+            p.profile("Profile", text, colour, lambda: self.panel_profile_menu("panel"), self._panel_profile_step,
+                      ("Update", self._panel_update, PANEL_UPDATE_WHY),
+                      ("Save as", self.profile_save_as, PANEL_SAVE_AS_WHY), PANEL_WHY["profile"])
+            ui["auto"] = tk.BooleanVar(master=t, value=bool(AUTO_PROFILE))
+            p.switch("auto", "Load the profile tied to the program in front", ui["auto"], self._panel_auto,
+                     PANEL_WHY["auto"])
+            ui["free"] = tk.BooleanVar(master=t, value=bool(FREE_MOUSE))
+            p.switch("free", FREE_MOUSE_LABEL, ui["free"], self._panel_free, PANEL_WHY["free"])
+            ui["nr"] = tk.BooleanVar(master=t, value=bool(self.nr_on))
+            nr_keys = _either(self.nr_keys())
+            p.switch("nr", "Neural Rendering on" + ("   (%s)" % nr_keys if nr_keys else ""), ui["nr"], self._panel_nr,
+                     PANEL_WHY["nr"])
+            p.tabs("Settings of", PANEL_WHY["tabs"])
+            ui["style"] = tk.StringVar(master=t, value="0")
+            p.choice("style", "Style", ui["style"], STYLE_NAMES, lambda: self.panel_set("NRStyle", ui["style"].get()),
+                     PANEL_WHY["NRStyle"])
+            # a value's Same as pass 1, beside it, which panel_show_pass shows
+            # on the tabs from pass 2 on
+            ui["tie"], ui["tie_box"] = {}, {}
+
+            def tie(key):
+                ui["tie"][key] = tk.BooleanVar(master=t, value=False)
+                p.tie(key, "Same as pass 1", ui["tie"][key], lambda k=key: self._panel_tie(k), PANEL_WHY["tie"])
+
+            tie("NRStyle")
+            for nr_key, text, lo, hi, _default in NR_SLIDERS:
+                p.slider(nr_key, text, lo, hi, lambda v, k=nr_key: self._panel_slider(k, v), RESET_GLYPH, RESET_FONT,
+                         PANEL_WHY[nr_key])
+                reset = ui[nr_key + " reset"]
+                reset.bind("<Button-1>", lambda e, k=nr_key: self._panel_reset(k))
+                reset.bind("<Enter>", lambda e, b=reset: b.config(bg=BG if str(b.cget("state")) == "disabled"
+                                                                  else HOVER))
+                reset.bind("<Leave>", lambda e, b=reset: b.config(bg=BG))
+                tie(nr_key)
+            ui["skin_auto"] = tk.BooleanVar(master=t, value=False)
+            p.switch("skin_auto", "Leave skin structure to the model", ui["skin_auto"], self._panel_skin,
+                     PANEL_WHY["skin_auto"])
+            ui["mask"] = tk.BooleanVar(master=t, value=False)
+            p.switch("mask", "Auto mask", ui["mask"],
+                     lambda: self.panel_set("NRAutoMask", "1" if ui["mask"].get() else "0"), PANEL_WHY["NRAutoMask"])
+            tie("NRAutoMask")
+            ui["shared"] = tk.BooleanVar(master=t, value=False)
+            p.shared(SHARED_LABEL, ui["shared"], self._panel_shared, PANEL_WHY["shared"])
+            p.own_words("A value ticked Same as pass 1 follows pass 1. Untick it to give this pass a value of its own.",
+                        "Same as pass 1")
+            p.passes("Passes", "a change restarts the picture", self._panel_passes_to, _pass_limit,
+                     PANEL_WHY["passes"])
+            for wdg, step in ((ui["minus"], -1), (ui["plus"], 1)):
+                wdg.bind("<Button-1>", lambda e, s=step: self._panel_pass(s))
+                wdg.bind("<Enter>", lambda e, b=wdg: b.config(bg=HOVER))
+                wdg.bind("<Leave>", lambda e, b=wdg: b.config(bg=BG))
+            ui["scale"] = tk.BooleanVar(master=t, value=False)
+            p.switch("scale_change", STRENGTH_SWITCH_LABEL, ui["scale"], self._panel_scale_change,
+                     PANEL_WHY["scale_change"])
+            p.strength(STRENGTH_LABEL, STRENGTH_LEAST, STRENGTH_MOST, self._panel_strength, PANEL_WHY["strength"])
+            p.quality("Quality step", lambda parent: self.quality_control(parent, self._panel_quality, drawn=p),
+                      PANEL_WHY["quality"])
+            # the foot's line as open_panel has it, for a test to read, made
+            # and not shown: the keys are the footer, the explanation's part
+            # shows PANEL_IDLE while no row is picked, and the line under a
+            # slider's explanation says what its reset button does
+            texts = (PANEL_KEYS + " " + PANEL_HELP % (PANEL_HELP_F1 if _f1_free() else ""),)
+            p.foot(texts)
+            p.finish(((("Up", "Down"), "Pick a setting"), (("Left", "Right"), "Change it"), (("Enter",), "Switch"),
+                      ((key, "or", "Esc") if key else ("Esc",), "Close")),
+                     PANEL_IDLE, PANEL_RESET_WHY, "Pass %d")
+            self.load_panel()
+            self._panel_laid_out()
+        except Exception as e:
+            return self._panel_fault(t, e, how)
+        t.update_idletasks()
+        wd, ht = t.winfo_reqwidth(), t.winfo_reqheight()
+        px, py = self.panel_at or (mx + 24, my + 24)
+        # below a readout at the top of the monitor that it would lie over, as
+        # open_panel places it
+        r = self.readout_win
+        if r is not None and FS_READOUT_AT.startswith("top"):
+            try:
+                rx, ry, rw, rh = r.winfo_x(), r.winfo_y(), r.winfo_width(), r.winfo_height()
+                if px < rx + rw and rx < px + wd and py < ry + rh and ry < py + ht:
+                    py = ry + rh + 12
+            except Exception:
+                pass
+        t.geometry("%dx%d+%d+%d" % (wd, ht, max(mx, min(px, mx + mw - wd)), max(my, min(py, my + mh - ht))))
+        self._show_own(t, 0.99)
+        ui["shown"] = True              # from here its size follows its contents, see _panel_fit
+        self._panel_shown(t)
+        if how:
+            self.act("NR settings opened (%s)" % how)
+        print("NR settings panel opened", flush=True)
+        self.sync_hotkeys()             # the arrow keys, Enter and Escape work it now
+
+    def _panel_fault(self, t, e, how=None):
+        """The panel made again as in the classic look, in the look's colours,
+        where a drawn look could not build it, see _open_panel_drawn. lens.log
+        says so once, and the panel is made so for the rest of the run, as
+        Settings is, see _settings_fault."""
+        _DRAWN_FAULT["panel"] = str(e) or type(e).__name__
+        try:
+            print('the NR settings panel could not be drawn in the %s look ("%s"), so it is drawn as in the classic '
+                  'look' % (LOOK.theme, _DRAWN_FAULT["panel"]), flush=True)
+        except Exception:
+            pass            # an output that cannot take the error's words must not stop the lens
+        self.panel, self.panel_ui = None, {}
+        self.panel_rows, self.panel_row, self.panel_tabs = [], None, []
+        try:
+            t.destroy()
+        except tk.TclError:
+            pass
+        return self.open_panel(how)
+
+    def _panel_laid_out(self):
+        """A fault where a drawn look's panel was left without its tabs or the
+        rows of the arrow keys, which panel_show_pass, going on past a fault of
+        its own, would leave it with, so _open_panel_drawn makes the panel as
+        in the classic look, see _panel_fault."""
+        if not self.panel_rows or len(self.panel_tabs) != max(1, self.passes):
+            raise RuntimeError("its tabs and the rows of the arrow keys could not be laid out")
 
     def load_panel(self):
         """Set the panel's controls from what ReShade.ini holds now, which is
@@ -8484,16 +9578,21 @@ class Lens:
         st = self.panel_state.get(n) or _pass_state(n)
         self.panel_live = False
         try:
-            # the tabs, one for each pass that runs
+            # the tabs, one for each pass that runs, a drawn look's drawn by it,
+            # see lens_look.panel
             tabs = ui["tabs"]
+            look = getattr(self.panel, "look_panel", None)
             for tab in self.panel_tabs:
                 tab.destroy()
             self.panel_tabs = []
             ui["tabs_words"].pack_forget()
             for m in range(1, max(1, self.passes) + 1):
-                lbl = tk.Label(tabs, text=" Pass %d " % m, bg=HOVER if m == n else BG, fg=ACCENT if m == n else FG,
-                               font=("Segoe UI", 10, "bold" if m == n else "normal"), padx=6, pady=2)
-                lbl.pack(side="left", padx=(0, 4))
+                if look is None:
+                    lbl = tk.Label(tabs, text=" Pass %d " % m, bg=HOVER if m == n else BG, fg=ACCENT if m == n else FG,
+                                   font=("Segoe UI", 10, "bold" if m == n else "normal"), padx=6, pady=2)
+                    lbl.pack(side="left", padx=(0, 4))
+                else:
+                    lbl = look.tab(tabs, " Pass %d " % m, m == n)
                 lbl.bind("<Button-1>", lambda e, m=m: self.panel_show_pass(m, "click"))
                 self.panel_tabs.append(lbl)
             ui["tabs_words"].config(text="a pass more gets settings of its own" if self.passes < 2 else "")
@@ -8538,6 +9637,8 @@ class Lens:
                 ui["own_words"].grid()
             else:
                 ui["own_words"].grid_remove()
+            if look is not None:
+                look.show_pass(n)       # whose explanation names the pass shown
             # the switch that has the pass run through the first pass's
             # network, on the tabs of passes 2 to 4, see _panel_shared_look
             self._panel_shared_look()
@@ -8549,7 +9650,8 @@ class Lens:
             if self.panel_row is not None and self.panel_row < len(self.panel_rows):
                 was = tuple(self.panel_rows[self.panel_row][:2])
             rows = [("profile", "profile", ui["profile_word"]), ("switch", "auto", ui["auto_box"]),
-                    ("switch", "nr", ui["nr_box"]), ("tabs", "pass", ui["tabs_word"]),
+                    ("switch", "free", ui["free_box"]), ("switch", "nr", ui["nr_box"]),
+                    ("tabs", "pass", ui["tabs_word"]),
                     ("choice", "style", ui["style_word"])]
             if n >= 2:
                 rows.append(("tie", "NRStyle", ui["tie_box"]["NRStyle"]))
@@ -8567,12 +9669,21 @@ class Lens:
                 # the strength's slider is on the walk while it shows, see _panel_strength_look
                 rows.append(("strength", "strength", ui["strength_word"]))
             rows.append(("quality", "quality", ui["quality_word"]))
+            if look is not None:
+                # a drawn look's rows, the same ones in the order of its
+                # drawing, see lens_look.walk
+                rows = [(k, w_, lens_look.walk.lit_widget(ui, key))
+                        for k, w_, key in lens_look.walk.panel_walk(LOOK, n, self.panel_scale)]
+            before = [tuple(r[:2]) for r in self.panel_rows]
             self.panel_rows = rows
             pairs = [(k, w_) for k, w_, _lit in rows]
             if was is not None and was not in pairs and was[0] == "tie":
                 was = {"NRStyle": ("choice", "style"), "NRAutoMask": ("switch", "mask")}.get(was[1], ("slider", was[1]))
             elif was == ("strength", "strength") and was not in pairs:
                 was = ("switch", "scale_change")     # the slider went with its switch, which stays lit
+            if was is not None and was not in pairs and look is not None:
+                # on a drawn look the row below the one that went
+                was = lens_look.walk.follow_on(was, before, pairs)
             if was is not None:
                 self.panel_row = pairs.index(was) if was in pairs else pairs.index(("passes", "passes"))
             elif self.panel_row is not None:
@@ -8587,8 +9698,12 @@ class Lens:
         """Give the panel's window the size its contents ask for now, where it
         is and kept on its monitor: the ties, their words and the switch's row
         come and go with the pass shown. Nothing until the panel has been
-        shown."""
+        shown. A drawn look's rows that follow those first take their place,
+        see lens_look.panel.Panel.refresh."""
         t = self.panel
+        look = getattr(t, "look_panel", None)
+        if look is not None:
+            look.refresh()
         if t is None or not self.panel_ui.get("shown"):
             return
         t.update_idletasks()
@@ -8628,6 +9743,8 @@ class Lens:
                                  if self.profile else None)
             ui["program"].config(text=("for %s" % _short_title(tied)) if tied else "")
             ui["auto"].set(bool(AUTO_PROFILE))
+            if "free" in ui:
+                ui["free"].set(bool(FREE_MOUSE))
             # the note beside the switch comes and goes with the key being in
             # effect, and the panel's window takes the size its contents ask
             # for then. A new pass count shows the tabs anew, the switch's row
@@ -8701,6 +9818,15 @@ class Lens:
             pass
         self.panel_ui, self.panel_drag = {}, None
         self.panel_rows, self.panel_row, self.panel_tabs = [], None, []
+        # the front back where it was before the panel took it, while the
+        # panel still has it, and the watch of the held mouse ended
+        if self.mouse_watch is not None:
+            try:
+                self.root.after_cancel(self.mouse_watch)
+            except Exception:
+                pass
+            self.mouse_watch = None
+        self._panel_front_back()
         try:
             t.destroy()
         except Exception:
@@ -8919,6 +10045,9 @@ class Lens:
         cur = self.profile if self.profile in self.profiles["profiles"] else None
         if cur:
             items.append(("Update '%s' with the current settings" % cur, lambda: self.profile_store(cur), True))
+        if AUTO_PROFILE and _none_tied(self.profiles["profiles"]):
+            items.append((NO_TIE_WORDS[:1].upper() + NO_TIE_WORDS[1:], None, False))   # greyed, it does nothing
+        if cur:
             # each program by its title or, where that is empty, its class. A tie
             # without a class is none, and a program in front without one is
             # none to tie to, so its item is greyed, see _program
@@ -8979,6 +10108,7 @@ class Lens:
                 self.panel_light(len(rows) - 1 if d < 0 else 0)
             else:
                 self.panel_light((self.panel_row + d) % len(rows))
+            self._panel_keyed()
             return
         if self.panel_row is None or not self.panel_live:
             return
@@ -8990,6 +10120,9 @@ class Lens:
             elif what == "auto":
                 ui["auto"].set(not ui["auto"].get())
                 self._panel_auto("keyboard")
+            elif what == "free":
+                ui["free"].set(not ui["free"].get())
+                self._panel_free("keyboard")
             elif what == "shared":
                 if str(ui["shared_box"].cget("state")) == "disabled":
                     return              # passes 3 and 4 follow pass 2, whose tab has the switch
@@ -9113,7 +10246,9 @@ class Lens:
         """Show which setting the arrow keys are on: its name in the accent
         colour, the rest as they were. A tick that is greyed, where the pass
         runs at the first pass's value, shows in its greyed colour, so that
-        colour takes the accent while it is lit."""
+        colour takes the accent while it is lit. In a drawn look the name is a
+        State widget, so the row's band, bar and weight follow, and the
+        panel's own part explains the row, see lens_look.panel.Panel.lit."""
         self.panel_row = n
         for i, (_kind, _what, lit) in enumerate(self.panel_rows):
             try:
@@ -9122,6 +10257,9 @@ class Lens:
                     lit.config(disabledforeground=ACCENT if i == n else DIM)
             except Exception:
                 pass
+        look = getattr(self.panel, "look_panel", None)
+        if look is not None:
+            look.lit(n)
 
     def _panel_flush(self):
         """Write what the panel changed and have the engine read it: now, or
@@ -9241,6 +10379,34 @@ class Lens:
     def _panel_quality(self, step):
         if self.panel_live and step != self.quality_now():
             self.set_quality(step, "panel")
+
+    def _panel_passes_to(self, count):
+        """A pass count chosen on Slate's segments on the panel in a drawn
+        look, which restarts the picture as a pass more or fewer does, see
+        _panel_pass. The segments are greyed past the most passes the lens
+        runs and while Neural Rendering is off, see lens_look.panel."""
+        if self.nr_on and not self.rebuilding and not self.closing and int(count) != self.passes:
+            self.set_passes(int(count), how="panel")
+
+    def _panel_profile_step(self, d):
+        """The profile before or after the one in use, by name, loaded by an
+        arrow of Slate's profile picker on the panel in a drawn look, as Left
+        and Right load it on the profile row, see panel_key, with the same
+        half second for a load that restarts the picture."""
+        names = sorted(self.profiles["profiles"], key=str.lower)
+        if names and time.perf_counter() - self.panel_profile_at > 0.5:
+            i = (names.index(self.profile) + d) if self.profile in names else (0 if d > 0 else -1)
+            self.apply_profile(names[i % len(names)], "panel")
+            self.panel_profile_at = time.perf_counter()
+
+    def _panel_update(self):
+        """The Update button of the panel in a drawn look, which saves the
+        current settings into the profile in use, as the profile list's own
+        entry does, see panel_profile_menu. The button is greyed with no
+        profile in use."""
+        cur = self.profile if self.profile in self.profiles["profiles"] else None
+        if cur:
+            self.profile_store(cur, "panel button")
 
     def _panel_down(self, e):
         self.panel_drag = (e.x_root - self.panel.winfo_x(), e.y_root - self.panel.winfo_y())
@@ -9503,7 +10669,10 @@ class Lens:
 
         What a setting does is not on the page. It shows in a small window by
         the pointer once the pointer has rested on the setting, see Hints, and
-        the one line at the dialog's foot says so. Only what has to be seen
+        the one line at the dialog's foot says so. A drawn look shows it in a
+        part of the dialog's own as the pointer or the keys pick the setting,
+        where the screen leaves room for that part, and its footer shows the
+        keys, see lens_look.settings.SettingsFrame. Only what has to be seen
         without that stays beside a setting, in a few words: that a change
         restarts the picture or the lens, or why a setting does nothing.
 
@@ -9514,6 +10683,7 @@ class Lens:
         lens.
         """
         t = tk.Toplevel(self.root)
+        shown = _unseen(t)              # first seen dressed and placed over the lens, see the foot
         t.title("Neural Lens settings")
         t.attributes("-topmost", True)
         t.configure(bg=BG)
@@ -9525,39 +10695,76 @@ class Lens:
         # the explanations, which a test reaches as the dialog's hints
         hints = t.hints = Hints(self, t)
 
-        # ttk draws the tabs, in the lens's colours; the pages are plain frames,
-        # so every control is the widget it was when the dialog was one column
-        style = ttk.Style(t)
-        try:
-            style.theme_use("clam")
-        except tk.TclError:
-            pass
-        style.configure("Lens.TNotebook", background=BG, borderwidth=0, tabmargins=(8, 8, 8, 0))
-        # eight pixels beside each name: with fourteen, nine tabs are wider than
-        # anything on the pages and the dialog grows by a tab's width
-        style.configure("Lens.TNotebook.Tab", background=TAB_BG, foreground=DIM, borderwidth=0,
-                        padding=(8, 6), font=ctl)
-        style.map("Lens.TNotebook.Tab", background=[("selected", BG)], foreground=[("selected", FG)],
-                  expand=[("selected", (0, 0, 0, 0))])
-        nb = ttk.Notebook(t, style="Lens.TNotebook")
-        nb.grid(row=0, column=0, sticky="nsew", padx=8, pady=(8, 0))
+        # a drawn look draws the frame round the pages, see
+        # lens_look.settings.SettingsFrame, and ttk's notebook only holds them.
+        # Where that frame cannot be built, lens.log says why and Settings is
+        # made again as in the classic look, see _settings_fault
+        frame = None
+        if not LOOK.classic and lens_look is not None and "settings" not in _DRAWN_FAULT:
+            try:
+                frame = t.look_frame = lens_look.settings.SettingsFrame(t, LOOK)
+            except Exception as e:
+                return self._settings_fault(t, e)
+        if frame is None:
+            # ttk draws the tabs, in the lens's colours; the pages are plain frames,
+            # so every control is the widget it was when the dialog was one column
+            style = ttk.Style(t)
+            try:
+                style.theme_use("clam")
+            except tk.TclError:
+                pass
+            style.configure("Lens.TNotebook", background=BG, borderwidth=0, tabmargins=(8, 8, 8, 0))
+            # eight pixels beside each name: with fourteen, nine tabs are wider than
+            # anything on the pages and the dialog grows by a tab's width
+            style.configure("Lens.TNotebook.Tab", background=TAB_BG, foreground=DIM, borderwidth=0,
+                            padding=(8, 6), font=ctl)
+            style.map("Lens.TNotebook.Tab", background=[("selected", BG)], foreground=[("selected", FG)],
+                      expand=[("selected", (0, 0, 0, 0))])
+            nb = ttk.Notebook(t, style="Lens.TNotebook")
+            nb.grid(row=0, column=0, sticky="nsew", padx=8, pady=(8, 0))
+        else:
+            nb = frame.nb
+        # the pages by their names, for the explanation of a drawn look
+        t.pages = {}
+
+        # a drawn look makes the rows of the pages, see lens_look.settings.Rows,
+        # with the same widgets, words, variables and grid rows as the lines
+        # below. A row that meets a fault is made as below, and once the pages
+        # are built Settings is made again as in the classic look, see the foot
+        fault = []
+
+        def drawn(name, *args, **kw):
+            """What the drawn look's Rows makes by this name, or None in the
+            classic look and once a row of the drawn look has met a fault."""
+            if frame is None or fault:
+                return None
+            try:
+                return getattr(frame.rows, name)(*args, **kw)
+            except Exception as e:
+                fault.append(e)
+                return None
 
         def page(name):
             p = tk.Frame(nb, bg=BG)
             p.row, p.name = 0, name
             p.columnconfigure(0, weight=1)
             nb.add(p, text=name)
+            t.pages[name] = p
             return p
 
         def tip(p, label, why, *widgets):
             """Give the widgets that make up one setting its explanation. The
             label is what the setting is listed under for a review of the
-            texts, and a text several labels share is listed once for each."""
+            texts, and a text several labels share is listed once for each.
+            It is also what a drawn look's explanation names the setting by,
+            see Hints.titles."""
             if why:
                 if label:
                     hints.listed.append((p.name, label, why))
                 for wdg in widgets:
                     hints.add(wdg, why)
+                    if label:
+                        hints.titles[wdg] = label
 
         def words(row, text, colour=None):
             """A few words beside a setting, for what has to be seen without its
@@ -9567,35 +10774,46 @@ class Lens:
             return lbl
 
         def heading(p, text, why=None, beside=None):
-            row = tk.Frame(p, bg=BG)
-            row.grid(row=p.row, column=0, columnspan=3, sticky="w", padx=12, pady=(16, 4))
-            p.row += 1
-            tk.Label(row, text=text, bg=BG, fg=FG, font=head).pack(side="left")
-            if beside:
-                words(row, beside)
+            row = drawn("heading", p, text, beside, head, small)
+            if row is None:
+                row = tk.Frame(p, bg=BG)
+                row.grid(row=p.row, column=0, columnspan=3, sticky="w", padx=12, pady=(16, 4))
+                p.row += 1
+                tk.Label(row, text=text, bg=BG, fg=FG, font=head).pack(side="left")
+                if beside:
+                    words(row, beside)
+            # the settings after it are under it, for a drawn look's explanation
+            hints.section(p.name, text, why, beside, row)
             tip(p, text, why, row)
 
         def line(p, text, why=None, colour=None):
             """A sentence on a row of its own, for what a page has to say
             whether or not the pointer rests anywhere."""
-            lbl = tk.Label(p, text=text, bg=BG, fg=colour or DIM, justify="left", wraplength="430p", font=small)
-            lbl.grid(row=p.row, column=0, columnspan=3, sticky="w", padx=12, pady=(0, 6))
-            p.row += 1
-            tip(p, text, why, lbl)
-            return lbl
+            made = drawn("line", p, text, colour or DIM, small)
+            if made is None:
+                lbl = tk.Label(p, text=text, bg=BG, fg=colour or DIM, justify="left", wraplength="430p", font=small)
+                lbl.grid(row=p.row, column=0, columnspan=3, sticky="w", padx=12, pady=(0, 6))
+                p.row += 1
+                made = (lbl,)
+            tip(p, text, why, *made)
+            return made[0]
 
         def option(kind, p, text, why, beside, **kw):
-            row = tk.Frame(p, bg=BG)
-            row.grid(row=p.row, column=0, columnspan=3, sticky="w", padx=8, pady=(1, 0))
-            p.row += 1
-            b = kind(row, text=text, bg=BG, fg=FG, selectcolor=FIELD, activebackground=BG, activeforeground=FG,
-                     disabledforeground=DIM, font=font, **kw)
-            b.pack(side="left")
-            # the words beside it, empty for most: a switch that another one holds
-            # on says so there while it is greyed
-            b.beside = words(row, beside or "")
-            tip(p, text, why, row)
-            return b
+            # in a drawn look the button, then what has the setting's explanation
+            made = drawn("option", kind, p, text, beside, font, small, **kw)
+            if made is None:
+                row = tk.Frame(p, bg=BG)
+                row.grid(row=p.row, column=0, columnspan=3, sticky="w", padx=8, pady=(1, 0))
+                p.row += 1
+                b = kind(row, text=text, bg=BG, fg=FG, selectcolor=FIELD, activebackground=BG, activeforeground=FG,
+                         disabledforeground=DIM, font=font, **kw)
+                b.pack(side="left")
+                # the words beside it, empty for most: a switch that another one holds
+                # on says so there while it is greyed
+                b.beside = words(row, beside or "")
+                made = (b, row)
+            tip(p, text, why, *made[1:])
+            return made[0]
 
         def switch(p, text, var, why=None, beside=None):
             return option(tk.Checkbutton, p, text, why, beside, variable=var)
@@ -9607,36 +10825,45 @@ class Lens:
             """A button in the dialog's look. Without a border of its own it is
             no taller than the field beside it, and while it is pressed it has
             the window buttons' shade."""
+            b = drawn("press", holder, text, command, look, bg, fg)
+            if b is not None:
+                return b
             return tk.Button(holder, text=text, command=command, relief="flat", bd=0, highlightthickness=0,
                              padx=10, bg=bg, fg=fg, activebackground=CAP, activeforeground=FG, font=look)
 
         def folder(p, label, var, prompt, why=None):
             """A folder as a field with a Browse button, under its label where
             it has one of its own and not a heading."""
-            made = []
-            if label:
-                made.append(tk.Label(p, text=label, bg=BG, fg=FG, font=font))
-                made[0].grid(row=p.row, column=0, columnspan=3, sticky="w", padx=12, pady=(6, 0))
-                p.row += 1
-            made.append(tk.Entry(p, textvariable=var, width=48, bg=FIELD, fg=FG, insertbackground=FG,
-                                 relief="flat", font=ctl))
-            made[-1].grid(row=p.row, column=0, columnspan=2, padx=(12, 6), pady=4, sticky="we")
-
             def browse():
-                d = filedialog.askdirectory(initialdir=var.get() or DATA_DIR, title=prompt)
+                # Windows' own picker, owned by Settings, so it opens above
+                # Settings, which is topmost, rather than under it
+                d = filedialog.askdirectory(initialdir=var.get() or DATA_DIR, title=prompt, parent=t)
                 if d:
                     var.set(os.path.normpath(d))
 
-            made.append(press(p, "Browse", browse))
-            made[-1].grid(row=p.row, column=2, padx=(0, 12), pady=4)
-            p.row += 1
+            made = drawn("folder", p, label, var, browse, font, ctl)
+            if made is None:
+                made = []
+                if label:
+                    made.append(tk.Label(p, text=label, bg=BG, fg=FG, font=font))
+                    made[0].grid(row=p.row, column=0, columnspan=3, sticky="w", padx=12, pady=(6, 0))
+                    p.row += 1
+                made.append(tk.Entry(p, textvariable=var, width=48, bg=FIELD, fg=FG, insertbackground=FG,
+                                     relief="flat", font=ctl))
+                made[-1].grid(row=p.row, column=0, columnspan=2, padx=(12, 6), pady=4, sticky="we")
+                made.append(press(p, "Browse", browse))
+                made[-1].grid(row=p.row, column=2, padx=(0, 12), pady=4)
+                p.row += 1
             tip(p, label, why, *made)
 
         def button(p, text, command, why=None):
-            b = press(p, text, command)
-            b.grid(row=p.row, column=0, sticky="w", padx=12, pady=(6, 2))
-            p.row += 1
-            tip(p, text, why, b)
+            made = drawn("button", p, text, command, ctl)
+            if made is None:
+                b = press(p, text, command)
+                b.grid(row=p.row, column=0, sticky="w", padx=12, pady=(6, 2))
+                p.row += 1
+                made = (b,)
+            tip(p, text, why, *made)
 
         # the fast engine can run only where its exe is, and the Cost Scaler's
         # files, since it calls the model through that proxy. Where it can, the
@@ -9702,10 +10929,8 @@ class Lens:
 
         # the warning of check_hdr, in the warning colour, where it applies as
         # the dialog opens, since the page is built once
-        hdr_why = ("When Windows HDR is on for the monitor the lens is on while the ReShade engine draws the "
-                   "picture, a warning says so and goes away by itself. A fullscreen lens, one attached to a "
-                   "window and one with its title bar hidden show it at the top of the screen. A lens in a window "
-                   "shows a short sentence on its bar that points to this page. Applies straight away.")
+        hdr_why = ("When Windows HDR is on for the lens's monitor while the ReShade engine draws the picture, a "
+                   "warning says so and goes away by itself. Applies straight away.")
         heading(pic, "Windows HDR", hdr_why)
         if self.hdr_up:
             line(pic, self.hdr_words or HDR_SAID, hdr_why, WARN)
@@ -9744,14 +10969,19 @@ class Lens:
         # only where the fast engine can run, since the step is that engine's alone
         q_scale, q_opened = None, self.quality_now()
         if eng_ok:
-            q_why = FAST_QUALITY_WORDS + " Applies straight away."
+            q_why = FAST_QUALITY_WORDS      # as on the NR settings panel, two sentences and no more
             heading(pwr, "Quality step of the fast engine", q_why)
-            q_row = tk.Frame(pwr, bg=BG)
-            q_row.grid(row=pwr.row, column=0, columnspan=3, sticky="w", padx=12, pady=(4, 6))
-            pwr.row += 1
-            q_scale, q_name = self.quality_control(q_row, font=font)
-            q_scale.pack(side="left")
-            q_name.pack(side="left", padx=(12, 0))
+            # a drawn look's row, slider and label, see lens_look.settings.Rows.quality
+            q_made = drawn("quality", pwr, self.quality_control, font)
+            if q_made is None:
+                q_row = tk.Frame(pwr, bg=BG)
+                q_row.grid(row=pwr.row, column=0, columnspan=3, sticky="w", padx=12, pady=(4, 6))
+                pwr.row += 1
+                q_scale, q_name = self.quality_control(q_row, font=font)
+                q_scale.pack(side="left")
+                q_name.pack(side="left", padx=(12, 0))
+            else:
+                q_row, q_scale, q_name = q_made
             tip(pwr, None, q_why, q_row)
 
         # ================================================================ fullscreen
@@ -9763,9 +10993,9 @@ class Lens:
         # the NR key and the keys of the menu and the panel in its explanation
         keys, more, _held, _twice = self.keys_words()
         # two short explanations rather than one long one: what a fullscreen
-        # lens is, on the heading, and how it is reached, on the line of keys
-        keys_why = (more + " The keys can be changed on the Hotkeys page, and a right click on the lens's "
-                    "taskbar button lists the lens menu, the NR settings and fullscreen.")
+        # lens is, on the heading, and how it is reached, on the line of keys,
+        # whose explanation is the note's other keys, at most four sentences
+        keys_why = more
         full_why = ("The picture alone over the whole monitor, with no title bar. Two rows at the bottom stay "
                     "free, so notifications and a taskbar that hides itself still come up, and what the title "
                     "bar would say shows at the top of the screen for a few seconds.")
@@ -9774,10 +11004,8 @@ class Lens:
         note_opened = self.fs_note
         note_on = tk.BooleanVar(value=note_opened)
         switch(ful, "Show a note on going fullscreen", note_on,
-               "A short note each time the lens goes fullscreen, saying that the lens itself is invisible while "
-               "it goes on applying DLSS 5, with the keys and the taskbar button's list. Its Don't show this "
-               "again switches this off. While another program holds one of the lens's keys the note comes up "
-               "all the same, since that key then does nothing. Applies the next time the lens goes fullscreen.")
+               "A short note each time the lens goes fullscreen, with the keys a fullscreen lens has. Its Don't "
+               "show this again switches this off. Applies the next time the lens goes fullscreen.")
         # the warning of check_behind, which only the fast engine can give, since
         # only it measures the delay up to the screen
         behind_on = tk.BooleanVar(value=FS_BEHIND_WARN)
@@ -9785,6 +11013,10 @@ class Lens:
                "When the lens's picture keeps running well behind the program in front, a warning at the top of "
                "the screen says so, with what usually helps, and goes away by itself. It comes only while the "
                "fast engine draws the picture. Applies straight away.")
+        # Free the mouse, the same setting as the switch on the NR settings
+        # panel, see FREE_MOUSE
+        free_on = tk.BooleanVar(value=FREE_MOUSE)
+        switch(ful, FREE_MOUSE_LABEL, free_on, FREE_MOUSE_WHY)
 
         heading(ful, "Fullscreen engine",
                 "Which renderer draws a fullscreen lens. A windowed lens always runs on the ReShade engine.",
@@ -9813,14 +11045,14 @@ class Lens:
             line(ful, "The fast engine %s. Fullscreen runs on the ReShade engine until the lens is started "
                       "again." % self.fast_failed, colour=WARN)
         # greyed, the buttons show the engine that runs, whatever the ini asks for.
-        # How the two compare in frame rate and power is in README.md
+        # How the two compare in frame rate and power, and what of ReShade each
+        # has, are in README.md. Their words fit the narrow column of Settings
+        # with a line to spare
         eng_var = tk.StringVar(value=FULLSCREEN_ENGINE if eng_ok else "stack")
         for b in (radio(ful, "The fast engine", eng_var, "fast",
-                        "The lens's own renderer, made for fullscreen. It has no ReShade in it, so ReShade's "
-                        "effects are not there, and its NR settings are a panel of the lens's own."),
+                        "The lens's own renderer, made for fullscreen, with its own NR settings panel."),
                   radio(ful, "The ReShade engine", eng_var, "stack",
-                        "The renderer every windowed lens uses. It has ReShade in it, so the Home menu, "
-                        "ReShade's effects and its screenshot key work fullscreen as they do in a window.")):
+                        "The renderer of a windowed lens, with ReShade's Home menu and effects.")):
             if not eng_ok:
                 b.config(state="disabled")
 
@@ -9828,10 +11060,10 @@ class Lens:
         # four corners on the next, which keeps the page no taller than it must be.
         # Its key, as it is set, see toggle_readout
         ro_key = self.key_for("readout_toggle")
-        ro_why = ("A line of figures in a corner of the screen while the lens is fullscreen. Nothing shows until "
-                  "at least one of these is on. %s It stays out of the picture and lets every click through. "
-                  "Applies straight away." % ("%s shows or hides it." % ro_key if ro_key
-                                              else "A key set on the Hotkeys page can show or hide it."))
+        ro_why = ("A line of figures in a corner of the screen while the lens is fullscreen, with at least one of "
+                  "these on. %s It stays out of the picture and lets every click through. Applies straight away."
+                  % ("%s shows or hides it." % ro_key if ro_key
+                     else "A key set on the Hotkeys page can show or hide it."))
         heading(ful, "On-screen readout in fullscreen", ro_why)
         ro_opened = FS_READOUT          # what it showed as the dialog opened, see save
         ro_vars = {}
@@ -9852,6 +11084,8 @@ class Lens:
                                activebackground=BG, activeforeground=FG, disabledforeground=DIM, font=font)
             b.pack(side="left", padx=(0, 10))
             tip(ful, text, why, b)
+        # a drawn look gives each a switch row of its own, as its drawings do
+        drawn("readout", ful, ro_row, hints)
         at_row = tk.Frame(ful, bg=BG)
         at_row.grid(row=ful.row, column=0, columnspan=3, sticky="w", padx=12, pady=(2, 0))
         ful.row += 1
@@ -9863,6 +11097,8 @@ class Lens:
                                           fg=FG, selectcolor=FIELD, activebackground=BG, activeforeground=FG,
                                           font=font))
             at_made[-1].pack(side="left", padx=(0, 8))
+        # a drawn look shows the four as the corner's face, the buttons kept out of sight
+        at_made += drawn("corner", ful, at_row, at_made) or []
         tip(ful, "Corner", "Which corner of the lens's monitor the readout sits in.", *at_made)
 
         # ================================================================ title bar
@@ -9895,12 +11131,8 @@ class Lens:
         # ================================================================ profiles
         prof = page("Profiles")
 
-        prof_why = ("A profile is everything that makes the picture, saved under a name, from the window's place "
-                    "and size to every setting in the Home menu, the values each pass has of its own, whether "
-                    "the passes after the first run through pass 1's network, whether the change is scaled and "
-                    "the quality step. The selector on the title bar and the picker on the NR settings panel save "
-                    "and switch them. The picture restarts when one is applied, unless a fullscreen lens on the "
-                    "fast engine can take it as it runs.")
+        prof_why = ("A profile is everything that makes the picture, saved under a name. Applying one restarts the "
+                    "picture, unless a fullscreen lens on the fast engine can take it as it runs.")
         heading(prof, "Profiles", prof_why)
         names = sorted(self.profiles["profiles"], key=str.lower)
         plist = tk.Listbox(prof, height=max(4, min(8, len(names))), bg=FIELD, fg=FG, relief="flat",
@@ -10034,6 +11266,8 @@ class Lens:
                         row=i + 1, column=col * 2, sticky="w", padx=(0, 10))
                     tk.Label(facts, text=v, bg=BG, fg=FG, font=small, bd=0, pady=0, justify="left",
                              wraplength="130p").grid(row=i + 1, column=col * 2 + 1, sticky="w", padx=(0, 24))
+            # in a drawn look's type and colours, see lens_look.settings.Rows.facts
+            drawn("facts", facts)
 
         def on_pick(*_):
             n = chosen()
@@ -10098,12 +11332,14 @@ class Lens:
             elif n:
                 self.profile_tie(n, front, "Settings")
                 show_facts(n)
+                tie_note()
 
         def untie():
             n = chosen()
             if n:
                 self.profile_untie(n, "Settings")
                 show_facts(n)
+                tie_note()
 
         ties = tk.Frame(side, bg=BG)
         ties.pack(anchor="w", pady=(6, 0))
@@ -10121,12 +11357,22 @@ class Lens:
         ties.update_idletasks()
         last.config(wraplength=max(200, ties.winfo_reqwidth()))
         last.pack(anchor="w", pady=(2, 0))
+        # a drawn look lays the page out in its own way, see lens_look.settings.Rows.profiles
+        drawn("profiles", prof, plist, side, named, facts, last)
         auto_opened = bool(AUTO_PROFILE)     # as the dialog opened, see save
         auto_var = tk.BooleanVar(value=auto_opened)
-        switch(prof, "Load the profile tied to the program in front", auto_var,
-               "With this on, each time the window of a program a profile is tied to comes to the front, the "
-               "lens loads that profile, unless it is the one in use, and says so. The program is known by its "
-               "window's title and class. Applies straight away.")
+        auto_btn = switch(prof, "Load the profile tied to the program in front", auto_var,
+                          "With this on, each time the window of a program a profile is tied to comes to the front, "
+                          "the lens loads that profile, unless it is the one in use, and says so. The program is known "
+                          "by its window's title and class. Applies straight away.")
+
+        def tie_note(*_):
+            # the switch on with no profile tied, so it would load nothing, said beside it
+            none = auto_var.get() and _none_tied(self.profiles["profiles"])
+            auto_btn.beside.config(text=NO_TIE_WORDS if none else "")
+
+        auto_var.trace_add("write", tie_note)
+        tie_note()
         # the profile in use starts chosen, with its facts shown
         if self.profile in self.profiles["profiles"]:
             plist.selection_set(names.index(self.profile))
@@ -10137,10 +11383,8 @@ class Lens:
         hk = page("Hotkeys")
 
         heading(hk, "Global hotkeys",
-                "A key combination that works from anywhere, whichever window has the keyboard. Each one is "
-                "taken from every other program while the lens runs, so none is set until you set it, apart "
-                "from the last four, which are held only while the lens is fullscreen and in view. Home, F5 "
-                "and F6 on their own are kept for ReShade and the add-on.",
+                "A key combination that works whichever window has the keyboard, and no other program gets it "
+                "while the lens runs. The last four are taken only while the lens is fullscreen and in view.",
                 beside="click a field, then press the combination")
         # what each key does, which is its row's explanation
         hk_does = {
@@ -10255,6 +11499,8 @@ class Lens:
             hk_note[action].pack(side="left", padx=(8, 0))
             hk.row += 1
             tip(hk, label, hk_does.get(action), name, ent, fr)
+            # a drawn look lays the row out again, see lens_look.settings.Rows.hotkey
+            drawn("hotkey", hk, name, ent, fr, hk_note[action], hints)
 
         # ================================================================ screenshots
         sh = page("Screenshots")
@@ -10274,22 +11520,26 @@ class Lens:
         # ================================================================ look
         look = page("Look")
 
-        theme_why = ("The colours of the title bar, the menus and this dialog, never of the picture. A "
-                     "themes.json in the data folder can add themes of your own, with the keys the built-in "
-                     "ones use. Choosing one restarts the lens.")
+        theme_why = ("How the title bar, the menus and every window of the lens look, never the picture. Slate "
+                     "is the default. A themes.json in the data folder can add themes of your own, each in the "
+                     "layout of one of these. Choosing one restarts the lens.")
         heading(look, "Theme", theme_why, beside="choosing one restarts the lens")
         theme_var = tk.StringVar(value=THEME_NAME)
-        for name in sorted(ALL_THEMES, key=lambda n: (n != "Slate", n.lower())):
+        # Slate first, then the other themes that come with the lens, then the user's own, each by name
+        for name in sorted(ALL_THEMES, key=lambda n: (n != "Slate", n not in THEMES, n.lower())):
             t_ = ALL_THEMES[name]
-            row_ = tk.Frame(look, bg=BG)
-            row_.grid(row=look.row, column=0, columnspan=3, sticky="w", padx=8, pady=(1, 0))
-            tk.Radiobutton(row_, text=name, variable=theme_var, value=name, bg=BG, fg=FG,
-                           selectcolor=FIELD, activebackground=BG, activeforeground=FG,
-                           font=font, width=12, anchor="w").pack(side="left")
-            for key in ("bg", "field", "hover", "cap", "fg", "dim", "accent", "warn", "close"):
-                tk.Frame(row_, bg=t_[key], width=26, height=18, highlightthickness=1,
-                         highlightbackground=t_["dim"]).pack(side="left", padx=1)
-            look.row += 1
+            # a drawn look's card or tile with the theme's colours, see lens_look.settings.Rows.theme
+            row_ = drawn("theme", look, name, theme_var, t_, font)
+            if row_ is None:
+                row_ = tk.Frame(look, bg=BG)
+                row_.grid(row=look.row, column=0, columnspan=3, sticky="w", padx=8, pady=(1, 0))
+                tk.Radiobutton(row_, text=name, variable=theme_var, value=name, bg=BG, fg=FG,
+                               selectcolor=FIELD, activebackground=BG, activeforeground=FG,
+                               font=font, width=12, anchor="w").pack(side="left")
+                for key in ("bg", "field", "hover", "cap", "fg", "dim", "accent", "warn", "close"):
+                    tk.Frame(row_, bg=t_[key], width=26, height=18, highlightthickness=1,
+                             highlightbackground=t_["dim"]).pack(side="left", padx=1)
+                look.row += 1
             tip(look, name, theme_why, row_)
 
         # ================================================================ program
@@ -10458,6 +11708,16 @@ class Lens:
                 self.fs_note = bool(note_on.get())
                 _save_ini("fullscreen_note", None if self.fs_note else "0")
                 said("fullscreen_note", int(self.fs_note))
+            if bool(free_on.get()) != FREE_MOUSE:
+                _set_free_mouse(free_on.get())
+                said("free_mouse", int(FREE_MOUSE))
+                self.sync_panel()
+                if self.panel is not None:      # the open panel follows at once, as its own switch does
+                    if FREE_MOUSE:
+                        self._panel_front(self.panel)
+                    else:
+                        self._panel_front_back()
+                    self._panel_line()
             if bool(behind_on.get()) != FS_BEHIND_WARN:
                 _set_fs_behind_warn(behind_on.get())
                 said("fs_behind_warn", int(FS_BEHIND_WARN))
@@ -10533,27 +11793,87 @@ class Lens:
         # the one line that says how an explanation comes up, on every page. The
         # version sits beside Save on every page too: a bug report is far more
         # likely to be written with this dialog open than with the console
-        foot = tk.Frame(t, bg=BG)
-        foot.grid(row=1, column=0, sticky="we", padx=8, pady=(8, 10))
-        foot.columnconfigure(0, weight=1)
-        tk.Label(foot, text="Rest the pointer on a setting or press F1 for help.", bg=BG, fg=FG,
-                 font=small).grid(row=0, column=0, sticky="w", padx=12)
-        tk.Label(foot, text="Neural Lens %s (beta)" % __version__, bg=BG, fg=DIM,
-                 font=small).grid(row=0, column=1, sticky="e", padx=(12, 14))
-        press(foot, "Save", save, bg=ACCENT, fg=FIELD).grid(row=0, column=2, sticky="e", padx=(0, 6))
-        press(foot, "Cancel", t.destroy).grid(row=0, column=3, sticky="w", padx=(0, 12))
-        self._place_over_lens(t)
+        if frame is None:
+            foot = tk.Frame(t, bg=BG)
+            foot.grid(row=1, column=0, sticky="we", padx=8, pady=(8, 10))
+            foot.columnconfigure(0, weight=1)
+            tk.Label(foot, text="Rest the pointer on a setting or press F1 for help.", bg=BG, fg=FG,
+                     font=small).grid(row=0, column=0, sticky="w", padx=12)
+            tk.Label(foot, text="Neural Lens %s (beta)" % __version__, bg=BG, fg=DIM,
+                     font=small).grid(row=0, column=1, sticky="e", padx=(12, 14))
+            press(foot, "Save", save, bg=ACCENT, fg=FIELD).grid(row=0, column=2, sticky="e", padx=(0, 6))
+            press(foot, "Cancel", t.destroy).grid(row=0, column=3, sticky="w", padx=(0, 12))
+            _dress(t)
+            self._place_over_lens(t)
+            _show(t, shown)
+            return
+        # where a row of a drawn look met a fault, Settings is made again as in
+        # the classic look, see drawn above
+        if fault:
+            return self._settings_fault(t, fault[0])
+        # a drawn look lays its frame out round the pages, with the same line,
+        # version and buttons, and fits the window to the screen, see
+        # lens_look.settings.SettingsFrame.finish. It is dressed first, since
+        # the fit takes the caption Windows draws round it. Where the fit has
+        # room for it the explanation shows in the frame's own part, and the
+        # footer shows these keys, which walk the rows, in place of the line,
+        # see lens_look.settings.RowWalker
+        try:
+            _dress(t)
+            fitted = t.fit = frame.finish(self._settings_room(t), ("Save", save), ("Cancel", t.destroy),
+                                          "Neural Lens %s (beta)" % __version__,
+                                          "Rest the pointer on a setting or press F1 for help.",
+                                          keys=((("Up", "Down"), "Pick a setting"), (("Left", "Right"), "Change it"),
+                                                (("Enter",), "Switch"), (("Ctrl", "Tab"), "Turn the page"),
+                                                (("Esc",), "Cancel")),
+                                          hints=hints)
+        except Exception as e:
+            return self._settings_fault(t, e)
+        self._place_over_lens(t, fitted["outer"])
+        _show(t, shown)
 
-    def _place_over_lens(self, win):
-        """Put a dialog over the middle of the lens, kept inside that monitor's
-        work area, rather than wherever Tk would put it."""
-        win.update_idletasks()
-        w, h = win.winfo_reqwidth(), win.winfo_reqheight()
+    def _settings_room(self, win):
+        """The work area Settings is fitted to in a drawn look, as (width,
+        height), that of the monitor the lens is on, which _place_over_lens
+        puts it over, or for the tests that of a screen of FIT_SCREEN's size."""
+        if FIT_SCREEN:
+            return lens_look.settings.screen_room(FIT_SCREEN, LOOK.scale_for(win))
+        return tuple(work_area(*self._lens_middle(win)))[2:4]
+
+    def _settings_fault(self, t, e):
+        """Settings made again as in the classic look, in the look's colours,
+        where the frame of the drawn look could not be built. lens.log says so
+        once, and Settings is made so for the rest of the run, as the lens
+        keeps its classic look where the looks cannot be loaded at all."""
+        _DRAWN_FAULT["settings"] = str(e) or type(e).__name__
+        try:
+            print('Settings could not be drawn in the %s look ("%s"), so it is drawn as in the classic look'
+                  % (LOOK.theme, _DRAWN_FAULT["settings"]), flush=True)
+        except Exception:
+            pass            # an output that cannot take the error's words must not stop the lens
+        try:
+            t.destroy()
+        except tk.TclError:
+            pass
+        return self.settings_dialog()
+
+    def _lens_middle(self, win):
+        """The middle of the lens on the screen, or of the screen where the
+        lens has no place yet."""
         try:
             x, y = self.inner()
-            cx, cy = x + self.cw // 2, y + self.ch // 2
+            return x + self.cw // 2, y + self.ch // 2
         except Exception:
-            cx, cy = win.winfo_screenwidth() // 2, win.winfo_screenheight() // 2
+            return win.winfo_screenwidth() // 2, win.winfo_screenheight() // 2
+
+    def _place_over_lens(self, win, size=None):
+        """Put a dialog over the middle of the lens, kept inside that monitor's
+        work area, rather than wherever Tk would put it. size is the window's
+        size where that is not what its contents ask for, as Settings in a
+        drawn look is fitted to the screen."""
+        win.update_idletasks()
+        w, h = size if size is not None else (win.winfo_reqwidth(), win.winfo_reqheight())
+        cx, cy = self._lens_middle(win)
         left, top = cx - w // 2, cy - h // 2
         try:
             l, t, ww, hh = tuple(work_area(cx, cy))[:4]
@@ -10565,8 +11885,18 @@ class Lens:
 
     def _ask(self, title, text, choices):
         """A question with these buttons, the first one the accent. Returns the
-        one chosen, or None when the window is closed instead."""
+        one chosen, or None when the window is closed instead. A drawn look
+        asks it in the lens's own dialog, its first paragraph the head, placed
+        over the lens as here, see lens_look.dialogs.ask, and where that
+        cannot be shown it is asked as in the classic look, see _small_fault."""
+        if _drawn_small("ask"):
+            try:
+                return lens_look.dialogs.ask(title, text, choices, parent=self.root, look=LOOK, form="ask",
+                                             place=self._place_over_lens)
+            except Exception as e:
+                _small_fault("ask", e)
         d = tk.Toplevel(self.root)
+        shown = _unseen(d)
         d.title(title)
         d.attributes("-topmost", True)
         d.configure(bg=BG)
@@ -10575,11 +11905,15 @@ class Lens:
             row=0, column=0, columnspan=len(choices), sticky="w", padx=14, pady=(14, 12))
         picked = []
         for i, c in enumerate(choices):
+            # pressed, a button takes the window buttons' shade, as the buttons of Settings do
             tk.Button(d, text=c, command=lambda c=c: (picked.append(c), d.destroy()), relief="flat",
-                      bg=ACCENT if i == 0 else HOVER, fg=FIELD if i == 0 else FG).grid(
+                      bg=ACCENT if i == 0 else HOVER, fg=FIELD if i == 0 else FG, activebackground=CAP,
+                      activeforeground=FG).grid(
                 row=1, column=i, sticky="w", padx=(14 if i == 0 else 6, 14 if i == len(choices) - 1 else 0),
                 pady=(0, 14))
+        _dress(d)
         self._place_over_lens(d)
+        _show(d, shown)
         d.grab_set()
         self.root.wait_window(d)
         return picked[0] if picked else None
@@ -10655,6 +11989,8 @@ def _fatal(text):
         if tk._default_root is None:
             made = tk.Tk()          # or messagebox makes a visible one itself
             made.withdraw()
+            _set_icon(made)         # the icon of the message's own window
+            LOOK.bind(made)         # the scale and the faces of the look, see Look.bind
         messagebox.showerror("Neural Lens", text)
         if made is not None:
             made.destroy()
@@ -10677,6 +12013,7 @@ def _offer_setup(reason):
     root = tk.Tk()
     _set_icon(root)
     root.withdraw()
+    LOOK.bind(root)                 # the scale and the faces of the look, see Look.bind
     root.attributes("-topmost", True)
     want = messagebox.askyesno(
         "Neural Lens",
@@ -10686,7 +12023,7 @@ def _offer_setup(reason):
         % neural_stack.DOWNLOAD_MB)
     where = False
     if want:
-        where = neural_stack.wizard(root)
+        where = neural_stack.wizard(root, look=LOOK)
     try:
         root.destroy()
     except Exception:
@@ -10772,7 +12109,7 @@ def _main():
     # the taskbar button's list, which a lens that was ended by force leaves
     if "--setup-stack" in sys.argv:
         import neural_stack
-        neural_stack.wizard()
+        neural_stack.wizard(look=LOOK)
         return
     if "--uninstall-stack" in sys.argv:
         import neural_stack
@@ -10864,6 +12201,7 @@ def _main():
     root = tk.Tk()
     _set_icon(root)
     root.withdraw()
+    LOOK.bind(root)                 # the scale and the faces of the look, see Look.bind
     missing = _missing_stack()
     if missing:
         # This has to run before the presenter exists. Its window is topmost

@@ -1,0 +1,68 @@
+The fonts of the looks of Neural Lens
+
+The lens draws its looks in these fonts where a look asks for them. Each file
+is its project's own and unchanged, taken on 2026-10-07 from the newest
+release of the project on GitHub, and each is licensed under the SIL Open
+Font License 1.1, whose text with the project's copyright line is in the
+licenses folder of the lens. The lens adds them for its own process alone,
+so nothing is installed on the computer.
+
+Each font file's SHA-256 below is that of the file as published. A licence
+text's is that of its text with LF line ends, since the copies in the
+licenses folder have CRLF line ends.
+
+Source Serif 4, version 4.005, by Adobe
+  release  https://github.com/adobe-fonts/source-serif/releases/tag/4.005R
+  archive  https://github.com/adobe-fonts/source-serif/releases/download/4.005R/source-serif-4.005_Desktop.zip
+    sha256 549fdb8f9a682bd06944298621404969f6de77c2e422ff3b8244a1dcd6a0c425
+  licence  licenses\SOURCE-SERIF-4-OFL.txt, source-serif-4.005_Desktop/LICENSE.md in the archive, the same as https://raw.githubusercontent.com/adobe-fonts/source-serif/4.005R/LICENSE.md
+    sha256 75784a295293a8992f5a8d99210566e0064a012e6dab6731305e3787f15896c7
+    as published, with LF line ends, the file has this SHA-256 too
+  file SourceSerif4-Regular.ttf, source-serif-4.005_Desktop/TTF/SourceSerif4-Regular.ttf in the archive
+    sha256 e5a4ee6a3d87bb9024796be390c6771e2a0eb1883dae25effaf57ca01668e24b
+  file SourceSerif4-Semibold.ttf, source-serif-4.005_Desktop/TTF/SourceSerif4-Semibold.ttf in the archive
+    sha256 36db62940cb5728b12b1802476dc7fcf4c6c519a7bdd476ba23a4e555fc4655f
+  file SourceSerif4Subhead-Semibold.ttf, source-serif-4.005_Desktop/TTF/SourceSerif4Subhead-Semibold.ttf in the archive
+    sha256 d8f7910a7d891240af43eb79d9e130e71956d500e3bac4d5db122e090bec2fbe
+
+Source Sans 3, version 3.052, by Adobe
+  release  https://github.com/adobe-fonts/source-sans/releases/tag/3.052R
+  archive  https://github.com/adobe-fonts/source-sans/releases/download/3.052R/TTF-source-sans-3.052R.zip
+    sha256 1b0dd1ec44b39f1dd98bbd153a1a3815f083639874ddee02c842bd601bad3d21
+  licence  licenses\SOURCE-SANS-3-OFL.txt, LICENSE.md of the tag 3.052R, https://raw.githubusercontent.com/adobe-fonts/source-sans/3.052R/LICENSE.md
+    sha256 db4728023c37bd1db542fd14ff9e4f3bcc23836b8374f6fe1f2351d38c2996d5
+    as published, with CRLF line ends, the file has the SHA-256 89ad2c4f66dd29127527493e729c31e731f111cf10faf5774c3db9275ed0c22c
+  file SourceSans3-Regular.ttf, TTF/SourceSans3-Regular.ttf in the archive
+    sha256 4644c81b86ec9caaa76b634889968ed3c4f4f52f054855933acc7c2b21e53b0f
+  file SourceSans3-Medium.ttf, TTF/SourceSans3-Medium.ttf in the archive
+    sha256 a7af35c1cab5dd0b29d742f86f2edfdf83fa7ec213643e765c5c51a2dc24edbc
+  file SourceSans3-Semibold.ttf, TTF/SourceSans3-Semibold.ttf in the archive
+    sha256 a3f4f8dcf343a8f24dc61951de93f3ba1558b15cd250ba24af8a40e957081b7d
+
+Barlow and Barlow Semi Condensed, version 1.422, by The Barlow Project Authors
+  release  https://github.com/jpt/barlow/releases/tag/1.422, which has no archive, so the files are those of the tag 1.422, commit 697600fcece1685b0ba409eb82868546def9a84e
+  licence  licenses\BARLOW-OFL.txt, OFL.txt of the tag 1.422, https://raw.githubusercontent.com/jpt/barlow/1.422/OFL.txt
+    sha256 186d750eb496a4c17a76385f82be6aea2ac1cf2de074a811d63786cf374ea73f
+    as published, with LF line ends, the file has this SHA-256 too
+  file Barlow-Regular.ttf, https://raw.githubusercontent.com/jpt/barlow/1.422/fonts/ttf/Barlow-Regular.ttf
+    sha256 a72240db047b468c957834cdbd607f013da32edee62d096f5fe0a4c2dc8433ce
+  file Barlow-Medium.ttf, https://raw.githubusercontent.com/jpt/barlow/1.422/fonts/ttf/Barlow-Medium.ttf
+    sha256 5a26763b11d11a437ab9f1c46281d3615ab1f6b93c90b8fa181e03978971b9e9
+  file BarlowSemiCondensed-Medium.ttf, https://raw.githubusercontent.com/jpt/barlow/1.422/fonts/ttf/BarlowSemiCondensed-Medium.ttf
+    sha256 ef5c39de3ac1764a24c7495098672ccc034e39679ccd65d76eed752da59e11e1
+  file BarlowSemiCondensed-SemiBold.ttf, https://raw.githubusercontent.com/jpt/barlow/1.422/fonts/ttf/BarlowSemiCondensed-SemiBold.ttf
+    sha256 5358c566b2039988c68b4ea2af05270da055110a5d23fbd686d5a11fbecf4e03
+
+IBM Plex Mono, release 2.5.0 with fonts of version 2.005, by IBM
+  release  https://github.com/IBM/plex/releases/tag/%40ibm/plex-mono%402.5.0
+  archive  https://github.com/IBM/plex/releases/download/%40ibm/plex-mono%402.5.0/ibm-plex-mono.zip
+    sha256 6d23f01257663d8cc49a0d64c22ced630b79e0e2a0ac08a0da86e9a38bbc481c
+  licence  licenses\IBM-PLEX-MONO-OFL.txt, ibm-plex-mono/LICENSE.txt in the archive
+    sha256 37784b44044a4ffd9256702b7c0982c37e5c8887ba90c6dca0479aea93dc898d
+    as published, with CRLF line ends, the file has the SHA-256 7e6b2818edbd8f6a01ae80641cc8f16a51080d08fb4e532be3a0b6f74adb07da
+  file IBMPlexMono-Regular.ttf, ibm-plex-mono/fonts/complete/ttf/IBMPlexMono-Regular.ttf in the archive
+    sha256 7c6fbddca4b700be918f5f6183d9bd4464fa427fe435f0b480d77fe2bb8c5a43
+  file IBMPlexMono-Medium.ttf, ibm-plex-mono/fonts/complete/ttf/IBMPlexMono-Medium.ttf in the archive
+    sha256 98fbd727aae340b236955879dabed4d991aac9e8e90b3b2a67ce4a59221cc97c
+  file IBMPlexMono-SemiBold.ttf, ibm-plex-mono/fonts/complete/ttf/IBMPlexMono-SemiBold.ttf in the archive
+    sha256 f04d7c488ddf7d1fa99f2574efc3406ea4cbe17bb1af3a1ab960f84d0c96a172

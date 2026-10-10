@@ -3,6 +3,94 @@
 Versions follow semantic versioning. While the major version is 0 the project is beta, and
 settings, the state file format and behaviour may change between releases.
 
+## 0.8.0, 2026-10-10
+
+Four themes that each give every window of the lens a look of its own, Settings that you walk
+with the keys and that shows what a setting does beside it, Free the mouse, a line on the NR
+settings panel that names the arrow keys, a pointer that keeps out of the arrow keys' way while a
+game holds the mouse, and shorter explanations on the panel and in Settings.
+
+- **Four themes, each a look of its own.** Slate, the default, Graphite, Paper and Industrial, on
+  the Look page of Settings, now change the layout as well as the colours, each as a design draws
+  it, Graphite in Slate's layout. Every window of the lens follows the theme, Settings, the NR
+  settings panel, the lens menu and its lists, the title bar and the frame, the note on going
+  fullscreen, the notices, the on-screen readout, the window that explains a setting, the tab of a
+  hidden title bar, the A/B divider, the hint of an attach pick, the sheet of a region pick, the
+  lens's dialogs and the stack setup's window. Every setting keeps its words, its key in the ini
+  and its keys. Choosing a theme restarts the lens, as before.
+- **Settings shows what a setting does beside it.** Its pages are listed down its left side, or as
+  tabs along its top in Industrial, and what the setting the pointer is on or the keys have picked
+  does shows beside the settings, or under them in Industrial, in place of the window that came up
+  after a second and a half. Up and Down pick a setting, Left and Right change it, Enter switches a
+  switch or presses a button, Ctrl+Tab, Page Down and Page Up turn the page, and Escape cancels, as
+  the dialog's foot shows. Where the screen has no room for the explanation beside the settings, it
+  comes up by the pointer as before.
+- **The NR settings panel in each theme** has its settings in the order of the theme's design,
+  Slate's, Graphite's and Paper's with the passes and the quality step above the pass tabs, shows
+  what the setting picked does in a part under its settings, and shows the keys that work it as
+  key caps along its foot.
+- **The lens's messages are dialogs of its own**, in the theme's colours, where they were Windows'
+  own boxes, with the same words, buttons and keys, Windows' sound for each kind of message, and
+  Ctrl+C to copy the words. A dialog takes the keyboard only where the lens has it already, so it
+  never takes the front from another program, and like the lens's other windows it stays out of
+  screenshots. On Windows 11 the frame of each dialog and of the stack setup's window takes the
+  theme's colours, and on Windows 10 its dark mode in a dark theme.
+- **The fonts of the designs come with the lens.** Paper draws in Source Serif 4 and Source Sans 3,
+  Industrial in Barlow, Barlow Semi Condensed and IBM Plex Mono, and Slate and Graphite in a font
+  of Windows' own. The fonts are under the SIL Open Font License 1.1, with their licence texts in
+  `licenses`, and the lens adds them for itself alone while it runs, so nothing is installed.
+- **Paper is warm, and secondary words are easier to read.** Paper takes its design's warm sheet
+  and ink where it was grey. The secondary words of Slate, Industrial and Graphite are lighter, and
+  Graphite, which has no design of its own, has Slate's layout in its own colours.
+- **themes.json.** A theme of your own can name the theme it starts from with `look`, Slate,
+  Graphite, Paper or Industrial, and takes that theme's layout and the colours it leaves out. An
+  entry that changes some colours of a theme that comes with the lens keeps that theme's other
+  colours, where it took Slate's. An entry can also give the colours of the parts a look draws,
+  see `docs/NOTES.md`, and `lens.log` says where its colours make some text hard to read.
+- **A lens in a window is wider at its narrowest**, since the title bar's drawn controls are
+  wider. On a test computer that is 390, 488 and 576 pixels at 100, 125 and 150 percent display
+  scaling in Slate and Graphite, 380, 484 and 572 in Paper and 400, 502 and 596 in Industrial,
+  where it was 322, 366 and 414. A size saved narrower is widened to it.
+- **Free the mouse.** A switch on the NR settings panel, under the switch that loads a profile
+  for the program in front, and on the Fullscreen page of Settings, one setting in both places,
+  off to begin with. On, the lens brings the panel to the front while it is open, as Alt+Tab
+  does, so a game that holds the mouse lets go of it and you can point and click on the panel,
+  and closing the panel gives the front back to the game. A window you went to meanwhile keeps
+  the front. While the panel is in front, a game may pause, mute its sound or slow down, as it
+  does on Alt+Tab, so the switch stays off until you switch it on. Switched in Settings while the
+  panel is open, the panel takes the front or gives it back at once. `free_mouse = 1` in the ini
+  keeps it on, and `lens.log` says each time whether the front was taken and whether it was given
+  back. The lens never moves the pointer, keeps it to a part of the screen, or shows or hides it.
+- **A line on the NR settings panel names the arrow keys.** It says how to pick a setting with the
+  arrow keys. While the program in front holds the mouse, hiding the pointer, keeping it to a part
+  of the screen or putting it back to the middle of its window, and Free the mouse is off, the line
+  adds that Free the mouse lets you use the mouse on the panel. The lens tells that the mouse is
+  held by whether the pointer is showing, the part of the screen it is kept to and whether it
+  stays at the middle of the window in front, which it reads four times a second while the panel
+  is open.
+- **A held mouse keeps out of the arrow keys' way.** While the program in front holds the mouse,
+  the pointer brings up no explanation on the panel, lights nothing on it and lights no entry of
+  the lens menu, so a game that keeps putting the pointer back under the panel does not get in the
+  way of the arrow keys. Where the panel lights the setting under the pointer, the pointer lights
+  one again after an arrow key only once it has moved a little.
+- **Shorter explanations, shown whole.** Every explanation on the NR settings panel and in
+  Settings fits the part it shows in, in each theme at 100, 125 and 150 percent display scaling,
+  so none is cut off or ends in three dots. The quality step's explanation, on the panel and on
+  the Power page of Settings, says what the steps do in two short sentences, and the explanations
+  of Free the mouse, of profiles, of the global hotkeys, of the Windows HDR warning, of the note
+  on going fullscreen and of the two fullscreen engines are as short. The explanation of the
+  on-screen readout in Settings is four short sentences, and the explanation of the fullscreen
+  keys there lists the keys alone. On a monitor too short for the whole panel, its explanation
+  keeps its full height, where it showed two lines. On a screen too short for all of them, Slate's
+  list of a page's explanations before a setting is picked shows those that fit whole.
+- **The four lines at the NR settings panel's foot are gone**, the foot showing the panel's keys.
+  What the ReShade engine makes of the passes and the switches, and how a held key speeds a slider
+  up, are in the README and `docs/NOTES.md`. The button beside a slider's number says what it does
+  in its own explanation.
+- **No profile tied yet.** With the switch Load the profile tied to the program in front on and no
+  profile tied to a program, Settings says so beside the switch, and the panel's profile list says
+  so above the entry that ties one.
+
 ## 0.7.0, 2026-10-09
 
 A switch that scales the network's change, with a strength of its own, a switch that runs the

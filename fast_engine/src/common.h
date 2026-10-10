@@ -45,7 +45,7 @@
 #include <vector>
 
 // Named in the ready line, so a log says which presenter ran.
-#define LENS_FAST_VERSION "0.7.0-fast"
+#define LENS_FAST_VERSION "0.8.0-fast"
 
 // What the process returns. The lens only looks at whether it is still running, the numbers
 // are for a person reading a log.

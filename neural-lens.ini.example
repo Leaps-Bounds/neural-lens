@@ -116,6 +116,17 @@
 # the Settings dialog has this too.
 # fs_behind_warn = 1
 
+# Free the mouse. While the NR settings panel of a fullscreen lens is open, the
+# lens brings it to the front, as Alt+Tab does, so a game that holds the mouse
+# lets go of it and the panel can be pointed at and clicked. Closing the panel
+# gives the front back to the window that had it, and only while a window of
+# the lens still has the front, so a window you went to meanwhile keeps it.
+# While the panel is in front, a game may pause, mute its sound or slow down,
+# as it does on Alt+Tab. The lens never moves the pointer, keeps it to a part
+# of the screen, or shows or hides it. Off unless this says 1. The NR settings
+# panel and the Fullscreen page of the Settings dialog have this too.
+# free_mouse = 0
+
 # A warning when Windows HDR is on for the monitor the lens is on while the
 # ReShade engine draws the picture, which then comes out washed out. That
 # engine draws every lens in a window, a lens attached to a window and a
@@ -237,9 +248,11 @@
 # Settings dialog and the panel have this too.
 # auto_profile = 0
 
-# The colours of the title bar, the menus and the Settings dialog. Slate is the
-# lens as it always looked. Graphite, Paper and Industrial come with it, and a
-# themes.json in the data folder adds more. Takes effect at the next launch.
+# The theme, which sets how the title bar, the menus and every window of the
+# lens look, never the picture. Slate, the default, Graphite, Paper and
+# Industrial come with the lens, each with a layout of its own, Graphite in
+# Slate's, and a themes.json in the data folder adds more. Takes effect at the
+# next launch. The Settings dialog has this too.
 # theme = Slate
 
 # Ask GitHub for the newest release when the lens starts, at most once a day,

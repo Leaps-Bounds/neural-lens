@@ -37,11 +37,13 @@ if built.returncode != 0 or not os.path.isfile(FAST_EXE):
     raise SystemExit("fast_engine\\build.cmd did not build lens-fast.exe (exit code %d). Its output is "
                      "above. The release needs the fast engine." % built.returncode)
 
-# the lens: Tk, the stack setup, and nothing of the capture or Vulkan side
+# the lens: Tk, the stack setup, and nothing of the capture or Vulkan side. The
+# fonts of its looks go into the bundle's assets beside the icon, in
+# _internal\assets\fonts with FONTS.txt, see lens_look\fonts.py
 lens = Analysis(
     [os.path.join(ROOT, "neural_lens.py")],
     pathex=[ROOT],
-    datas=[(ICON, "assets")],
+    datas=[(ICON, "assets"), (os.path.join(ROOT, "assets", "fonts"), "assets/fonts")],
     hiddenimports=["neural_stack"],
     excludes=EXCLUDES,
 )

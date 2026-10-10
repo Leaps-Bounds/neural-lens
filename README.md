@@ -272,21 +272,41 @@ them, and the setup does not accept them. The SF-v2 build is what runs on every 
   and bottom corners, the way any window is resized, and the title bar shows the size as you go.
   Let go and the picture restarts at the new size, which takes a second or two. See
   [Limits](#limits) for why. A lens in a window is never narrower than the controls on its title
-  bar, which on a test computer came to 322 pixels at 100 percent display scaling, 366 pixels at
-  125 percent and 414 pixels at 150 percent. So a narrow lens cuts the title, the figures and the
-  profile selector on its bar short, and never one of the controls. A size saved narrower than
-  that, by an earlier version or in a profile, is widened to it.
+  bar, which on a test computer came to 390 pixels at 100 percent display scaling, 488 pixels at
+  125 percent and 576 pixels at 150 percent in the Slate and Graphite themes, 380, 484 and 572
+  pixels in Paper, and 400, 502 and 596 pixels in Industrial. So a narrow lens cuts the title, the
+  figures and the profile selector on its bar short, and never one of the controls. A size saved
+  narrower than that, by an earlier version or in a profile, is widened to it.
 - **Settings** in the menu is nine pages, Picture, Power, Fullscreen, Title bar, Profiles,
-  Hotkeys, Screenshots, Look and Program. Each setting is one short label. Rest the pointer on a
-  setting for a second and a half, and a small window beside the pointer says what the setting
-  does. The figures measured for the settings are in this README and in
-  [docs/NOTES.md](docs/NOTES.md). The window goes when the pointer moves off. F1
-  brings up the same for the setting that has the keyboard, or for the one under the pointer
-  when no setting has it, and a line at the foot of the dialog says both. A click on a switch, a
-  choice, a button or the slider gives that setting the keyboard. Look picks a theme for the
-  title bar, the menus and the dialog, four come with the lens, and a `themes.json` in the data
-  folder adds your own. Settings opens over the middle of the lens and writes `neural-lens.ini`,
-  so nothing needs editing by hand.
+  Hotkeys, Screenshots, Look and Program, listed down its left side, or in the Industrial theme as
+  tabs along its top. Each setting is one short label. What a setting does shows beside the
+  settings, or under them in Industrial, for the setting the pointer is on or the keys have
+  picked. Up and Down pick a setting, Left and Right change it, Enter switches a switch or presses
+  a button, Ctrl+Tab and Page Down turn to the next page, Ctrl+Shift+Tab and Page Up to the one
+  before, and Escape cancels. The foot of the dialog shows the keys, and Save is a click, since
+  Enter switches a switch. While a field or a list has the keyboard it keeps its own keys, and
+  Escape gives the keyboard back to the settings. Where the screen has no room for the
+  explanation beside the settings, rest the pointer on a setting for a second and a half, or
+  press F1, and a small window beside the pointer says what the setting does, as the foot of the
+  dialog then says. The figures measured for the settings are in this README and in
+  [docs/NOTES.md](docs/NOTES.md). Settings opens over the middle of the lens and writes
+  `neural-lens.ini`, so nothing needs editing by hand.
+- **Four themes**, on the Look page of Settings, set how the title bar, the menus and every window
+  of the lens look, never the picture. Slate, the default, is dark slate grey with green, its
+  pages down the left of Settings and the explanation in a pane at the right. Graphite has
+  Slate's layout in dark grey with amber. Paper is a light, warm sheet with serif headings and
+  black controls, each explanation in the margin beside its setting. Industrial is a dark control
+  panel with amber, its pages as tabs, its settings in framed modules and the explanation in a
+  strip along the foot. Choosing one restarts the lens. The fonts come with the lens and are added
+  for the lens alone while it runs, so nothing is installed. A `themes.json` in the data folder
+  adds themes of your own. It holds an object for each under the theme's name, with any of the
+  colours `bg`, `fg`, `accent`, `dim`, `warn`, `cap`, `hover`, `field`, `tab` and `close` as
+  `#rrggbb`, and with `look`, the theme it starts from, Slate, Graphite, Paper or Industrial, or
+  Slate where it gives none. A theme of your own has the layout of the theme it starts from and
+  that theme's colours for those it leaves out, and an object under the name of a theme that comes
+  with the lens changes that theme's colours. [docs/NOTES.md](docs/NOTES.md) names the colours of
+  a look's parts that it can give as well. Where the colours make some text hard to read,
+  `lens.log` says which.
 - **Profiles** keep everything that makes the picture under a name. That is the window's place
   and size, fullscreen, the pass count, the Cost Scaler rule, the motion detail, Ready mode,
   the frame rate limit, what the title bar shows, every setting in the Home menu, the values
@@ -419,7 +439,8 @@ them, and the setup does not accept them. The SF-v2 build is what runs on every 
   top they load the profile before or after the one in use, by name, and Enter opens the profile
   list. On the pass tabs they show the pass before or after. The lens lets those keys go when the
   menu or the panel closes. The menu, the panel and the note never take the foreground from the
-  program in front. The Hotkeys page of Settings changes or clears the four keys. Whenever the
+  program in front, apart from the panel with Free the mouse on, see below. The Hotkeys page of
+  Settings changes or clears the four keys. Whenever the
   lens does not hold the menu's key, such as when it has none, or another program or another of
   its actions has it, a click on the lens's taskbar button opens the menu.
 - **An on-screen readout** can show figures in a corner of the screen while the lens is
@@ -443,15 +464,19 @@ them, and the setup does not accept them. The SF-v2 build is what runs on every 
   ReShade effect and no ReShade screenshot key, and the menu's Save the result only, which is
   ReShade's own screenshot, is greyed and says why. F6, the add-on's key, does nothing there,
   and F9 turns Neural Rendering off and on. Its NR settings are a panel of the lens's own. At its
-  top are the profile in use, with the list that loads, saves and ties profiles, and the switch
-  that loads a profile for the program in front, see Profiles above. Then come Neural Rendering
-  on or off, a tab for each pass that runs, the pass's style, intensity, local tone, local
-  structure, skin structure and auto mask, the passes, the switch Scale the change, with the
-  strength's own slider under it while it is on, and the quality step. On the tab of a pass from
+  top are the profile in use, with the list that loads, saves and ties profiles, the switch that
+  loads a profile for the program in front, see Profiles above, and the switch Free the mouse, see
+  below. Then come Neural Rendering
+  on or off, the passes, the switch Scale the change, with the strength's own slider under it
+  while it is on, the quality step, and a tab for each pass that runs, with the pass's style,
+  intensity, local tone, local structure, skin structure and auto mask. Slate, Graphite and Paper
+  have the passes and the quality step above the pass tabs, and Industrial has them under the
+  tab, as each theme's design draws the panel. On the tab of a pass from
   the second on, each value has a tick, Same as pass 1. Ticked, the pass runs at the first pass's
   value and the control is greyed, and unticked, the value is the pass's own, see [Multiple
-  passes](#multiple-passes). Under the values the tab of pass 2 has the switch Runs through pass
-  1's network, which the tabs of passes 3 and 4 show greyed, since those passes follow pass 2. A
+  passes](#multiple-passes). At the top of its values the tab of pass 2 has the switch Runs
+  through pass 1's network, which the tabs of passes 3 and 4 show greyed, since those passes
+  follow pass 2. A
   button to the right of each slider's number puts the slider at 1.00, and is greyed with the
   slider. The intensity goes up to 2.00, as in the Home menu, and the network itself does no more
   above 1. Runs through pass 1's network has the second pass, and the passes after it, run through
@@ -459,12 +484,30 @@ them, and the setup does not accept them. The SF-v2 build is what runs on every 
   from 1.00 to 2.00, see [Multiple passes](#multiple-passes) for both. The quality step runs from
   Lowest power up to Full, see [The fast engine](#the-fast-engine). A value shows in the picture
   while it moves and is kept, and a new pass count restarts the picture.
-  Rest the pointer on a setting for a second and a half, or press F1 while the arrow keys are on
-  it, and a small window says what the setting does, as in Settings. The line at the panel's foot
-  says so. With the ReShade engine chosen for fullscreen, the NR settings key and menu entry open
-  the ReShade overlay as in a window. Where the fast engine is not there, or fails, the lens draws
+  What the setting the arrow keys or the pointer are on does shows in a part of the panel under
+  its settings, and the keys that work the panel show along its foot. With the ReShade engine
+  chosen for fullscreen, the NR settings key and menu entry open the ReShade overlay as in a
+  window. Where the fast engine is not there, or fails, the lens draws
   fullscreen with the ReShade engine by itself. After a failure it says so on the notice, and the
   Fullscreen page of Settings gives the reason until the lens is started again.
+- **Free the mouse** is a switch on the NR settings panel, under the switch that loads a profile
+  for the program in front, and on the Fullscreen page of Settings, one setting in both places.
+  It is off to begin with. A line on the panel says how to pick a setting with the arrow keys.
+  A game that holds the mouse, hiding the pointer and keeping it in its window, leaves
+  the pointer no way onto the panel, so while the program in front holds the mouse and the switch
+  is off, the line adds that Free the mouse lets you use the mouse there. With the switch on, the
+  lens brings the panel to the front while it is open, as Alt+Tab does, so the game lets go of the
+  mouse and you can point and click on the panel. Closing the panel gives the front back to the
+  game, unless you went to another window meanwhile, which then keeps it. While the panel is in
+  front, a game may pause, mute its sound or slow down, as it does on Alt+Tab. Where Windows does
+  not let the panel take the front, the line says that the program in front kept the mouse and
+  that the keys are the way. While the program in front holds the mouse, moving it does nothing on
+  the panel or in the lens menu, so a game that keeps putting the pointer back under the panel
+  never gets in the way of the arrow keys. The lens tells that the mouse is held by whether the
+  pointer is hidden, kept to a part of the screen or kept at the middle of the window in front,
+  see [What the lens does and does not do](#what-the-lens-does-and-does-not-do). Switched in
+  Settings while the panel is open, the panel takes the front or gives it back at once.
+  `free_mouse = 1` in the ini keeps the switch on.
 
 ## What the lens does and does not do
 
@@ -487,8 +530,16 @@ included, is left alone:
   opens nothing of its program's process. The lens reads them with the switch that loads such a
   profile off as well, so that the panel and the Profiles page of Settings can name the program.
   The log names a window's title only in its lines about ties and the profiles loaded for them.
+- To know whether the program in front holds the mouse, for the line on the NR settings panel
+  and for Free the mouse, the lens reads whether the pointer is showing, the part of the screen
+  it is kept to and where it is against the middle of the window in front, four times a second
+  while the panel is open. Any program may read these, and reading them changes nothing. The
+  lens never moves the pointer, keeps it to a part of the screen, or shows or hides it.
 - The lens's menu, its NR settings panel, the note and the notice of a fullscreen lens, and the
-  on-screen readout never take the foreground from it. Settings and the ReShade overlay take the
+  on-screen readout never take the foreground from it, apart from the NR settings panel while it
+  is open with Free the mouse on, which is off unless you switch it on, see [Using
+  it](#using-it). Then the panel takes the foreground as Alt+Tab does and gives it back when it
+  closes. Settings and the ReShade overlay take the
   keyboard when you open them, since they need it. For the overlay the lens attaches to the
   input of its own presenter for a moment, and hands the keyboard back the same way while the
   presenter is still in front.
@@ -757,8 +808,8 @@ Strength, from 1.00 to 2.00, and the fast engine multiplies the change the passe
 the last pass's output against the first pass's input, by the strength, once the last pass has
 run, so the picture is the picture at 1 with its change that many times larger. The lens keeps
 the switch as `ScaleChange=1` and the strength as `Strength` in `[NeuralLens.Passes]`, which the
-add-on does not read, so the ReShade engine never scales the change, and the panel's foot says
-so. The switch is off to begin with, and the strength stays in the file while it is off. A profile
+add-on does not read, so the ReShade engine never scales the change. The switch is off to begin
+with, and the strength stays in the file while it is off. A profile
 carries both. Over the Blender picture at 2560x1053 the change at a strength of 1.5 and of 2 was
 1.57 and 2.00 times the change at 1 with one pass, and 1.52 and 1.99 times with two passes
 through one network. The ratios are not the strength exactly, since each value is rounded to a
@@ -1176,6 +1227,9 @@ ship inside the installer. Each keeps its own licence:
 | Python 3.12, whose licence text is installed as `licenses\PYTHON-LICENSE.txt`, with the libffi and Tcl/Tk libraries its Windows build carries, bundled by PyInstaller | the Python Software Foundation for Python, and the Tcl core team for Tcl/Tk | PSF for Python, and the Tcl/Tk licence |
 | OpenSSL, the `libcrypto` and `libssl` libraries Python's build carries, whose licence text is installed as `licenses\OPENSSL-LICENSE.txt` | the OpenSSL Project | Apache 2.0 |
 | zlib, the `zlib1.dll` Python's build carries, whose licence text is installed as `licenses\ZLIB-LICENSE.txt` | Jean-loup Gailly and Mark Adler | zlib licence |
+| Source Serif 4 and Source Sans 3, the fonts of the Paper theme, whose licence texts are installed as `licenses\SOURCE-SERIF-4-OFL.txt` and `licenses\SOURCE-SANS-3-OFL.txt` | Adobe | SIL Open Font License 1.1 |
+| Barlow and Barlow Semi Condensed, the fonts of the Industrial theme, whose licence text is installed as `licenses\BARLOW-OFL.txt` | The Barlow Project Authors | SIL Open Font License 1.1 |
+| IBM Plex Mono, the Industrial theme's font for figures and keys, whose licence text is installed as `licenses\IBM-PLEX-MONO-OFL.txt` | IBM Corp. | SIL Open Font License 1.1 |
 | PyInstaller and Inno Setup, which build the installer | their authors | GPL with exception for PyInstaller, and the Inno Setup licence |
 
 The licence texts of the Python packages ship with them, in their `.dist-info` folders under
@@ -1192,7 +1246,9 @@ trademark, and the name here says what the lens applies, not who made it.
 The lens itself, meaning everything in this repository apart from the third-party licence texts in
 `licenses`, is licensed under the PolyForm Strict License 1.0.0. See [LICENSE](LICENSE). The
 character model in the two screenshots at the top is Hawtor Studio's and stays under its CC BY 4.0
-licence. In `fast_engine\src\nr.cpp` the calls to the Neural Rendering runtime follow, and in
+licence. The fonts in `assets\fonts` are their projects' own, named in the FONTS.txt beside them,
+and stay under the SIL Open Font License 1.1.
+In `fast_engine\src\nr.cpp` the calls to the Neural Rendering runtime follow, and in
 places adapt, openNR's native adapter, and what is adapted stays under openNR's MIT licence, whose
 notice that file carries. Releases up to 0.5.1 were published under the GNU General Public
 License, version 3 or later, and stay under it. The parts the setup fetches are not part of this

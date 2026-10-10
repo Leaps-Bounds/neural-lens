@@ -88,7 +88,7 @@ import urllib.request
 import winreg
 import zipfile
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 FROZEN = getattr(sys, "frozen", False)
 # Everything lives in the lens's own folder, the one the installer put it in or
@@ -1255,21 +1255,40 @@ def uninstall(target=DEFAULT_TARGET, log=None, keep=()):
 
 
 # ---------------------------------------------------------------- wizard
-def wizard(parent=None, target=DEFAULT_TARGET):
+def wizard(parent=None, target=DEFAULT_TARGET, look=None):
     """A window that runs the install and shows what it is doing.
 
     Returns the folder the stack was installed into when it installed and
     passed the self test, otherwise False. The install runs on a thread; the
     window only ever appends to its log from the mainloop, so it stays
     responsive while the download comes down.
+
+    look is the lens's look, neural_lens.LOOK, which the lens hands over, as
+    this module imports nothing of the lens. The window then takes the ten
+    colours of the look's theme, and its caption takes the look's colours
+    before the window is first seen, see Look.dress. A drawn look also lays
+    it out as that look's dialogs, in their type, wells and buttons, see
+    Look.setup_shell. Without a look, as from source, it keeps the colours it
+    always had.
     """
     import queue
     import tkinter as tk
     from tkinter import filedialog
 
-    BG, FG, DIM, ACCENT, WARN = "#1b2430", "#cbd5e1", "#64748b", "#4ade80", "#fbbf24"
+    if look is None:
+        BG, FG, DIM, ACCENT, WARN = "#1b2430", "#cbd5e1", "#64748b", "#4ade80", "#fbbf24"
+        WELL, RAISED = "#0b1220", "#334155"     # the fields and the log, and the buttons other than Set it up
+        PRESSED = {}                            # a button pressed in Windows' own colours, as always
+    else:
+        ten = look.legacy
+        BG, FG, DIM, ACCENT, WARN = ten["bg"], ten["fg"], ten["dim"], ten["accent"], ten["warn"]
+        WELL, RAISED = ten["field"], ten["hover"]
+        # pressed, a button takes the window buttons' shade, as the lens's own buttons do
+        PRESSED = {"activebackground": ten["cap"], "activeforeground": FG}
     supported, detail = gpu_supported()
     root = tk.Toplevel(parent) if parent else tk.Tk()
+    if look is not None:
+        root.withdraw()                 # first seen with its caption in the look's colours, see the foot
     root.title("Neural Lens: set up the neural stack")
     try:
         base = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__))
@@ -1279,6 +1298,16 @@ def wizard(parent=None, target=DEFAULT_TARGET):
     root.configure(bg=BG)
     root.attributes("-topmost", True)
     root.resizable(False, False)
+    # a drawn look lays the window out as its dialogs, see Look.setup_shell,
+    # and makes the footer its buttons go into now, so they lie above it.
+    # Without a look, in the classic look and where the look cannot, the
+    # window is laid out as it always was
+    shell = None
+    if look is not None and not look.classic:
+        try:
+            shell = look.setup_shell(root)
+        except Exception:
+            shell = None
     intro = ("The lens needs NVIDIA's DLSS Neural Rendering stack. Nothing of it is bundled: about "
              "%d MB is downloaded from the projects that publish each part, into the lens's own "
              "folder, and registered for your user only. No administrator prompt.\n\n" % DOWNLOAD_MB
@@ -1302,21 +1331,24 @@ def wizard(parent=None, target=DEFAULT_TARGET):
         row=2, column=0, columnspan=3, sticky="w", padx=14, pady=(10, 2))
     for i, name in enumerate(have):
         tk.Label(root, text=name, bg=BG, fg=FG, font=("Consolas", 9)).grid(row=3 + i, column=0, sticky="w", padx=14)
-        tk.Entry(root, textvariable=have[name], width=64, bg="#0b1220", fg=FG, insertbackground=FG,
+        tk.Entry(root, textvariable=have[name], width=64, bg=WELL, fg=FG, insertbackground=FG,
                  relief="flat").grid(row=3 + i, column=1, sticky="we", padx=(6, 6), pady=2)
 
         def pick(var=have[name], n=name):
-            p = filedialog.askopenfilename(title="Where is %s?" % n, filetypes=[(n, n), ("DLL", "*.dll")])
+            # Windows' own picker, owned by this window, so it opens above
+            # this window, which is topmost, rather than under it
+            p = filedialog.askopenfilename(title="Where is %s?" % n, filetypes=[(n, n), ("DLL", "*.dll")],
+                                           parent=root)
             if p:
                 var.set(os.path.normpath(p))
 
-        tk.Button(root, text="Browse", command=pick, relief="flat", bg="#334155", fg=FG).grid(
+        tk.Button(root, text="Browse", command=pick, relief="flat", bg=RAISED, fg=FG, **PRESSED).grid(
             row=3 + i, column=2, padx=(0, 14))
     tk.Label(root, text="Motion vectors come from ReshadeMotionEstimation by Jakob Wapenhensch (CC BY-NC "
                         "4.0), fetched with the rest.",
              bg=BG, fg=DIM, justify="left", wraplength=620, font=("Segoe UI", 9)).grid(
         row=5, column=0, columnspan=3, sticky="w", padx=14, pady=(10, 2))
-    log = tk.Text(root, width=88, height=14, bg="#0b1220", fg=FG, relief="flat", font=("Consolas", 9),
+    log = tk.Text(root, width=88, height=14, bg=WELL, fg=FG, relief="flat", font=("Consolas", 9),
                   state="disabled", wrap="word")
     log.grid(row=7, column=0, columnspan=3, padx=14, pady=(10, 6), sticky="we")
     status = tk.Label(root, text="", bg=BG, fg=DIM, font=("Segoe UI", 9))
@@ -1337,7 +1369,7 @@ def wizard(parent=None, target=DEFAULT_TARGET):
                 if item is None:
                     result["done"] = True
                     go.config(state="normal", text="Close" if result["ok"] else "Try again")
-                    status.config(text="The stack works." if result["ok"] else "Not working yet; see above.",
+                    status.config(text="The stack works." if result["ok"] else "Not working yet. See above.",
                                   fg=ACCENT if result["ok"] else WARN)
                     return
                 append(item)
@@ -1371,11 +1403,28 @@ def wizard(parent=None, target=DEFAULT_TARGET):
                          args=(target, have["nvngx_dlssnr.dll"].get(), have["nvngx_dlss.dll"].get())).start()
         root.after(100, pump)
 
-    go = tk.Button(root, text="Set it up", command=start, relief="flat", bg=ACCENT, fg="#0b1220",
-                   font=("Segoe UI", 10, "bold"), state="normal" if supported else "disabled")
+    go = tk.Button(root, text="Set it up", command=start, relief="flat", bg=ACCENT, fg=WELL,
+                   font=("Segoe UI", 10, "bold"), state="normal" if supported else "disabled", **PRESSED)
     go.grid(row=8, column=2, sticky="e", padx=14, pady=(4, 14))
-    tk.Button(root, text="Not now", command=root.destroy, relief="flat", bg="#334155", fg=FG).grid(
+    tk.Button(root, text="Not now", command=root.destroy, relief="flat", bg=RAISED, fg=FG, **PRESSED).grid(
         row=9, column=2, sticky="e", padx=14, pady=(0, 14))
+    if shell is not None:
+        shell.finish(go, status, log)
+    if look is not None:
+        # the caption in the look's colours and the window out of the picture
+        # while it is unseen, then shown as it always was. Over the lens's offer
+        # it is shown on top and not made active, as Tk shows a window it maps.
+        # From the Start Menu's entry it is the program's first window, which
+        # Tk makes active, so there wm deiconify asks Windows for the keyboard
+        root.update_idletasks()
+        try:
+            look.dress(root)
+        except Exception:
+            pass                        # shown all the same, in Windows' own caption
+        if parent:
+            root.state("normal")
+        else:
+            root.deiconify()
     root.grab_set() if parent else None
     if parent:
         parent.wait_window(root)

@@ -3210,6 +3210,22 @@ front while the panel was open, Escape left the foreground with that window. Wit
 and in front, a Save of Settings with the switch off gave the foreground back to the window that
 had it, which was in front within 0.16 s, and the panel stayed open and never active again.
 
+**The lit row and the pointer.** In each theme the NR settings panel gives a colour only to the
+names whose colour changes, the row it leaves and the row it lights, since each change of colour
+draws the name again and with it its row's switch, and the pointer lights a row at each row it
+crosses and again at each gap between the parts of one row. Lighting the lit row again changes
+nothing. The lens menu does the same with its entries. Measured on a test computer with an RTX
+5090 and a monitor at 120 Hz, the pointer moved over the panel's own rows by the test 120 times a
+second, steadily and in quick moves from row to row, with Free the mouse on and off. A change of
+row made about 3 changes of colour and drew about 4 of the panel's drawn parts again, where it
+made 21 and drew 14. Tk had drawn the lit row 8.3 to 10.7 ms after the pointer reached it at the
+median in Industrial and 8.6 to 9.4 ms in Slate, where it took 13.4 to 18.1 ms and 12.6 to 15.8
+ms. The longest was 31.8 ms in Industrial and 25.3 ms in Slate, where it was 150.5 ms and 251.4
+ms, each in quick moves with Free the mouse off. About 4 ms of that time passes before the lens
+learns of the move, and the rest is Tk drawing what changed. Over the lens menu a lit entry made
+one change of colour where it made 11, and Tk had drawn it 5.2 to 5.4 ms after the pointer
+reached it at the median, where it took 6.2 to 7.0 ms.
+
 ### The A/B divider
 
 The divider is a thin topmost window of this process, excluded from capture like the rest, and

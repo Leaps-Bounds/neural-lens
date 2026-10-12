@@ -88,7 +88,7 @@ import urllib.request
 import winreg
 import zipfile
 
-__version__ = "0.8.0"
+__version__ = "0.8.1"
 
 FROZEN = getattr(sys, "frozen", False)
 # Everything lives in the lens's own folder, the one the installer put it in or

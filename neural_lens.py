@@ -1488,7 +1488,7 @@ def _write_proxy(enabled, scale):
 # process's id, so two lenses at once, one per monitor say, never pick up each
 # other's presenter.
 TITLE = "LensNR %d" % os.getpid()
-__version__ = "0.8.0"        # beta; see CHANGELOG.md
+__version__ = "0.8.1"        # beta; see CHANGELOG.md
 
 DATA_DIR = (os.environ.get("NEURAL_LENS_DATA") or _INI.get("data_dir")
             or os.path.join(_script_dir(), "data"))
@@ -3590,12 +3590,17 @@ class PopupMenu:
 
     def light(self, n):
         """Light this entry and no other, for the pointer or the arrow keys
-        alike, so the two never show two entries lit. None lights none."""
+        alike, so the two never show two entries lit. None lights none.
+        Only an entry whose colour changes is given its colour, since each
+        change draws the entry again, and in a drawn look its parts too, as
+        the NR settings panel's rows are lit, see Lens.panel_light."""
         self.lit = n
         for i, lbl in enumerate(self.labels):
             if self.cmds[i] is not None:
                 try:
-                    lbl.config(bg=HOVER if i == n else BG)
+                    bg = HOVER if i == n else BG
+                    if lbl.cget("bg") != bg:
+                        lbl.config(bg=bg)
                 except Exception:
                     pass
 
@@ -10248,13 +10253,21 @@ class Lens:
         runs at the first pass's value, shows in its greyed colour, so that
         colour takes the accent while it is lit. In a drawn look the name is a
         State widget, so the row's band, bar and weight follow, and the
-        panel's own part explains the row, see lens_look.panel.Panel.lit."""
+        panel's own part explains the row, see lens_look.panel.Panel.lit.
+        Only a name whose colour changes is given its colour, since each
+        change draws the name again, and in a drawn look its row's switch
+        and cover too, and the pointer lights a row at every row it
+        crosses."""
         self.panel_row = n
         for i, (_kind, _what, lit) in enumerate(self.panel_rows):
             try:
-                lit.config(fg=ACCENT if i == n else FG)
+                fg = ACCENT if i == n else FG
+                if lit.cget("fg") != fg:
+                    lit.config(fg=fg)
                 if lit.winfo_class() in ("Checkbutton", "Radiobutton"):
-                    lit.config(disabledforeground=ACCENT if i == n else DIM)
+                    greyed = ACCENT if i == n else DIM
+                    if lit.cget("disabledforeground") != greyed:
+                        lit.config(disabledforeground=greyed)
             except Exception:
                 pass
         look = getattr(self.panel, "look_panel", None)

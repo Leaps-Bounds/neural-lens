@@ -3,6 +3,27 @@
 Versions follow semantic versioning. While the major version is 0 the project is beta, and
 settings, the state file format and behaviour may change between releases.
 
+## 0.8.1, 2026-10-12
+
+The NR settings panel and the lens menu light the row under the pointer sooner, with less drawn
+again each time.
+
+- **The lit row on the NR settings panel keeps up with the pointer.** Each time the lit row
+  changed, the panel gave the name of every row its colour again, and in each theme every one of
+  those names was drawn again with its row's switch, so in quick moves the lit row trailed the
+  pointer. It did so again each time the pointer crossed a gap between the parts of one row. The
+  panel now gives a colour only to the row it leaves and the row it lights, and lighting the lit
+  row again changes nothing. The colours are the same as before, and the arrow keys light the rows
+  the same way. On a test computer with an RTX 5090 and a monitor at 120 Hz, in Industrial, with
+  the pointer moved over the panel's rows 120 times a second, the lens had drawn the lit row 8 to
+  11 ms after the pointer reached it at the median, where it took 13 to 18 ms. The longest any row
+  took was 32 ms, where it was 151 ms, both in quick moves from row to row.
+- **The lens menu does the same with its entries.** It gave every entry its colour again each
+  time the pointer came onto one, and now gives a colour only to the entry it leaves and the entry
+  it lights. Measured the same way over the menu in Industrial, the lens had drawn the lit entry
+  5.4 ms after the pointer reached it at the median, where it took 6.9 ms, and 99 entries in 100
+  within 11.4 ms, where it was 16.7 ms.
+
 ## 0.8.0, 2026-10-10
 
 Four themes that each give every window of the lens a look of its own, Settings that you walk

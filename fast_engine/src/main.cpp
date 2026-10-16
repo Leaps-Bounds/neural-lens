@@ -131,6 +131,7 @@
 #include "capture.h"
 #include "capturetest.h"
 #include "common.h"
+#include "framegen.h"
 #include "gpu.h"
 #include "pipeline.h"
 #include "proto.h"
@@ -731,6 +732,22 @@ struct State {
   Trace trace;
   bool stats_note = false;       // LENS_FAST_STATS_NOTE=1: every stats line on stderr too
 
+  // ---- frame generation, see framegen.h
+  int framegen = 0;              // 0 off, 1 ahead, 2 between: --framegen and "framegen WORD"
+  FrameGen gen;
+  bool gen_ready = false;        // gen.init() succeeded, at the first need
+  bool gen_refused = false;      // it failed once, and is not tried again
+  bool gen_estimated = false;    // the frame being drawn has an estimate of its motion from the frame
+                                 // before, see estimate_motion()
+  bool gen_armed = false;        // a present is due at t_gen_due between two frames: the made
+                                 // picture for ahead, the frame's own for between
+  double t_gen_due = 0.0;
+  double fresh_gaps[6] = {};     // the last gaps between new frames' timestamps, a ring
+  int gaps_next = 0;
+  int gaps_have = 0;
+  int generated = 0;             // this second: made pictures presented
+  int gen_dropped = 0;           // this second: made pictures a new frame overtook
+
   // ---- the screenshot's writer
   HANDLE shot_thread = nullptr;  // the last one started, kept so the way out can wait for it
   std::vector<uint8_t> sparse;   // the probe's picture, kept so it is not allocated each time
@@ -1086,6 +1103,8 @@ void switch_output(State& s, bool hdr) {
   if (!s.window.set_hdr(hdr, err)) die(s, "window: " + err);
   // a swapchain that does not take scRGB stays in 8 bits, and is not asked again
   if (hdr && !s.window.hdr()) s.hdr_out = false;
+  if (s.gen_ready && !s.gen.retarget(s.window.format(), err)) die(s, "framegen: " + err);
+  s.gen_armed = false;
   s.repaint_once = s.have;
 }
 
@@ -1158,6 +1177,8 @@ void watch_colour(State& s) {
 // watches any other call, since the window may still be up while it runs.
 void do_pause(State& s) {
   if (s.paused) return;
+  s.gen.forget();
+  s.gen_armed = false;
   s.paused = true;
   step("pause");
   s.capture.stop();
@@ -1191,6 +1212,8 @@ void do_resume(State& s) {
 // one stops first, so the two never both deliver.
 void recapture(State& s) {
   s.want_recapture = false;
+  s.gen.forget();
+  s.gen_armed = false;
   if (s.paused || !s.capturing) return;  // "resume" starts it with the limit as it is then
   s.refresh_hz = s.window.refresh_hz();
   const double t0 = now_s();
@@ -1227,6 +1250,8 @@ void stop_capture(State& s) {
 // the lens the two pictures share too little, and the network starts the next one without
 // its history.
 void move_crop(State& s, int x, int y) {
+  s.gen.forget();
+  s.gen_armed = false;
   const long long dx = std::llabs((long long)x - s.crop_x);
   const long long dy = std::llabs((long long)y - s.crop_y);
   if (dx * 4 > s.o.width || dy * 4 > s.o.height) s.reset_next = true;
@@ -1251,6 +1276,8 @@ void want_shot(State& s, const std::wstring& base) {
 // "nr 1|0". A repaint would still show the picture as it was last rendered, so the frame on
 // screen goes through render once more and the change shows at once, over a still too.
 void switch_network(State& s, bool on) {
+  s.gen.forget();
+  s.gen_armed = false;
   if (!s.network) return;  // LENS_FAST_NO_NETWORK=1: there is none to switch
   if (on == s.pipeline.nr_on()) return;
   s.pipeline.set_nr(on);
@@ -1280,13 +1307,19 @@ void switch_settle(State& s, bool on) {
 // so they are made again, at the size in use, the way a new quality step makes them, while
 // the pictures go on, see switch_quality().
 void reload_settings(State& s) {
+  s.gen.forget();
+  s.gen_armed = false;
   NrPasses fresh;
   std::string err;
   if (!read_nr_passes(s.o.stack_dir, fresh, err, s.o.passes)) {
     note("loop: reload: %s, the settings stay as they are", err.c_str());
     return;
   }
-  if (same_passes(fresh, s.settings, s.o.passes)) return;
+  // the look's values are not part of same_passes(), since a change of them alone remakes
+  // nothing: the pipeline takes them live, see Pipeline::set_settings, and the picture is
+  // drawn afresh with them
+  const bool look_changed = !same_look(fresh.look, s.settings.look);
+  if (same_passes(fresh, s.settings, s.o.passes) && !look_changed) return;
   const bool remake = s.network && (fresh.preset != s.settings.preset || fresh.shared != s.settings.shared);
   s.settings = fresh;
   s.pipeline.set_settings(fresh);
@@ -1305,9 +1338,10 @@ void reload_settings(State& s) {
   const std::string strength = fresh.strength > 1.0f ? strf("strength %.2f, the change times it", fresh.strength)
                                                      : std::string("strength off");
   note("loop: settings: style %u, intensity %.2f, local tone %.2f, local structure %.2f, "
-       "skin structure %.2f, auto mask %d, ui correction %d, preset %u, shared %s, %s%s%s%s",
+       "skin structure %.2f, auto mask %d, ui correction %d, preset %u, shared %s, %s%s, %s%s%s",
        base.style, base.intensity, base.local_tone, base.local_structure, base.skin_structure, base.auto_mask,
        base.ui_correction, fresh.preset, fresh.shared ? "on" : "off", strength.c_str(), own.c_str(),
+       look_text(fresh.look).c_str(),
        s.network && all_zero ? ". At an intensity of 0 the network does not run" : "",
        remake ? ". The features are made again for the preset or the shared state" : "");
 }
@@ -1490,6 +1524,8 @@ void switch_quality(State& s) {
 }
 
 // Every command that has come since the last turn, in the order it came.
+void set_framegen(State& s, int mode);  // below, with the rest of frame generation
+
 void take_commands(State& s) {
   Command c;
   while (!s.quit && s.reader.next(c)) {
@@ -1544,11 +1580,126 @@ void take_commands(State& s) {
       case Command::Settle:
         switch_settle(s, c.on);
         break;
+      case Command::Framegen:
+        set_framegen(s, c.n);
+        break;
       case Command::Quality:
         s.want_quality = c.n;  // once a turn, the last of them, however many lines came
         break;
     }
   }
+}
+
+// ---------------------------------------------------------------- frame generation
+
+void trace_present(State& s, bool fresh, double called);
+
+const char* framegen_name(int mode) { return mode == 1 ? "ahead" : mode == 2 ? "between" : "off"; }
+
+// The motion estimator, made at the first need: frame generation switched on, or the Look
+// stage's filter following the motion. A card without one leaves both without it, with a
+// line for the lens, said once.
+bool ensure_estimator(State& s) {
+  if (s.gen_ready) return true;
+  if (s.gen_refused) return false;
+  std::string err;
+  if (!s.gen.init(s.gpu, (UINT)s.o.width, (UINT)s.o.height, s.window.format(), err)) {
+    note("loop: framegen: %s, so no motion estimate", err.c_str());
+    say("framegen unavailable %s", err.c_str());
+    s.gen.shutdown();
+    s.gen_refused = true;
+    return false;
+  }
+  s.gen_ready = true;
+  note("loop: framegen: the motion estimator works at %ux%u in blocks of 8, %ux%u vectors",
+       s.gen.me_width(), s.gen.me_height(), s.gen.vec_width(), s.gen.vec_height());
+  return true;
+}
+
+// The motion of the frame about to be drawn from the frame before, estimated before its
+// render, for frame generation and for the Look stage's filter (look.h), which the queue
+// waits for before the render list runs. Nothing when neither wants it.
+void estimate_motion(State& s) {
+  s.gen_estimated = false;
+  const bool wanted = s.framegen > 0 || s.settings.look.wants_motion();
+  if (!wanted || !ensure_estimator(s)) {
+    s.pipeline.set_motion(nullptr, 0, 0, 1.0f, 0.0f);
+    return;
+  }
+  std::string err;
+  bool ready = false;
+  UINT64 read_value = 0;
+  step("estimate");
+  if (!s.gen.estimate(s.cur.texture, ready, read_value, err)) {
+    note("loop: framegen: %s, no motion estimate for this frame", err.c_str());
+    s.pipeline.set_motion(nullptr, 0, 0, 1.0f, 0.0f);
+    return;
+  }
+  s.capture.note_read(s.cur, read_value);  // the conversion reads the frame
+  s.gen_estimated = ready;
+  if (ready && s.settings.look.wants_motion()) {
+    if (!s.gen.wait_estimate_on_queue(err)) die(s, "framegen: " + err);
+    s.pipeline.set_motion(s.gen.vectors_texture(), s.gen.vec_width(), s.gen.vec_height(),
+                          s.gen.cell_texels((UINT)s.work_w), s.gen.unit_texels((UINT)s.work_w));
+  } else {
+    s.pipeline.set_motion(nullptr, 0, 0, 1.0f, 0.0f);
+  }
+}
+
+// "framegen off|ahead|between" and --framegen, see framegen.h. The estimator is made at the
+// first switch on. A card without one leaves the option off, with a line for the lens.
+void set_framegen(State& s, int mode) {
+  mode = std::clamp(mode, 0, 2);
+  if (mode == s.framegen) return;
+  if (mode > 0 && !ensure_estimator(s)) return;
+  s.framegen = mode;
+  s.gen_armed = false;
+  s.gen.forget();
+  note("loop: framegen %s", framegen_name(mode));
+}
+
+// The gap between new frames the source keeps, the median of the last few, 0 while they are
+// too few, too close or too far apart to be a rate. A made picture needs a refresh of its
+// own between two frames: a source at the display's rate leaves none, and nothing is made
+// for it, and after a pause of more than a quarter of a second nothing is made either.
+double source_gap(const State& s) {
+  if (s.gaps_have < 3) return 0.0;
+  double gaps[6];
+  const int n = std::min(s.gaps_have, 6);
+  for (int i = 0; i < n; ++i) gaps[i] = s.fresh_gaps[i];
+  std::sort(gaps, gaps + n);
+  const double gap = gaps[n / 2];
+  if (gap < 1.5 / s.refresh_hz || gap > 0.25) return 0.0;
+  return gap;
+}
+
+// Presents the made picture, ahead: the last picture carried half a frame on. Its list
+// waits on the GPU for the estimate, which has long finished by now.
+void draw_made_present(State& s) {
+  std::string err;
+  Target target;
+  step("back buffer");
+  if (!s.window.back_buffer(target, err)) die(s, "back buffer: " + err);
+  step("made");
+  if (!s.gen.draw_made(target, 1, 0.5f, err)) {
+    note("loop: framegen: %s, the option goes off", err.c_str());
+    s.framegen = 0;
+    return;
+  }
+  const double t0 = now_s();
+  step("present");
+  if (!s.window.present(err)) die(s, "present: " + err);
+  const double t1 = now_s();
+  // the books draw() keeps for a present: a run at the display's rate, and no lone repeat
+  if (t1 - s.t_present > 2.5 / s.refresh_hz) s.t_run = t1;
+  else if (t1 - s.t_run >= kRunSeconds) s.composed = false;
+  s.t_present = t1;
+  s.progress = true;
+  s.repeat_open = false;
+  trace_present(s, false, t1);
+  s.profile.present_ms += (t1 - t0) * 1000.0;
+  ++s.profile.presents;
+  ++s.generated;
 }
 
 // ---------------------------------------------------------------- the profile
@@ -2115,6 +2266,34 @@ void draw(State& s, Draw how) {
     if (ran_network && s.runs_since_switch < kSwitchRuns) ++s.runs_since_switch;
   }
 
+  // Frame generation, see framegen.h: the finished picture is copied and the motion from the
+  // frame before estimated, before the present. For "between" the made picture takes this
+  // present, and the frame's own follows half a frame later, see turn().
+  const bool fresh_now = how == Draw::New || how == Draw::Joined;
+  bool can_make = false;
+  double gap = 0.0;
+  if (fresh_now && s.framegen > 0 && s.gen_ready) {
+    if (s.last_stamp > 0.0) {
+      s.fresh_gaps[s.gaps_next] = s.cur.timestamp_s - s.last_stamp;
+      s.gaps_next = (s.gaps_next + 1) % 6;
+      if (s.gaps_have < 6) ++s.gaps_have;
+    }
+    gap = source_gap(s);
+    step("framegen");
+    if (!s.gen.keep(target, err)) {
+      note("loop: framegen: %s, the option goes off", err.c_str());
+      s.framegen = 0;
+    } else {
+      can_make = s.gen_estimated && gap > 0.0;
+      if (can_make && s.framegen == 2 && !s.gen.draw_made(target, 0, 0.5f, err)) {
+        note("loop: framegen: %s, the option goes off", err.c_str());
+        s.framegen = 0;
+        can_make = false;
+      }
+      if (can_make && s.framegen == 2) ++s.generated;  // the picture between takes this present
+    }
+  }
+
   const double t0 = now_s();
   step("present");
   if (!s.window.present(err)) die(s, "present: " + err);
@@ -2145,6 +2324,11 @@ void draw(State& s, Draw how) {
   s.t_present = t1;
   s.progress = true;
   s.repaint_once = false;
+  if (can_make) {
+    // the made picture, or for between the frame's own, is due halfway to the next frame
+    s.gen_armed = true;
+    s.t_gen_due = t1 + 0.5 * gap - 0.002;
+  }
   trace_present(s, fresh, t1);
   s.profile.present_ms += (t1 - t0) * 1000.0;
   ++s.profile.presents;
@@ -2315,6 +2499,7 @@ bool take_frame(State& s) {
       Sleep((DWORD)s.stall_ms);
       s.t_stall = now_s() + s.stall_every;
     }
+    estimate_motion(s);
     draw(s, Draw::Joined);
     return true;
   }
@@ -2371,6 +2556,7 @@ bool take_frame(State& s) {
     Sleep((DWORD)s.stall_ms);
     s.t_stall = now_s() + s.stall_every;
   }
+  estimate_motion(s);
   draw(s, Draw::New);
   return true;
 }
@@ -2378,7 +2564,10 @@ bool take_frame(State& s) {
 // ---------------------------------------------------------------- the stats line
 
 // "stats new=N arrived=N repeated=N dropped=N skipped=N meter=MS delay=MS shared=on|off
-// network=MS", once a second, and the counters start again. Then, once for each loss, the
+// network=MS generated=N preset=N look=L", once a second, and the counters start again. preset
+// is the model preset the features in use were made with, 0 without a network, as on the
+// shared key, so the lens learns which network a reload gave, and look is 1 while the Look
+// stage changes the picture. Then, once for each loss, the
 // reason when the capture counts as lost. The loop goes on showing its last picture and the
 // lens starts a new presenter, unless frames have come back by then.
 //
@@ -2438,6 +2627,8 @@ void report(State& s, double now) {
     // joined: new pictures drawn by one list, see kJoinAfter. same: of the frames drawn so,
     // those found the same as the last afterwards, each a run of the network for nothing
     extra += strf(" joined=%d same=%d", p.joined, p.same);
+    // gendrop: made pictures a new frame overtook before they were due, see framegen.h
+    extra += strf(" gendrop=%d", s.gen_dropped);
   } else {
     extra = delay;
   }
@@ -2446,6 +2637,15 @@ void report(State& s, double now) {
   // so the lens learns the state a reload gave, once the features were made again for it
   extra += s.pipeline.shared_network() ? " shared=on" : " shared=off";
   extra += " network=" + network;
+  // generated: pictures made between the frames and presented, see framegen.h
+  extra += strf(" generated=%d", s.generated);
+  // preset: the model preset the features in use were made with, which a reload that asks
+  // for another one changes once they are made again, see reload_settings()
+  extra += strf(" preset=%u", s.pipeline.preset());
+  // look: 1 while the Look stage reshapes the network's change or filters it over frames, see
+  // look.h, 0 when the picture is the network's own, so the lens learns a reload took the
+  // look's values
+  extra += strf(" look=%d", s.settings.look.active() ? 1 : 0);
   const std::string line = strf("stats new=%d arrived=%u repeated=%d dropped=%u skipped=%d meter=%s%s", s.fresh,
                                 c.arrived, s.repeated, c.dropped, s.skipped, meter.c_str(), extra.c_str());
   say("%s", line.c_str());
@@ -2453,6 +2653,7 @@ void report(State& s, double now) {
   s.meter.clear();
   trace_reset(s.trace);
   s.fresh = s.repeated = s.skipped = s.late = s.settled = s.left = 0;
+  s.generated = s.gen_dropped = 0;
   s.t_report = now;
   // It follows a change of the display's mode, and under a limit the capture's interval
   // and the limit's allowances follow with it.
@@ -2518,6 +2719,7 @@ void report_paused(State& s, double now) {
   s.meter.clear();
   trace_reset(s.trace);
   s.fresh = s.repeated = s.skipped = s.late = s.settled = s.left = 0;
+  s.generated = s.gen_dropped = 0;
   s.t_report = now;
 }
 
@@ -2566,6 +2768,8 @@ double next_wait(const State& s) {
   // A frame that is being left out. The one that takes its place ends the wait as any frame
   // does, and this is the moment it is taken itself when none comes.
   if (s.leaving) wait = std::min(wait, s.leave_until - now);
+  // a present due between two frames, see framegen.h
+  if (s.gen_armed) wait = std::min(wait, s.t_gen_due - now);
   // The settle has two moments, the one from which the picture counts as at rest, then each
   // of its runs. While the limit keeps a frame back the picture is not at rest, and that
   // frame's own moment above ends the wait.
@@ -2600,6 +2804,7 @@ void turn(State& s) {
   s.progress = false;
   double now = now_s();
   bool is_new = false;
+  const bool armed_before = s.gen_armed;  // a present due between two frames, see framegen.h
   trace_look(s, now);
   resolve_joined(s);  // the answer of a joined draw the GPU has finished, see kJoinAfter
 
@@ -2620,6 +2825,16 @@ void turn(State& s) {
     s.leaving = false;  // nothing waits there, so nothing is being left out
   } else if (!leaves_frame(s, now)) {
     is_new = take_frame(s);
+  }
+
+  // A present due between two frames, see framegen.h. A new frame taken this turn has
+  // overtaken it, and it is dropped.
+  if (armed_before && is_new) {
+    ++s.gen_dropped;  // the new frame's own arming has taken its place
+  } else if (s.gen_armed && !is_new && !s.leaving && now_s() >= s.t_gen_due) {
+    s.gen_armed = false;
+    if (s.framegen == 2) draw(s, Draw::Repaint);  // the frame's own picture, after the one between
+    else if (s.framegen == 1) draw_made_present(s);
   }
 
   // Nothing new under the lens, so the last picture again. It goes through the network when
@@ -2671,6 +2886,7 @@ void turn(State& s) {
   std::string err;
   if (s.gpu.flush(3000, err)) {
     s.pipeline.shutdown();
+    s.gen.shutdown();
     s.capture.destroy();
     s.window.destroy();
   } else {
@@ -2904,6 +3120,7 @@ void start(State& s) {
          s.interval_forced);
   }
   if (!start_capture(s, err)) die(s, "capture: " + err);
+  if (o.framegen > 0) set_framegen(s, o.framegen);
 
   const int passes = s.network ? o.passes : 0;
   // the strength, see NrPasses, named where it is above 1

@@ -26,6 +26,11 @@ size argument, no --passes) against the baseline of 2026-10-03, and the shared r
 kept under _harnesses, beside the measuring tools, not in the repository. Any other run,
 another picture, size or pass count, is held against nothing unless --against names a
 folder. --against none skips it.
+The baselines were made with a 310.8 build of the model. Where the test stack holds NVIDIA's
+310.9.16 model, known by its file's size, nr-reads.txt is held byte for byte against the
+baseline's list as that model reads it, and the scorer is told the same, see MODEL_READS in
+score_selftest.py: DLSSNR.MaskBlendMode read and DLSSNR.ScalingRatio not. The pictures are
+held against the baseline's as they are.
 --shared is the shared mode's run: --passes 2 with SharedNetwork=1 and Pass2IntensityTied=1
 in the test stack's [NeuralLens.Passes], so every pass runs the first pass's feature and the
 second at the first's values. The two keys are written into test-stack\\ReShade.ini for the
@@ -75,6 +80,10 @@ RESEARCH = os.path.join(REPO, "_harnesses", "wip-060", "research")
 BASELINE = os.path.join(RESEARCH, "2026-10-03", "selftest-baseline-1827")
 BASELINE_SHARED = os.path.join(RESEARCH, "2026-10-06", "selftest-baseline-shared")
 BASELINE_FILES = ("composite.png", "nr_in.png", "nr_out.png", "nr-reads.txt")
+# The models whose reads differ from those of the 310.8 builds the baselines were made with,
+# by the size of the test stack's nvngx_dlssnr_real.dll, as the stack setup installs them
+# after checking their hashes: NVIDIA's 310.9.16 model. See MODEL_READS in score_selftest.py
+MODEL_SIZES = {266424944: "310.9.16"}
 # What the shared run writes into the test stack's [NeuralLens.Passes] for its run
 SHARED_KEYS = (("SharedNetwork", "1"), ("Pass2IntensityTied", "1"))
 PASS_SECTION = "[NeuralLens.Passes]"
@@ -181,9 +190,32 @@ def with_shared_keys(text):
     return nl.join(out)
 
 
-def compare_baseline(outdir, baseline):
-    """The run's four files against the baseline's, byte for byte. Returns the names that
-    differ or are missing, and prints a line for each file."""
+def stack_model():
+    """The name of the test stack's model where its reads differ from the baselines', see
+    MODEL_SIZES, or None."""
+    try:
+        return MODEL_SIZES.get(os.path.getsize(os.path.join(STACK, "nvngx_dlssnr_real.dll")))
+    except OSError:
+        return None
+
+
+def reads_as(data, model):
+    """A baseline's nr-reads.txt as the named model reads it, in the engine's own format: a
+    line for each name in order, its getter after a space, each line ended as the file ends
+    its lines. See MODEL_READS in score_selftest.py."""
+    from score_selftest import model_reads     # its table, kept in one place
+    text = data.decode("ascii")
+    eol = "\r\n" if "\r\n" in text else "\n"
+    lines = [l for l in text.split(eol) if l.strip()]
+    values = model_reads(dict(l.split(None, 1) for l in lines), model)
+    out = eol.join("%s %s" % (k, values[k]) for k in sorted(values))
+    return (out + (eol if text.endswith(eol) else "")).encode("ascii")
+
+
+def compare_baseline(outdir, baseline, model=None):
+    """The run's four files against the baseline's, byte for byte, nr-reads.txt as the
+    named model reads it, see stack_model. Returns the names that differ or are missing, and
+    prints a line for each file."""
     differing = []
     for name in BASELINE_FILES:
         mine, theirs = os.path.join(outdir, name), os.path.join(baseline, name)
@@ -192,8 +224,12 @@ def compare_baseline(outdir, baseline):
             differing.append(name)
             continue
         with open(mine, "rb") as a, open(theirs, "rb") as b:
-            same = a.read() == b.read()
-        print("  %s: %s the baseline's" % (name, "identical to" if same else "DIFFERS FROM"))
+            got, want = a.read(), b.read()
+        how = ""
+        if name == "nr-reads.txt" and model:
+            want, how = reads_as(want, model), " as the %s model reads them" % model
+        same = got == want
+        print("  %s: %s the baseline's%s" % (name, "identical to" if same else "DIFFERS FROM", how))
         if not same:
             differing.append(name)
     return differing
@@ -275,13 +311,16 @@ def run_one(outdir, args, image, kept_against, against, shared):
         score += ["--original", os.path.abspath(image)]
     if kept_against:
         score += ["--kept-against", os.path.abspath(kept_against)]
+    model = stack_model()
+    if model:
+        score += ["--model-reads", model]
     scored = subprocess.run(score, capture_output=True, text=True, creationflags=NO_WINDOW)
     for line in (scored.stdout + scored.stderr).splitlines():
         print("  " + line)
     differing = []
     if against != "none":
         print("run_selftest: against %s" % against)
-        differing = compare_baseline(outdir, os.path.abspath(against))
+        differing = compare_baseline(outdir, os.path.abspath(against), model)
     print("run_selftest: %s%s, the pictures and scores.json are in %s" %
           ("scores within the targets" if scored.returncode == 0 else "A SCORE IS OFF TARGET",
            "" if against == "none" else (", the baseline's files byte for byte" if not differing

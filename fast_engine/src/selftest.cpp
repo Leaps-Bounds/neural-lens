@@ -594,6 +594,7 @@ int run_selftest(const Options& o) {
       p.intensity = 1.0f;
     }
     one.strength = 1.0f;
+    one.look = NrLook();  // the arithmetic needs the change unshaped: the Look stage, see look.h, stays off here
     NrPasses half = one, two = one;
     half.strength = 1.5f;
     two.strength = 2.0f;

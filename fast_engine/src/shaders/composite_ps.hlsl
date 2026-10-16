@@ -36,6 +36,7 @@ cbuffer Constants : register(b0) {
   uint g_residual;  // 0: the native frame unchanged
   float g_inv_x;    // the float nearest to 1 / (2 * g_w)
   float g_inv_y;    // the float nearest to 1 / (2 * g_h)
+  uint g_keep_blacks;  // 1: keep blacks, see below
 };
 
 Texture2D<float4> g_native : register(t0);  // B8G8R8A8_UNORM, full size
@@ -76,7 +77,13 @@ float4 main(float4 pos : SV_Position) : SV_Target {
   precise float3 top = d00 + (d10 - d00) * fx;
   precise float3 bottom = d01 + (d11 - d01) * fx;
   precise float3 d = top + (bottom - top) * fy;
-  precise float3 v = level(native) + d;
+  const float3 lv = level(native);
+  // Keep blacks: the network lifts a pixel that is pure black by a level or two and changes
+  // nothing else there, so where the native pixel's brightest channel is at level 0 the
+  // change fades to nothing, whole again from level 3 up. smoothstep is exactly 1 from 3 on,
+  // so every other pixel is drawn as without it, byte for byte.
+  if (g_keep_blacks != 0) d *= smoothstep(0.0, 3.0, max(lv.r, max(lv.g, lv.b)));
+  precise float3 v = lv + d;
 
   // to the nearest level, a half going up, then held inside 0 to 255: lround and clamp
   float3 q = floor(v);

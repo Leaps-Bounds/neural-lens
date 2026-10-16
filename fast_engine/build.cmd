@@ -10,7 +10,7 @@ rem                 *_main.cpp files. The default target. A windowed program wit
 rem                 entry, so no console window opens when the lens starts it, while stdin,
 rem                 stdout and stderr still work through the pipes the lens hands it.
 rem   selftest      bin\lens-fast-selftest.exe, a console program:
-rem                 selftest_main, selftest, pipeline, nr, gpu, common
+rem                 selftest_main, selftest, pipeline, look, nr, gpu, common
 rem   capturetest   bin\lens-fast-capturetest.exe, a console program:
 rem                 capturetest_main, capturetest, capture, common
 rem   check FILE    compiles that one source in a folder of its own, keeps nothing and links
@@ -125,7 +125,7 @@ rem ---- the three programs
 if "%TARGET%"=="selftest" (
   set "EXE=bin\lens-fast-selftest.exe"
   set "SUBSYSTEM=CONSOLE"
-  set "SRCS=src\selftest_main.cpp src\selftest.cpp src\pipeline.cpp src\nr.cpp src\gpu.cpp src\common.cpp"
+  set "SRCS=src\selftest_main.cpp src\selftest.cpp src\pipeline.cpp src\look.cpp src\nr.cpp src\gpu.cpp src\common.cpp"
 )
 if "%TARGET%"=="capturetest" (
   set "EXE=bin\lens-fast-capturetest.exe"

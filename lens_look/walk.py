@@ -4,7 +4,8 @@ look, which is also the order the arrow keys walk them in.
 classic is the panel as it always was, whose own code in neural_lens.py
 keeps building its walk, and the table here only matches it. Each drawn look
 has the order of its drawing. Scale the change and Strength, which no drawing
-has, follow Passes in every look.
+has, follow Passes in every look, and the Model setting, which no drawing has
+either, follows the quality step in every look.
 
 Pure.
 """
@@ -14,13 +15,13 @@ SLIDERS = ("NRIntensity", "NRLocalTone", "NRLocalStructure", "NRSkinStructure")
 # The rows top to bottom by name, see _rows for what each name brings.
 ORDER = {
     "classic": ("profile", "auto", "free", "nr", "tabs", "style", "sliders", "skin_auto", "mask", "shared", "passes",
-                "scale_change", "strength", "quality"),
-    "console": ("profile", "auto", "free", "nr", "quality", "passes", "scale_change", "strength", "tabs", "shared",
-                "style", "sliders", "skin_auto", "mask"),
-    "folio": ("profile", "auto", "free", "nr", "passes", "scale_change", "strength", "quality", "tabs", "shared",
-              "style", "sliders", "skin_auto", "mask"),
+                "scale_change", "strength", "quality", "model"),
+    "console": ("profile", "auto", "free", "nr", "quality", "model", "passes", "scale_change", "strength", "tabs",
+                "shared", "style", "sliders", "skin_auto", "mask"),
+    "folio": ("profile", "auto", "free", "nr", "passes", "scale_change", "strength", "quality", "model", "tabs",
+              "shared", "style", "sliders", "skin_auto", "mask"),
     "industrial": ("profile", "auto", "free", "nr", "tabs", "shared", "style", "sliders", "skin_auto", "mask",
-                   "passes", "scale_change", "strength", "quality"),
+                   "passes", "scale_change", "strength", "quality", "model"),
 }
 
 
@@ -66,6 +67,9 @@ def _rows(name, n, scale, sliders):
         return [("strength", "strength", "strength_word")] if scale else []
     if name == "quality":
         return [("quality", "quality", "quality_word")]
+    if name == "model":
+        # the model's network, Large or Small, for every pass at once
+        return [("model", "model", "model_word")]
     raise KeyError(name)
 
 

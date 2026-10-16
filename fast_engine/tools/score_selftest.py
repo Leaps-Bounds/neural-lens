@@ -18,7 +18,8 @@ And against the probe's own files in --reference, where that folder exists:
     nr_out.png against work-nr-output.png, which checks the network was fed and set the same
     nr-reads.txt against route-b-reads.txt: every value the runtime asked for, and through
         which getter. The same list means the engine's parameter object sits in the runtime's
-        slots as the SDK's own does.
+        slots as the SDK's own does. The probe ran a 310.8 build. With --model-reads MODEL the
+        list is held against the probe's as that model reads it, see MODEL_READS
 each as the mean absolute difference over all bytes, the largest one, and the share of
 bytes that differ. The probe's files are not part of the repository. The default folder is
 where a checkout that has them keeps them. Without them these comparisons are skipped,
@@ -71,6 +72,25 @@ REFERENCE_ADAPTER = "NVIDIA GeForce RTX 5090"   # as timings.json names the card
 STAGE_MS_MAX = 1.0
 KEPT_TOL = 0.03                 # how far kept may be from the table's
 TABLE_MS_TOL = 0.15             # and the network's median, on the card above
+# How a model's reads differ from the probe's list, by the model's name: the reads it adds,
+# with their getter, and the ones it no longer makes. NVIDIA's 310.9.16 model, which holds
+# the large and the small FP8 networks, reads DLSSNR.MaskBlendMode, which the engine sets
+# to 0, and no longer reads DLSSNR.ScalingRatio. Measured on 2026-10-16. run_selftest.py
+# names the model by its file in the test stack.
+MODEL_READS = {
+    "310.9.16": ({"DLSSNR.MaskBlendMode": "int:found"}, ("DLSSNR.ScalingRatio",)),
+}
+
+
+def model_reads(theirs, model):
+    """The probe's reads as the named model makes them, see MODEL_READS. A model the table
+    does not have reads as the probe's did."""
+    if theirs is None or model not in MODEL_READS:
+        return theirs
+    add, drop = MODEL_READS[model]
+    out = {k: v for k, v in theirs.items() if k not in drop}
+    out.update(add)
+    return out
 
 
 def gray(path):  # as the probe's scorer did
@@ -113,6 +133,7 @@ def main():
     ap.add_argument("--reference", default=REFERENCE)
     ap.add_argument("--kept-against", default=None)
     ap.add_argument("--nr-ms-max", type=float, default=None)
+    ap.add_argument("--model-reads", default=None, help="the model the run's reads are held to, see MODEL_READS")
     ap.add_argument("--check", action="store_true")
     args = ap.parse_args()
 
@@ -178,10 +199,13 @@ def main():
             out[name] = r
 
     mine, theirs = reads(os.path.join(args.outdir, "nr-reads.txt")), reads(os.path.join(args.reference, "route-b-reads.txt"))
+    theirs = model_reads(theirs, args.model_reads)
     if mine is not None and theirs is not None:
         differing = sorted(k for k in set(mine) | set(theirs) if mine.get(k) != theirs.get(k))
         out["reads"] = {"names": len(mine), "reference_names": len(theirs), "same": not differing,
                         "differing": {k: [mine.get(k), theirs.get(k)] for k in differing}}
+        if args.model_reads in MODEL_READS:
+            out["reads"]["model"] = args.model_reads
         if differing:
             problems.append("the runtime's reads differ from the probe's: " + ", ".join(differing))
 

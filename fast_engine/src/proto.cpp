@@ -200,6 +200,16 @@ constexpr bool parse_line(std::string_view line, Parsed& out) {
     out.kind = Command::Quality;
     return true;
   }
+  if (name == "framegen") {
+    // the word as the lens writes it, or its number, see framegen.h
+    if (w.count != 2) return false;
+    if (w.word[1] == "off" || w.word[1] == "0") out.n = 0;
+    else if (w.word[1] == "ahead" || w.word[1] == "1") out.n = 1;
+    else if (w.word[1] == "between" || w.word[1] == "2") out.n = 2;
+    else return false;
+    out.kind = Command::Framegen;
+    return true;
+  }
   return false;
 }
 
@@ -964,6 +974,16 @@ static_assert([] {
 }());
 static_assert(ignored("quality") && ignored("quality 2.0") && ignored("quality 1 2") &&
               ignored("quality high") && ignored("qualities 1"));
+
+static_assert([] {
+  Parsed p;
+  return parse_line("framegen off", p) && p.kind == Command::Framegen && p.n == 0 &&
+         parse_line("framegen ahead\r", p) && p.kind == Command::Framegen && p.n == 1 &&
+         parse_line("framegen between", p) && p.n == 2 && parse_line("framegen 2", p) && p.n == 2 &&
+         parse_line("framegen 0", p) && p.n == 0;
+}());
+static_assert(ignored("framegen") && ignored("framegen on") && ignored("framegen ahead 1") &&
+              ignored("framegens off") && ignored("framegen 3"));
 
 static_assert([] {
   Parsed p;

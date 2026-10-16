@@ -336,6 +336,11 @@ class Pipeline {
   // size in use and commit_work(), as for a new work size, and network_needs_remake() says
   // when that is due. Until then the network runs as its features were made.
   void set_settings(const NrPasses& settings);
+  // The motion estimate the Look stage's filter follows from the next render on, or null for
+  // none: the vectors as the estimator made them (R16G16_SINT, one a cell, in COMMON, returned
+  // to COMMON), their grid, the work texels one cell covers and the work texels one unit of a
+  // vector is, see look.h and framegen.h. The caller has had the queue wait for the estimate.
+  void set_motion(ID3D12Resource* vectors, UINT vec_w, UINT vec_h, float cell_texels, float unit_texels);
   // The same values for every pass. The preset, the shared state and the strength stay as
   // they are. A change of the strength alone keeps the history, since the network is given
   // nothing new.

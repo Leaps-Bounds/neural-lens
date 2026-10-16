@@ -1,12 +1,32 @@
 # DLSS 5 Neural Lens
 
-**Beta, version 0.6.1.** See [CHANGELOG.md](CHANGELOG.md). While the version starts with 0,
+**Beta, version 0.9.0.** See [CHANGELOG.md](CHANGELOG.md). While the version starts with 0,
 settings, the state file format and behaviour may change between releases.
 
 A floating see-through window for Windows. Drag it over anything on your desktop and the
 content underneath appears inside it with **NVIDIA DLSS Neural Rendering** applied, live. The
 mouse passes straight through the viewport, so you can keep using whatever is beneath it, much
-like the Windows Magnifier lens.
+like the Windows Magnifier lens. Nothing is injected into the program underneath, a game
+included, see [What the lens does and does not do](#what-the-lens-does-and-does-not-do).
+
+The lens has two engines. In a window it runs on the ReShade engine. Maximised, it goes
+fullscreen and runs on a fast engine of its own, `lens-fast.exe`, see [What makes the
+picture](#what-makes-the-picture).
+
+A fullscreen lens has no title bar to click, so it has four keys of its own:
+
+- **F7** opens the lens menu
+- **F8** opens the NR settings
+- **F9** turns Neural Rendering off and on
+- **F10** shows or hides the on-screen readout
+
+The lens takes them only while it is fullscreen and in view, and the Hotkeys page of Settings
+changes them, see Keys for a fullscreen lens under [Using it](#using-it).
+
+The lens needs an NVIDIA RTX card, see [Requirements](#requirements). To get it, download the
+installer from [the releases page](https://github.com/Leaps-Bounds/neural-lens/releases) and run
+it. The installer contains only the lens. As it installs, it offers to fetch the stack that does
+the neural rendering, see [Install](#install).
 
 ![Blender's viewport with a game character, as Blender draws it](docs/images/blender-before.png)
 
@@ -34,10 +54,15 @@ with the picture alone, drawn by a second engine of the lens's own that is made 
   path uses Windows.Graphics.Capture. It has only ever been tested here on Windows 11 25H2.
 - An NVIDIA RTX card with a driver new enough for DLSS Neural Rendering. The setup reads the
   compute capability from `nvidia-smi` and stops below 7.5, which is the RTX 20 series and newer.
-  This release was tested with NVIDIA driver 617.14 on Windows 11 25H2, and the driver a
+  This release was tested with NVIDIA driver 621.01 on Windows 11 25H2, and the driver a
   release was tested with is named in its release notes.
+- For the small FP8 network of the Model setting, an RTX 50 series card. NVIDIA names that network
+  for the GeForce RTX 50 series and RTX Spark laptops, and the setup fetches NVIDIA's own model,
+  which holds it, only for a card of compute capability 12.0 or higher, see [The Neural Rendering
+  model](#the-neural-rendering-model).
 - Room on disk for about 400 MB once the stack is in place, of which about 150 MB is downloaded
-  during installation.
+  during installation. On an RTX 50 card, which gets NVIDIA's own model, the stack comes to about
+  500 MB, of which about 390 MB is downloaded, and installing it takes about 900 MB for a while.
 
 The installed lens does not need Python. That is only for running from source, below.
 
@@ -57,13 +82,13 @@ adds two Start Menu entries, the lens and its stack setup, an uninstaller, and a
 if you tick that. The installer itself contains only the lens, its fast engine for fullscreen
 included.
 
-Setup offers to fetch the neural stack as part of the installation, as a checkbox that is
-already ticked. Left ticked, it downloads about 150 MB and assembles the stack before setup
-finishes, reporting each step as it goes. **A small window opens at the top left of the screen
-for about nine seconds near the end.** That is the self test checking that Neural Rendering
-really ran, and it closes itself. If that step fails, setup still completes and tells you which
-log to read, and you can run it again afterwards from the Start Menu's stack setup entry. Untick
-the box and nothing is downloaded, and that same entry is how you set it up later.
+Setup offers to fetch the neural stack as part of the installation, as a checkbox that is already
+ticked. Left ticked, it downloads about 150 MB, or about 390 MB on an RTX 50 card, and assembles
+the stack before setup finishes, reporting each step as it goes. **A small window opens at the top
+left of the screen for about nine seconds near the end.** That is the self test checking that
+Neural Rendering really ran, and it closes itself. If that step fails, setup still completes and
+tells you which log to read, and you can run it again afterwards from the Start Menu's stack setup
+entry. Untick the box and nothing is downloaded, and that same entry is how you set it up later.
 
 Everything the lens has lives in its one folder: the program, its presenter and the stack beside
 them, the fast engine in `fast`, the layer in `ReShade`, and its state, logs and screenshots in
@@ -89,33 +114,38 @@ What it fetches, and from where:
 | part | from |
 |---|---|
 | ReShade 6.8.0 with add-on support | reshade.me, the DLL taken out of the setup without running it |
-| `nvngx_dlss.dll` 310.8.0 and the `310.8.SF-v2` Neural Rendering model | the RHI project's manifest; the model's builds are listed below |
+| `nvngx_dlss.dll` 310.8.0 | the RHI project's manifest |
+| on an RTX 50 card, NVIDIA's 310.9.16 Neural Rendering model and its licence | NVIDIA's own package, which NVIDIA's RTX Remix names on GitHub, see [The Neural Rendering model](#the-neural-rendering-model) |
+| on an older card, or where that package cannot be had, the `310.8.SF-v2` Neural Rendering model | the RHI project's manifest; the model's builds are listed below |
 | `renodx-dlss5.addon64` 5.2.1 | the RHI repository |
 | DLSSNR-Cost-Scaler 1.0.6 | its release on GitHub |
 | `dlss5-feed.addon64` and `DLSS5_Feed.fx` | DLSS5-Feeder, the current release |
 | ReshadeMotionEstimation (CC BY-NC 4.0), VORT (MIT, its motion vector code CC BY-NC 4.0) and ReShade's two shader headers | their repositories |
+| `renodx-dlss5.addon64` 8.5.0-rc10, which the stack setup keeps in the stack's `addons` folder beside 5.2.1 for the choice in Settings, see [The Home menu add-on](#the-home-menu-add-on) | the RHI repository |
 
-NVIDIA's two runtimes, the add-on and the Cost Scaler are checked against sha256 hashes held in
-`neural_stack.py`, and a download that matches none is refused. The Feeder comes from its current
-release, ReshadeMotionEstimation is pinned to a commit, and the other shaders come from their
-repositories as they stand.
+NVIDIA's two runtimes, NVIDIA's package, the add-on and the Cost Scaler are checked against sha256
+hashes held in `neural_stack.py`, and a download that matches none is refused. The Feeder comes
+from its current release, ReshadeMotionEstimation is pinned to a commit, and the other shaders come
+from their repositories as they stand.
 
-**The Neural Rendering add-on starts at its own defaults, apart from two.** The setup writes
-nothing into its section of `ReShade.ini` but the add-on's config version. Before the presenter
-starts, the lens switches the add-on's chained temporal history on, since without it two passes
-and up pulse, and sets its codec to Classic, as the add-on's developer asks. It sets each only
-while the section holds no value for it. Change anything from the menu's Tweak NR settings, in
-the ReShade overlay, or on the NR settings panel of a fullscreen lens on the fast engine, which
-writes the same section. The panel keeps the values a pass from the second on has of its own in a
-section of the lens's own in the same file, apart from the intensity of passes 2 to 4, which goes
-into the add-on's section, see [Multiple passes](#multiple-passes). What you set stays, and a
-repair from the Start Menu, or an update with the stack box ticked, keeps what both sections
-hold.
+**The Neural Rendering add-on starts at its own defaults, apart from three.** The setup writes
+nothing into its section of `ReShade.ini` but the add-on's config version and `NRPreset=1`, the
+large network of the Model setting, see [The Neural Rendering
+model](#the-neural-rendering-model). Before the presenter starts, the lens switches the add-on's
+chained temporal history on, since without it two passes and up pulse, sets its codec to Classic,
+as the add-on's developer asks, and sets `NRPreset=1`. It sets each only while the section holds no
+value for it. Change anything from the menu's Tweak NR settings, in the ReShade overlay, or on the
+NR settings panel of a fullscreen lens on the fast engine, which writes the same section. The panel
+keeps the values a pass from the second on has of its own in a section of the lens's own in the
+same file, apart from the intensity of passes 2 to 4, which goes into the add-on's section, see
+[Multiple passes](#multiple-passes). What you set stays, and a repair from the Start Menu, or an
+update with the stack box ticked, keeps what both sections hold.
 
 If you already have NVIDIA's two DLLs, the Start Menu's stack setup entry has a field for each,
 and `neural_stack.py` takes `--dlssnr` and `--dlss` on the command line. The installer's own page
-does not ask. A DLL you point at is hash checked and copied in, and only the two `310.8.SF-v2`
-builds listed under [The Neural Rendering model](#the-neural-rendering-model) are accepted.
+does not ask. A DLL you point at is hash checked and copied in, and for the model only the two
+`310.8.SF-v2` builds and NVIDIA's 310.9.16 model listed under [The Neural Rendering
+model](#the-neural-rendering-model) are accepted.
 
 Motion vectors come from ReshadeMotionEstimation by Jakob Wapenhensch, CC BY-NC 4.0, which
 measured crisper on scrolling text than every other estimator that may be fetched. With it, the
@@ -188,22 +218,68 @@ will look like in an engine with DLSS on.
 ### The Neural Rendering model
 
 NVIDIA's model is `nvngx_dlssnr.dll`, installed here as `nvngx_dlssnr_real.dll` behind the Cost
-Scaler, and the version this was built against is **310.8**. One build covers every RTX card, so
-there is nothing to choose and the setup does not ask. It checks only that an NVIDIA RTX card is
+Scaler. Which build the setup fetches goes by the card. It checks that an NVIDIA RTX card is
 present, meaning compute capability 7.5 or higher, which is the RTX 20 series and newer, and says
 so plainly when there is not one.
 
-The build used is `310.8.SF-v2`, which the RHI manifest has listed as `310.8.2 (20/30/40/50)`
-since 2026-09-24. It was published for the RTX 40 series and its author states it also covers
-RTX 20 and 30 and runs identically on RTX 50. It was measured here creating and evaluating
-Neural Rendering on an RTX 5090, matching the stock model's effect on the image to within 0.01
-at two pinned rates.
+**On an RTX 50 card**, compute capability 12.0 or higher, the setup fetches NVIDIA's own package
+of the model. NVIDIA's RTX Remix names it on GitHub, in its `packman-external.xml` as the package
+`rtx-remix-ngx_sdk_dlnr` at version 2, and its build configuration,
+`scripts-common/packman/external_config.packman.xml`, gives the link it comes from,
+`https://d1oqksizpb0e3d.cloudfront.net/rtx-remix-ngx_sdk_dlnr@2.7z`. The setup holds the package
+to its size and hash, takes the model out of it, `lib/Windows_x86_64/rel/nvngx_dlssnr.dll`,
+version 310.9.16 and signed by NVIDIA, holds that to its hash too, and puts the package's licence
+beside it in the stack folder as `NVIDIA-RTX-SDK-LICENSE.txt`.
 
-All these builds carry the same `NVIDIA DLSSNR - DVS PRODUCTION` description, so identify them by
-hash rather than by version string. Four are known to run:
+**That model holds two networks, and the Model setting chooses between them.** It names them Large
+and Small, FP8. The large network is the one every earlier model ran, NVIDIA's preset A, and a new
+install starts on it. On this model it draws the pictures of the `310.8.SF-v2` build byte for byte.
+The small FP8 network is NVIDIA's newer one, preset B, with fewer weights at 8-bit precision, which
+NVIDIA names for the GeForce RTX 50 series and RTX Spark laptops. It draws another picture,
+0.83 of 255 from the large network's on average over the self test's still at a work size of
+2560x896, and does less work. Measured on a test computer with an RTX 5090, a pass of the small
+network took 1.78 ms at that size, where the large one took 3.12 on this model and 3.00 on the
+`310.8.SF-v2` build, and 7.75 ms at 6144x2526, where the large one took 13.99 and 13.53, each in
+less video memory than the large one, see [docs/NOTES.md](docs/NOTES.md), NVIDIA's model package.
+
+The Model setting is on the NR settings panel of a fullscreen lens, under the quality step, and on
+the Picture page of Settings. It is `NRPreset` in the add-on's section of `ReShade.ini`, 1 for the
+large network and 2 for the small FP8 network, which both engines hand to the model as the preset
+its network is made with, so a profile carries it with the rest of that section, and a profile
+saved before 0.9.0 loads the large network. On the fast engine a change makes the network again
+while the picture goes on, and the on-screen readout's quality step says small network while that
+network runs. On the ReShade engine a change restarts the picture. The model runs the small network
+at 0 as well, the add-on's own default, so the setup sets `NRPreset` to 1 once where the section
+holds 0 or nothing, and says so.
+
+**NVIDIA's licence for the package**, the NVIDIA RTX SDKs licence, lets the model be installed and
+used, and passed on only as part of an application that does more than the model, never on its
+own. It asks to be told before an application that uses it is released commercially, and for the
+use to be credited where the application names itself. The lens passes nothing of it on, since
+the stack setup fetches the package from NVIDIA on your computer, as it fetches every part of the
+stack. The credit reads "Neural Rendering by NVIDIA DLSS. This software contains software provided
+by NVIDIA Corporation." and is on the Program page of Settings and under [Credits](#credits).
+
+**Where the package cannot be had**, because it cannot be fetched, comes to another size or
+matches no hash, the setup says so and takes the `310.8.SF-v2` build through the RHI manifest
+instead, as it does on every card older than the RTX 50 series. NVIDIA's package was measured on
+an RTX 5090 alone. The `310.8.SF-v2` build holds the large network alone and draws the same picture
+at any `NRPreset`, measured, so with it the Model setting shows the small network greyed and its
+explanation says why.
+
+The `310.8.SF-v2` build is the one the RHI manifest has listed as `310.8.2 (20/30/40/50)` since
+2026-09-24. It was published for the RTX 40 series and its author states it also covers RTX 20
+and 30 and runs identically on RTX 50. It was measured here creating and evaluating Neural
+Rendering on an RTX 5090, matching the stock model's effect on the image to within 0.01 at two
+pinned rates.
+
+The 310.8 builds carry the same `NVIDIA DLSSNR - DVS PRODUCTION` description, so identify every
+build by hash rather than by version string. These are known to run:
 
 ```
-310.8.SF-v2, what the setup fetches
+NVIDIA's 310.9.16, out of NVIDIA's package, what the setup fetches on an RTX 50 card
+                       2BC19BC09A7B89DD44F73E2AC0108FCC586E2154BDD0830F242F4F040E28789F   266,424,944 bytes, version 310.9.16
+310.8.SF-v2, what the setup fetches on an older card
                        6EB209E764F39872625DEBD6ABAF45E2BB6322F6F270F781F70C059AE30B3927   165,830,144 bytes, version 310.8.SF.0
 NVIDIA's stock 310.8   E16BCF15E16E13F527491CDF7845B2FE6521A738D8F7C9C721866A8496E1FC8E   165,840,496 bytes, version 310.8.0.0
 an earlier community build
@@ -212,11 +288,14 @@ an earlier community build
                        F95FEB54137EA11979F9B4EC4F00AFD84B5C98A5624D3388FBF6A87714A39FCC   165,840,496 bytes, version 310.8.3.0
 ```
 
-None is included or redistributed here. The setup fetches the `310.8.SF-v2` model from the RHI
-project's repository and refuses a download that matches neither of its two hashes, the first
-and the third above. A DLL you point the setup at is checked the same way. NVIDIA's stock 310.8
-and the Lecram build, which the RHI manifest lists for RTX 50 only, are here so you can identify
-them, and the setup does not accept them. The SF-v2 build is what runs on every card.
+NVIDIA's package itself, `rtx-remix-ngx_sdk_dlnr@2.7z`, is 367,851,723 bytes with the hash
+4BB8651B3AC2180F23DF1F39422C489810A13D445A94DC836C876C18C93ECEFE.
+
+None is included or redistributed here. The setup fetches NVIDIA's package from NVIDIA and the
+`310.8.SF-v2` model from the RHI project's repository, and refuses a download that matches none of
+its hashes, for the model those of the first, second and fourth builds above. A DLL you point the
+setup at is checked the same way. NVIDIA's stock 310.8 and the Lecram build, which the RHI manifest
+lists for RTX 50 only, are here so you can identify them, and the setup does not accept them.
 
 ## Using it
 
@@ -233,6 +312,18 @@ them, and the setup does not accept them. The SF-v2 build is what runs on every 
   the picture pauses. Its capture ends and nothing is presented, so no neural pass runs and the
   lens costs the GPU nothing while it is away. Click the taskbar button and it comes back as it
   was, with Neural Rendering as you left it.
+- **Minimise to the tray** is a switch on the Program page of Settings, off unless you switch it
+  on. With it on, minimising the lens takes its taskbar button away too and leaves an icon of the
+  lens's own in the tray, the notification area by the clock, with Neural Lens as its tooltip.
+  Windows can keep a new icon among its hidden icons, under the arrow by the clock, and the
+  taskbar settings of Windows can show it beside the clock instead. A double click on the icon,
+  or Enter on it, brings the lens back as it was. A right click opens the lens menu by the icon,
+  clear of the taskbar, with the entries F7 gives and Show the lens as its first entry. Every
+  other entry but Quit Neural Lens brings the lens back first and then does what it does, and
+  Quit closes the lens and takes the icon away. A click anywhere else, or Escape, closes the
+  menu. Where Windows does not take the icon, the lens is minimised to the taskbar instead and
+  `lens.log` says why, and where the taskbar starts again while the lens is in the tray, the icon
+  comes back. `tray_minimise = 1` in the ini is the switch on.
 - **Maximise it** with the middle button. That is fullscreen, as described below, and Leave
   fullscreen in the lens menu brings the window back.
 - The **menu** at the left opens the ReShade overlay in place so you can adjust Neural Rendering
@@ -309,8 +400,8 @@ them, and the setup does not accept them. The SF-v2 build is what runs on every 
   `lens.log` says which.
 - **Profiles** keep everything that makes the picture under a name. That is the window's place
   and size, fullscreen, the pass count, the Cost Scaler rule, the motion detail, Ready mode,
-  the frame rate limit, what the title bar shows, every setting in the Home menu, the values
-  each pass has of its own, whether the passes after the first run through the first pass's
+  the frame rate limit, what the title bar shows, every setting in the Home menu, the Model, the
+  values each pass has of its own, whether the passes after the first run through the first pass's
   network, whether the change is scaled and by how much, and the quality step. The selector on
   the title bar, marked Profile until one is in use, saves the current settings as a
   new profile and switches between them, a fullscreen lens has it as Profiles in its menu, and on
@@ -321,9 +412,10 @@ them, and the setup does not accept them. The SF-v2 build is what runs on every 
   gives the passes from the second on the first pass's values, apart from the intensity of passes
   2 to 4, see [Multiple passes](#multiple-passes), and leaves the quality step as it is. A
   profile saved before 0.7.0 loads with each pass on a network of its own and the change not
-  scaled. The name turns amber with a star once the lens no longer matches the profile in what
-  the bar and Settings hold, in a value of a pass, in whether the passes after the first run
-  through the first pass's network or in whether and how much the change is scaled. Settings
+  scaled, and one saved before 0.9.0 loads the large network. The name turns amber with a
+  star once the lens no longer matches the profile in what the bar and Settings hold, in a value
+  of a pass, in whether the passes after the first run through the first pass's network, in
+  whether and how much the change is scaled or in the Model. Settings
   renames and deletes them. They live in `profiles.json` in the data folder.
 - **A profile can be tied to a program**, so that it loads when that program comes to the
   front. An entry in the profile list on the NR settings panel ties the profile in use to the
@@ -366,7 +458,10 @@ them, and the setup does not accept them. The SF-v2 build is what runs on every 
 - **Neural Rendering goes off and on** in every pass at once from the menu, and with a key. In a
   window the key is F6, the add-on's own. The add-on of the ReShade engine, which every windowed
   lens runs on, reads the physical key, so F6 pressed anywhere toggles it, and the lens follows.
-  The program in front gets F6 too, since the add-on and the lens only read it. A fullscreen lens
+  The program in front gets F6 too, since the add-on and the lens only read it. The 8.5.0-rc10
+  build of the add-on, see [The Home menu add-on](#the-home-menu-add-on), takes F6 only while
+  its own window is in front, which in the lens is while its Home menu is open, so with it the
+  menu's entry is the way, and an F6 for another window leaves the lens as it is. A fullscreen lens
   has its NR key, F9 unless the Hotkeys page of Settings gives it another, see Keys for a
   fullscreen lens below. The fast engine has no add-on, so on it F6 does nothing, and F6 pressed
   for a game under the lens leaves the lens as it is. A fullscreen lens on the ReShade engine
@@ -380,7 +475,8 @@ them, and the setup does not accept them. The SF-v2 build is what runs on every 
   the overlay can reach the file first. While Neural Rendering is off the title bar says
   `NR off` and the pass controls wait, because a pass with Neural Rendering off is only a copy of
   the last one. A fullscreen lens has no title bar, and its menu then offers Turn NR back on.
-- **It has a taskbar button.** Click it and a minimised lens comes back. Otherwise the lens
+- **It has a taskbar button**, which a lens minimised to the tray leaves for its icon there, see
+  Minimise to the tray above. Click it and a minimised lens comes back. Otherwise the lens
   comes back to the front and stays on top again, for the case where a window that is itself
   set to stay on top has left it underneath. A right click on the button lists three entries of
   the lens's own, Open the lens menu, Open or close the NR settings, and Enter or leave
@@ -419,7 +515,8 @@ them, and the setup does not accept them. The SF-v2 build is what runs on every 
   size are kept for the way back. `fullscreen = 1` in the ini opens the lens that way.
 - **Keys for a fullscreen lens**, which has no title bar to click. F7 opens the lens menu at the
   pointer, with the readout the title bar would show on its second line and Leave fullscreen,
-  Minimise to the taskbar, Profiles, Settings and Quit Neural Lens among its entries. F8 opens the
+  Minimise to the taskbar, which reads Minimise to the tray with that switch on, Profiles, Settings
+  and Quit Neural Lens among its entries. F8 opens the
   NR settings, F9 turns Neural Rendering off and on, and F10 shows or hides the on-screen readout
   described below. The lens holds these four only while it is fullscreen and in view, so a
   windowed or minimised lens leaves them to other programs. It lets them go while Settings or
@@ -437,7 +534,9 @@ them, and the setup does not accept them. The SF-v2 build is what runs on every 
   a key held down moves it further with each repeat the longer it is held, from one end of the
   slider to the other in about 2.9 s at Windows' default key repeat. On the profile at the panel's
   top they load the profile before or after the one in use, by name, and Enter opens the profile
-  list. On the pass tabs they show the pass before or after. The lens lets those keys go when the
+  list. On the pass tabs they show the pass before or after. Enter on the Look row at the panel's
+  foot opens the Look page, see [The fast engine](#the-fast-engine), and there Escape goes back to
+  the panel's first page. The lens lets those keys go when the
   menu or the panel closes. The menu, the panel and the note never take the foreground from the
   program in front, apart from the panel with Free the mouse on, see below. The Hotkeys page of
   Settings changes or clears the four keys. Whenever the
@@ -448,7 +547,9 @@ them, and the setup does not accept them. The SF-v2 build is what runs on every 
   the quality step, the passes and the style, all off to begin with, and a choice of corner, the
   top right unless you pick another. The figures are one line in a small window of the lens's
   own that lets every click through, never takes the keyboard and is out of the picture, and
-  they are updated once a second. The quality step shows only on the fast engine, and the passes
+  they are updated once a second. The quality step shows only on the fast engine, with small
+  network after it while the small FP8 network runs, see [The Neural Rendering
+  model](#the-neural-rendering-model), and the passes
   say shared where the passes after the first run through the first pass's network there, see
   [Multiple passes](#multiple-passes). The
   readout goes while the lens is in a window or minimised. F10 hides it and shows it again while
@@ -468,10 +569,13 @@ them, and the setup does not accept them. The SF-v2 build is what runs on every 
   loads a profile for the program in front, see Profiles above, and the switch Free the mouse, see
   below. Then come Neural Rendering
   on or off, the passes, the switch Scale the change, with the strength's own slider under it
-  while it is on, the quality step, and a tab for each pass that runs, with the pass's style,
+  while it is on, the quality step, the Model, Large or Small, FP8, see [The Neural Rendering
+  model](#the-neural-rendering-model), and a tab for each pass that runs, with the pass's style,
   intensity, local tone, local structure, skin structure and auto mask. Slate, Graphite and Paper
-  have the passes and the quality step above the pass tabs, and Industrial has them under the
-  tab, as each theme's design draws the panel. On the tab of a pass from
+  have the passes, the quality step and the Model above the pass tabs, and Industrial has them
+  under the tab, as each theme's design draws the panel. Right under the Model, in every look, is
+  Frame generation, Off, Ahead or Between, see [The fast engine](#the-fast-engine). On the tab of
+  a pass from
   the second on, each value has a tick, Same as pass 1. Ticked, the pass runs at the first pass's
   value and the control is greyed, and unticked, the value is the pass's own, see [Multiple
   passes](#multiple-passes). At the top of its values the tab of pass 2 has the switch Runs
@@ -498,8 +602,10 @@ them, and the setup does not accept them. The SF-v2 build is what runs on every 
   is off, the line adds that Free the mouse lets you use the mouse there. With the switch on, the
   lens brings the panel to the front while it is open, as Alt+Tab does, so the game lets go of the
   mouse and you can point and click on the panel. Closing the panel gives the front back to the
-  game, unless you went to another window meanwhile, which then keeps it. While the panel is in
-  front, a game may pause, mute its sound or slow down, as it does on Alt+Tab. Where Windows does
+  game, unless you went to another window meanwhile, which then keeps it. A click on the picture
+  outside the panel closes it too, and the game gets the front back but not the click. While the
+  panel is in front, a game may pause, mute its sound or slow down, as it does on Alt+Tab. Where
+  Windows does
   not let the panel take the front, the line says that the program in front kept the mouse and
   that the keys are the way. While the program in front holds the mouse, moving it does nothing on
   the panel or in the lens menu, so a game that keeps putting the pointer back under the panel
@@ -722,6 +828,52 @@ up to that level came within 0.04 nits on average of the change it makes to the 
 standard range, over a test scene. With a frame rate limit of 60 fps over a picture scrolling at
 120 steps a second, the card drew 1.6 to 2.5 W more for the engine than with HDR off, where one
 such measurement is good to about 2.5 W.
+
+**Frame generation.** For a program slower than the screen, a game at 60 frames a second on a 120 Hz
+monitor, the fast engine can make a picture between each two of its frames, so the lens shows twice the
+program's rate, up to the screen's. The motion between the last two frames comes from the card's own
+motion estimator, which D3D12 offers on the video encode queue and which runs on the card's video engine
+beside the shader cores the network uses, one vector a block of 8 by 8 texels. There are two ways, chosen
+under Frame generation on the NR settings panel of a fullscreen lens and on the Fullscreen page of
+Settings, off unless chosen. Ahead carries the last frame
+half a frame on along its motion and shows that between the frames, with no delay, and what the motion
+uncovers is a guess, the nearest content stretched over it. Between shows the picture halfway between the
+last two frames first and the frame's own picture half a frame later, so nothing is guessed and the edges
+of what moves are blended, and each frame shows half a frame later than it would. The on-screen readout's
+frame rate then gives the rate shown and, of it, the pictures made, as in 120 fps, 60 made. A move of the
+whole picture is given back exactly. Where something moves against its background, the block vectors show
+at its edges, a strip up to half the move wide, where the made picture holds the background or the thing
+twice. The estimator takes pictures up to 4096x4096, so a larger capture is estimated at half size, and it
+needs an even width and height. Measured on a test computer with an RTX 5090, the estimate takes 2 ms at
+3072x1280 and 5 ms at 4096x2506, on the video engine, and the made picture's draw 0.03 ms. A frame that
+arrives before the made picture is due takes its place. `framegen` in the ini holds the choice.
+
+**The Look page.** The fast engine can steady or reshape what the network changed before it draws
+the picture. Detail stability blends the network's change with that of the last few frames,
+following the motion the card's motion estimator finds, so fine detail holds still in motion
+instead of shimmering. With Adjust the look on, Tone and Detail scale the broad and the fine part of
+the change, which Detail radius splits by size, Halo and Halo beside dark things take back the dark
+halos the network can leave beside bright things and on the bright side of dark ones, Stabilize
+evens the change out from frame to frame, in place or along the motion, and Max brightening, Max
+darkening and Max colour are soft limits, in stops, on how far it may brighten, darken or move a
+colour. Keep blacks keeps pure black pixels black, letterbox bars among them, since the model lifts
+them by about a level. They are on the Look page of the NR settings panel of a fullscreen lens,
+which the Look row at the foot of the panel opens. The words beside that row say whether the
+picture is the model's own, has its blacks kept, or is steadied or reshaped. A change shows while
+the picture goes on, and with every value at its default the picture is the network's own. The
+values are the add-on's own keys in its section of
+`ReShade.ini`, so the 8.5.0-rc10 build of the Home menu add-on edits the same values in its Home
+menu in a window, and 5.2.1 leaves them alone. That build writes Detail stability as Auto when it
+writes its keys, so once it has run in a window, a fullscreen lens has Detail stability on until
+the Look page sets it to Off. A profile carries the values with the rest of that section, and a
+profile saved before 0.9.0, which has none of them, loads with the look at its defaults. The fast
+engine reads these thirteen keys and no other of the add-on's look keys: `NRDetailStability`,
+`NRLookMode`, `NRLookTone`, `NRLookDetail`, `NRLookDetailRadius`, `NRLookHalo`,
+`NRLookHaloBrightSide`, `NRLookStabilize`, `NRLookStabilizeMs`, `NRLookStabilizeDetail`,
+`NRLookMaxBrighten`, `NRLookMaxDarken` and `NRLookMaxColour`. Keep blacks is `NRKeepBlacks` in the
+same section, the fast engine's own, which neither build of the add-on reads, and a profile and a
+switch of the build carry it with the rest. What the stage costs and what was measured is in
+[docs/NOTES.md](docs/NOTES.md), The Look stage.
 
 ### Multiple passes
 
@@ -1064,6 +1216,72 @@ enlargement, its other mode, lost most of it, 59 against 139 on a 1400x1000 lens
 varied by up to 5 percent between runs of the same setting, 327 to 344 W at 0.50. The proxy stays
 off windowed, where the neural pass is rarely what limits the frame rate.
 
+### The Home menu add-on
+
+The ReShade engine runs one of two builds of the RenoDX DLSS 5 add-on, and that build draws the
+Home menu, the add-on's tab in the ReShade overlay. **5.2.1 is the default.** **8.5.0-rc10** has a
+larger Home menu. It is a release candidate, and the last build of the add-on made public. The RHI
+repository keeps both, and the setup fetches both into the stack's `addons` folder, checked by
+hash, and puts the chosen one in place as `renodx-dlss5.addon64`. Choose in Settings, on the
+Picture page under Home menu add-on, or with `addon = 8.5` in the ini. A change restarts the
+picture of the ReShade engine, which every windowed lens runs on. The fast engine has no add-on,
+so a fullscreen lens on it goes on, and the change is made at once.
+
+What 8.5.0-rc10 adds to the Home menu:
+
+- a hook point in place of Denoise before upscaling, Upscaled or Render, where Render is the same
+  path and gives the same picture. Its third, Present, does not run in the lens's presenter, and
+  the build then runs Upscaled
+- a stage that reshapes the network's output live, its brightening, darkening, colour and tonal
+  ranges, with limits, halo suppression and a stabiliser
+- Detail stability, below
+- values of their own for passes 2 to 4, and Independent skin
+- its own before and after screenshots, a cost meter and more diagnostics, and a Developer view
+  with every control in one list
+
+**It shows a notice of its own.** Each time the ReShade engine starts, 8.5.0-rc10 shows a dark card
+reading Neural Rendering is active at the top left of the picture for about four seconds. The lens
+starts its presenter as it starts and again for a new size, a pass more or fewer, a profile and
+more, so the card comes often. No setting turns it off. Its Issue notices switch, in the Home
+menu, turns off only the notices it shows while something is wrong.
+
+**F6 works with its Home menu open.** 8.5.0-rc10 takes its toggle key only while a window of its
+own program is in front, which in the lens is while its Home menu is open. So a windowed lens on
+it turns Neural Rendering off and on by the menu's entry, and the menu then names no key for it.
+
+**Detail stability.** The 8.5 build's Detail stability, on by default as Auto, averages the
+network's change over a few frames along the motion vectors, which keeps fine detail from
+boiling. The lens leaves it on, since it is a quality filter, and it costs some speed. On a test
+computer with an RTX 5090 and a 120 Hz monitor, the ReShade engine over the whole monitor at one
+pass, with the Cost Scaler off, ran at 39.5 and 39.1 frames per second with 8.5.0-rc10 against
+40.6 and 40.1 with 5.2.1, 2.6 percent slower. With Detail stability set to Off in the Home menu it
+ran at 40.2 and 40.0 against 40.5 and 40.1, the same within noise. Its effect in motion was not
+measured. Over a still the two builds give the same picture, 0.21 of 255 apart, where two runs of
+one build are 0.2 to 0.45 apart.
+
+**The settings carry over.** Each build reads its own form of the add-on's section of
+`ReShade.ini`, and 5.2.1 puts every value back to its default when it finds the other's. So the
+lens never hands a build the other's section. At a change it keeps the section as it was in the
+`addons` folder for the build it was written for, and gives the build that comes the values both
+builds have, such as the style, the intensities, the pass count, the codec and chained history,
+with the rest as that build last had them. Denoise before upscaling in 5.2.1 goes across as the
+hook point Render, and back. Going back and forth loses nothing. The 8.5 build takes a skin
+structure of 1 at most, so while it is chosen the NR settings panel's slider stops at 1, a value
+above 1 goes to it as 1, and 5.2.1 gets its own value back. A profile keeps the build it was saved
+under, and one saved under the other build loads with the values both builds have and its Denoise
+before upscaling carried across. A new install's section starts at the chosen build's own config
+version, 2 for 5.2.1 and 7 for 8.5.0-rc10, and a repair keeps the build you chose. With
+8.5.0-rc10 the lens also switches that build's Independent skin off while the section holds no
+value for it, which sends the skin values as 5.2.1 sends them, so a look stays as it was.
+
+**What else it leaves in the folder.** The 8.5 build writes a journal, `RenoDX-DLSS5-crash.log`,
+beside the presenter, a few lines at each start, and never shortens it. The lens cuts it back to
+its newest lines as it starts once it is over 64 KB, and uninstalling removes it with the
+`addons` folder. The last line of its Home menu names the build and then reads DLSSNR not loaded,
+even while Neural Rendering runs. The add-on looks for a version in the `nvngx_dlssnr.dll` it
+loaded, which is the Cost Scaler, and the Cost Scaler carries none. The status card at the top of
+the menu says whether Neural Rendering is active.
+
 ## Limits
 
 - **Resizing restarts the picture.** The presenter's size is fixed when it starts, and the
@@ -1218,7 +1436,7 @@ ship inside the installer. Each keeps its own licence:
 | RHI and its repository, which publish the DLSS manifest and host the add-on and runtimes | RankFTW | GPL-3.0 |
 | ReshadeMotionEstimation, the default motion vector estimator | Jakob Wapenhensch | CC BY-NC 4.0 |
 | vort_Shaders, the alternative estimator | Vortigern, its motion vector code after Jakob Wapenhensch and Pascal Gilcher | MIT, the motion vector code CC BY-NC 4.0, `vort_ACES.fxh` the ACES licence |
-| DLSS, the DLSS runtime and the Neural Rendering model | NVIDIA | NVIDIA's terms |
+| DLSS, the DLSS runtime and the Neural Rendering model, on an RTX 50 card from NVIDIA's own package, whose licence the setup puts beside the model as `NVIDIA-RTX-SDK-LICENSE.txt` | NVIDIA | NVIDIA's terms, for that package the NVIDIA RTX SDKs licence |
 | windows-capture, the screen capture binding | NiiightmareXD | MIT |
 | OpenCV, which windows-capture requires, and which is most of the installer's size | the OpenCV team | Apache 2.0 |
 | NumPy | the NumPy developers | BSD 3-Clause |
@@ -1237,6 +1455,9 @@ The licence texts of the Python packages ship with them, in their `.dist-info` f
 
 The installer's shape, one small program that bundles nothing and fetches every part from
 upstream, follows FeedKit by ntqueryinformation (MIT).
+
+Neural Rendering by NVIDIA DLSS. This software contains software provided by NVIDIA Corporation.
+The same words are on the Program page of Settings, as the licence of NVIDIA's model package asks.
 
 This project is not affiliated with, endorsed by or supported by NVIDIA. DLSS is NVIDIA's
 trademark, and the name here says what the lens applies, not who made it.

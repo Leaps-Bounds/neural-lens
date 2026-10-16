@@ -37,6 +37,8 @@
 // has finished every list that named the old one (commit_work).
 #include "pipeline.h"
 
+#include "look.h"
+
 #include "nr.h"
 
 #include "composite_hdr_ps.h"
@@ -143,7 +145,7 @@ struct ScaleConstants {
 struct DrawConstants {
   UINT w, h, work_w, work_h, residual;
   float inv_x, inv_y;  // the floats nearest to 1 / (2 w) and 1 / (2 h), see composite_ps.hlsl
-  UINT unused;
+  UINT keep_blacks;    // 1: the change fades to nothing at a native level of 0, see look_settings.h
 };
 struct HdrDrawConstants {
   UINT w, h, work_w, work_h, residual;
@@ -151,7 +153,8 @@ struct HdrDrawConstants {
   float white;         // the SDR white level in units of 80 nits
   UINT above;          // HdrAbove
   UINT have_raw;       // 1: the 16-bit frame behind the native one is in the table
-  UINT unused[2];
+  UINT keep_blacks;    // as DrawConstants
+  UINT unused;
 };
 
 struct Context {
@@ -330,6 +333,7 @@ struct Pipeline::Impl {
   NrPasses settings;        // each pass's own, see common.h
   bool settings_pending = false;  // nr has not been given them yet, see set_settings()
 
+  Look look;                 // the Look stage, see look.h, on the last pass's output after the strength
   ComPtr<ID3D12RootSignature> ingest_root, draw_root, draw_hdr_root, convert_root, scale_root;
   ComPtr<ID3D12PipelineState> ingest_pso, draw_pso, draw_hdr_pso, convert_pso, scale_pso;
   ComPtr<ID3D12DescriptorHeap> heap;
@@ -749,6 +753,9 @@ struct Pipeline::Impl {
     }
     const float scale = strength_now();
     if (scale > 1.0f) record_scale(l, last_out(), scale);
+    // the Look stage, in place on the same output, see look.h; nothing when every value is at its
+    // identity, and the history runs on the network's clock, which this list advances
+    if (!look.record(l, work.in.Get(), last_out(), work.w, work.h, settings.look, drop, now_s(), err)) return false;
     return true;
   }
 
@@ -1007,6 +1014,7 @@ struct Pipeline::Impl {
       k.white = (float)sdr_white;
       k.above = (UINT)hdr_above;
       k.have_raw = behind ? 1u : 0u;
+      k.keep_blacks = settings.look.keep_blacks ? 1u : 0u;
       l->SetGraphicsRoot32BitConstants(0, sizeof(k) / 4, &k, 0);
     } else {
       l->SetGraphicsRootSignature(draw_root.Get());
@@ -1019,6 +1027,7 @@ struct Pipeline::Impl {
       k.residual = residual ? 1u : 0u;
       k.inv_x = inv_x;
       k.inv_y = inv_y;
+      k.keep_blacks = settings.look.keep_blacks ? 1u : 0u;
       l->SetGraphicsRoot32BitConstants(0, sizeof(k) / 4, &k, 0);
     }
     l->SetGraphicsRootDescriptorTable(1, gpu_slot(table));
@@ -1301,6 +1310,12 @@ bool Pipeline::init(Gpu& gpu, const PipelineDesc& desc, std::string& err) {
       shutdown();
       return false;
     }
+  }
+
+  // ---- the Look stage's shaders and heap, see look.h
+  if (!m.look.init(gpu, err)) {
+    shutdown();
+    return false;
   }
 
   // ---- the composite: constants and a table of three textures, for the pixel shader
@@ -1932,7 +1947,10 @@ void Pipeline::set_nr(bool on) {
 bool Pipeline::nr_on() const { return impl_ && impl_->network && impl_->nr_on; }
 
 void Pipeline::set_settings(const NrPasses& settings) {
-  if (!impl_ || same_passes(settings, impl_->settings, impl_->desc.passes)) return;
+  if (!impl_) return;
+  // the Look stage's values are taken as they come, live, and restart nothing, see look.h
+  impl_->settings.look = settings.look;
+  if (same_passes(settings, impl_->settings, impl_->desc.passes)) return;
   Impl& m = *impl_;
   // the strength is the pipeline's own, see record_passes(): a new one changes nothing the
   // network is given, so the history stays and the runtime is not told
@@ -1956,7 +1974,12 @@ void Pipeline::set_settings(const NrSettings& settings) {
   all.preset = impl_->settings.preset;
   all.shared = impl_->settings.shared;
   all.strength = impl_->settings.strength;
+  all.look = impl_->settings.look;
   set_settings(all);
+}
+
+void Pipeline::set_motion(ID3D12Resource* vectors, UINT vec_w, UINT vec_h, float cell_texels, float unit_texels) {
+  if (impl_) impl_->look.set_motion(vectors, vec_w, vec_h, cell_texels, unit_texels);
 }
 
 bool Pipeline::network_needs_remake() const { return impl_ && impl_->network && impl_->nr.needs_remake(); }
@@ -2066,6 +2089,7 @@ bool Pipeline::commit_work(std::string& err) {
   m.desc.work_w = m.work.w;
   m.desc.work_h = m.work.h;
   m.write_work_descriptors();
+  m.look.forget();  // its textures follow the new size at the next render, see look.h
   // The new features have no history, and the new textures hold nothing yet. Until the next
   // render a repaint is the native frame alone.
   m.reset_next = true;

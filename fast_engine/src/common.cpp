@@ -197,7 +197,7 @@ const char kUsage[] =
     "  lens-fast.exe --source monitor:<index> --at X Y --size W H --stack DIR\n"
     "                [--crop X Y] [--title T] [--exclude] [--ready] [--max-fps N]\n"
     "                [--data DIR] [--passes N] [--quality N] [--present hwnd|dcomp]\n"
-    "                [--no-settle] [--lifetime S]\n"
+    "                [--framegen off|ahead|between] [--no-settle] [--lifetime S]\n"
     "                [--work-size W H | --work-scale S | --work-max W H]\n"
     "  lens-fast.exe --stack DIR --selftest IMAGE OUTDIR [--passes N] [--quality N]\n"
     "                [--work-size W H | --work-scale S | --work-max W H] [--data DIR]\n"
@@ -234,6 +234,10 @@ const char kUsage[] =
     "  --work-max W H        for tests, that size as the picture fitted into W x H\n"
     "  --present hwnd|dcomp  make the swapchain for the window (the default) or for\n"
     "                        DirectComposition\n"
+    "  --framegen off|ahead|between\n"
+    "                        make a picture between the frames of a source slower than\n"
+    "                        the display, ahead with no delay or between with half a\n"
+    "                        frame of it, see framegen.h. Off unless given\n"
     "  --no-settle           do not run the network again on a picture that has come to\n"
     "                        rest (it runs up to 4 more times, see settle below)\n"
     "  --lifetime S          leave after S seconds whatever happens, for tests\n"
@@ -307,7 +311,8 @@ const char kUsage[] =
     "                        they were made, in the state named, which the stats line\n"
     "                        keeps saying. A reload that changes the state asks again\n"
     "  stats new=N arrived=N repeated=N dropped=N skipped=N meter=MS delay=MS shared=on|off\n"
-    "        network=MS      once a second. meter is the time in ms from a captured\n"
+    "        network=MS generated=N preset=N\n"
+    "                        once a second. meter is the time in ms from a captured\n"
     "                        frame's timestamp to the present call, negative because the\n"
     "                        timestamp is a refresh still to come. delay is the time in\n"
     "                        ms from that timestamp to the refresh that showed the\n"
@@ -315,8 +320,10 @@ const char kUsage[] =
     "                        passes run through one feature, as on the ready line.\n"
     "                        network is the GPU time in ms of the network's passes\n"
     "                        together, the mean over the second's runs, nan where it did\n"
-    "                        not run. With LENS_PRESENTER_PROFILE=1 more pairs come\n"
-    "                        before shared\n"
+    "                        not run. generated is the pictures made between the frames\n"
+    "                        and presented. preset is the model preset the features in\n"
+    "                        use were made with, 0 without a network. With\n"
+    "                        LENS_PRESENTER_PROFILE=1 more pairs come before shared\n"
     "  paused | resumed | shot done ... | shot failed REASON\n"
     "  probe n=N median=M max=X | capture lost REASON | engine failed REASON\n";
 
@@ -514,10 +521,12 @@ void read_base(const IniSection& addon, NrSettings& out) {
   out.ui_correction = (int)section_number(addon, L"NRUICorrection", (float)d.ui_correction) != 0 ? 1 : 0;
 }
 
-// The preset the features are created with, 0 to 3 as the add-on's menu offers them. Read
-// as the six are, and anything outside that range, which the add-on would not write,
-// counts as the default.
-constexpr unsigned kPresetMost = 3;
+// The preset the features are created with: 0, the model's default, or one of its lettered
+// presets, 1 for A up to 7 for G, as NVIDIA's header for the 310.9.16 model names them. On
+// that model 1 runs the large network and 0, 2 and 3 the small FP8 one, measured, and 4
+// to 7 were not measured. The lens offers 1 and 2 alone. Read as the six are, and anything
+// outside that range counts as the default.
+constexpr unsigned kPresetMost = 7;
 
 unsigned read_preset(const IniSection& addon) {
   const float value = section_number(addon, L"NRPreset", 0.0f);
@@ -560,6 +569,28 @@ bool read_nr_passes(const std::wstring& stack_dir, NrPasses& out, std::string& e
   const IniSection addon = read_section(ini, kAddonSection);
   read_base(addon, out.pass[0]);
   out.preset = read_preset(addon);
+  // the Look stage's values, the add-on's own keys, see look_settings.h: a value out of its range
+  // falls to the default, and with NRLookMode off only detail stability is read
+  {
+    NrLook& k = out.look;
+    const int stability = (int)section_number(addon, L"NRDetailStability", 1.0f);
+    k.detail_stability = stability >= 0 && stability <= 2 ? stability : 1;
+    k.keep_blacks = (int)section_number(addon, L"NRKeepBlacks", 0.0f) != 0 ? 1 : 0;
+    if ((int)section_number(addon, L"NRLookMode", 0.0f) != 0) {
+      k.tone = std::clamp(section_number(addon, L"NRLookTone", 1.0f), 0.0f, 2.0f);
+      k.detail = std::clamp(section_number(addon, L"NRLookDetail", 1.0f), 0.0f, 2.0f);
+      k.detail_radius = std::clamp(section_number(addon, L"NRLookDetailRadius", 1.0f), 0.25f, 4.0f);
+      k.halo = std::clamp(section_number(addon, L"NRLookHalo", 0.0f), 0.0f, 1.0f);
+      k.halo_bright = std::clamp(section_number(addon, L"NRLookHaloBrightSide", 0.0f), 0.0f, 1.0f);
+      const int stabilize = (int)section_number(addon, L"NRLookStabilize", 0.0f);
+      k.stabilize = stabilize >= 0 && stabilize <= 2 ? stabilize : 0;
+      k.stabilize_ms = std::clamp(section_number(addon, L"NRLookStabilizeMs", 60.0f), 10.0f, 250.0f);
+      k.stabilize_detail = (int)section_number(addon, L"NRLookStabilizeDetail", 0.0f) != 0;
+      k.max_brighten = std::clamp(section_number(addon, L"NRLookMaxBrighten", 0.0f), 0.0f, 4.0f);
+      k.max_darken = std::clamp(section_number(addon, L"NRLookMaxDarken", 0.0f), 0.0f, 4.0f);
+      k.max_colour = std::clamp(section_number(addon, L"NRLookMaxColour", 0.0f), 0.0f, 2.0f);
+    }
+  }
   const NrSettings base = out.pass[0];
   for (NrSettings& p : out.pass) p = base;      // a pass beyond the count runs nothing of its own
   const IniSection own = read_section(ini, kPassSection);
@@ -598,6 +629,29 @@ bool same_passes(const NrPasses& a, const NrPasses& b, int count) {
     if (!same_settings(a.pass[i], b.pass[i])) return false;
   }
   return true;
+}
+
+std::string look_text(const NrLook& k) {
+  std::string text;
+  auto add = [&text](const std::string& part) {
+    if (!text.empty()) text += ", ";
+    text += part;
+  };
+  if (k.tone != 1.0f) add(strf("tone %.2f", k.tone));
+  if (k.detail != 1.0f) add(strf("detail %.2f", k.detail));
+  if (k.detail_radius != 1.0f) add(strf("detail radius %.2f", k.detail_radius));
+  if (k.halo > 0.0f) add(strf("halo %.2f", k.halo));
+  if (k.halo_bright > 0.0f) add(strf("halo bright side %.2f", k.halo_bright));
+  if (k.stabilize != 0) {
+    add(strf("stabilize %s %.0f ms%s", k.stabilize == 2 ? "along the motion" : "in place", k.stabilize_ms,
+             k.stabilize_detail ? " with the detail" : ""));
+  }
+  if (k.max_brighten > 0.0f) add(strf("max brighten %.2f", k.max_brighten));
+  if (k.max_darken > 0.0f) add(strf("max darken %.2f", k.max_darken));
+  if (k.max_colour > 0.0f) add(strf("max colour %.2f", k.max_colour));
+  if (k.detail_stability != 1) add(k.detail_stability == 0 ? "detail stability auto" : "detail stability always");
+  if (k.keep_blacks) add("keep blacks");
+  return text.empty() ? std::string("look off") : "look " + text;
 }
 
 std::string own_values_text(const NrSettings& base, const NrSettings& pass) {
@@ -795,6 +849,15 @@ bool parse_options(int argc, wchar_t** argv, Options& out, std::string& err) {
       else if (_wcsicmp(v[0].c_str(), L"dcomp") == 0) o.present = PresentPath::Dcomp;
       else {
         err = "--present needs hwnd or dcomp";
+        return false;
+      }
+    } else if (a == L"--framegen") {
+      if (!values(1)) return false;
+      if (_wcsicmp(v[0].c_str(), L"off") == 0) o.framegen = 0;
+      else if (_wcsicmp(v[0].c_str(), L"ahead") == 0) o.framegen = 1;
+      else if (_wcsicmp(v[0].c_str(), L"between") == 0) o.framegen = 2;
+      else {
+        err = "--framegen needs off, ahead or between";
         return false;
       }
     } else if (a == L"--no-settle") {

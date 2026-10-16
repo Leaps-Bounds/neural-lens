@@ -248,7 +248,8 @@ reads `nr 1|0`, `reload`, `settle 1|0` and `quality N`, and prints `engine quali
 network again and it could not, see Each pass's values, and, as its last line when it fails,
 `engine failed REASON`. Its stats line carries the presenter's pairs and then `shared=on|off`
 and `network=MS`, the network's GPU time a picture as the mean over the second's runs, `nan`
-where it did not run, see The quality steps for what the lens does with it. The lens finds its
+where it did not run, see The quality steps for what the lens does with it, then `generated=N`,
+see Frame generation, and `preset=N`, see NVIDIA's model package. The lens finds its
 window by its process id and its class, `NeuralLensFast`.
 
 No ReShade and no add-on run in it. It loads the stack's `nvngx_dlssnr.dll`, which is the Cost
@@ -1335,6 +1336,87 @@ with the time its seconds began:
   Settings takes a warning that is up off the notice at once, and Save names
   `fs_behind_warn 0` or `fs_behind_warn 1` in its one line, see The lens's log.
 
+### Frame generation
+
+For a source slower than the display the engine can make a picture between each two frames, see
+`fast_engine\src\framegen.h`. The motion comes from the card's own motion estimator, which D3D12
+offers as `ID3D12VideoMotionEstimator` on the video encode queue, with NV12 pictures, blocks of 8x8
+texels and quarter texel vectors, and no SDK of NVIDIA's. The engine makes the estimator at the first
+switch on, and a card without one leaves the option off, with `framegen unavailable REASON` on its
+stdout for the lens. The choice is on the NR settings panel of a fullscreen lens as well as on the
+Fullscreen page of Settings, and the lens greys the panel's row once the engine it runs has said
+`framegen unavailable`, its explanation saying that the card has no motion estimator the engine can use.
+
+How it sits in the loop. After the composite of a new frame is submitted and before its present, the
+engine copies the finished picture into one of two textures of its own, converts the frame to NV12 at the
+estimator's size with a compute pass, through a buffer into the two planes, and has the encode queue
+estimate the motion from the frame before, behind a fence, with nothing waited for on the CPU. The
+estimator takes pictures up to 4096x4096, so a capture of 6144x2560 is estimated at half size and the
+vectors scaled up. For ahead, the loop presents the made picture half a source frame after the frame's
+own, from a list that waits on the GPU for the estimate. For between, the made picture is drawn into the
+back buffer in place of the frame's own, and the frame's own follows half a frame later by a repaint. The
+source's frame gap is the median of the last six gaps between new frames' timestamps, and nothing is made
+while it is under a refresh and a half or over a quarter of a second. A new frame that arrives before the
+made picture is due takes its place, and the stats line's `gendrop` counts those under the profile. The
+loop's first form dropped every made picture, because the turn that armed it saw the new frame of that
+same turn as the one overtaking it, which the switch test over a window moving at 60 frames a second
+showed as `generated=0` with `gendrop=60`. The made picture is drawn by a pixel shader into the back
+buffer as the composite is, since a back buffer cannot be an unordered access view.
+
+What the stats line says: `generated=N` at its end, the made pictures presented in the second, and the
+lens's readout shows the rate shown with them. The engine's `--framegen off|ahead|between` sets the mode
+at the start and `framegen WORD` on stdin changes it live. `LENS_FAST_FRAMEGEN_SHOT=DIR` is a test aid
+that writes the first three made pictures with the two they were made from and the luma plane, and notes
+the vectors' statistics.
+
+Measured on a test computer with an RTX 5090. The probe (`_harnesses\wip-060\research\flow`, 2026-10-15):
+the estimate takes 5.3 ms at 4096x2506 in blocks of 8 and 3.3 ms in blocks of 16, 2.0 ms and 1.3 ms at
+3072x1280, wall clock on the encode queue, the warp 0.03 to 0.08 ms; on the README's Blender still moved by
+(12, 6) texels the warped midpoint is exact with blocks of 16 and 79 dB with 8, where the two frames
+averaged are 25 dB. In the engine over a window of 2560x1440 moving at 60 frames a second on the 120 Hz
+monitor (2026-10-16): new=60 and generated=60 a second in both modes, none dropped, the network's time a
+picture 4.1 ms where it was 3.9 without, since the conversion shares the card. Over textured blocks moving
+8 texels a frame the made picture of ahead carried them exactly 4 texels on. Over blocks moving 16 and 32
+texels a frame the block vectors showed at the edges, a strip up to half the move wide holding the
+background or the block twice, and a flat colour gave no vectors at all, since every block of it matches at
+no motion. A game's textured picture is the estimator's case, a flat colour its worst.
+
+### The Look stage
+
+The engine's own versions of the add-on's look controls run at the work size after the passes and the
+strength and before the composite, see `fast_engine\src\look.h`. Its values are the thirteen keys of the
+add-on's section that the lens's Look page writes, `NRDetailStability` read always and the twelve `NRLook`
+keys only while `NRLookMode` is 1, each held to its range and a choice outside its range taken as its
+default, see `fast_engine\src\look_settings.h`. A reload takes a changed set live, with no network made
+again, and the settings note names the values that differ from their defaults, or says look off. The stats
+line ends with `look=1` while the stage changes the picture and `look=0` while the picture is the network's
+own, which the lens keeps as `engine_look`. The Look page greys the rows `NRLookMode` gates while it is off,
+and the stabiliser's time and Stabilize detail while Stabilize is off.
+
+Measured on a test computer with an RTX 5090 at 2560x1440 (2026-10-16). The engine's frame took 4.50 ms with
+Detail stability following the motion and halo suppression, the page's Halo, on, where it took 3.94 ms without
+the stage. Detail stability and Stabilize along the motion follow the card's motion estimator, which comes up
+for the look while frame generation is off and costs what it costs there, see Frame generation. With every
+value at its default the self test's pictures are byte for byte the ones without the stage. The limits bound
+the change in stops to within 8-bit rounding. With a ceiling and a floor of 0.25 stops and a colour limit of
+0.1, the largest changes on the self test's still were +0.26 and -0.37 stops, the overshoot being rounding at
+near-black saturated pixels. Halo at 1 changed the still by 0.18 of 255 on average, and Tone at 0.5 with
+Detail at 1.5 changed it by 1.6.
+
+8.5.0-rc10 writes `NRDetailStability=0`, Auto, whenever it writes its keys, at its migration of a section and
+at the first change in its Home menu, and the engine reads a missing key as 1, Off. So once 8.5.0-rc10 has run
+in a window, the fast engine runs detail stability, as Auto, until the Look page sets it to Off.
+
+Keep blacks, `NRKeepBlacks` on the same page, belongs to the composite and not to the stage, and neither build
+of the add-on reads it. The engine reads it always, as it reads `NRDetailStability`, and takes it live at a
+reload with no network made again. At 1 the composite fades the network's change out where the original
+pixel's brightest channel is at level 0 and lets it through whole from level 3 up, so pure black stays black,
+and the settings note says keep blacks while it is on. The stats line's `look=` leaves it out. Measured on
+2026-10-17 on three captures with 24 to 36 percent of their pixels under level 4, the composite lifted the
+pixels at level 0 by 0.5 to 1.0 levels on average, its 95th percentile at 1.0, at the test stack's values, and
+by 1.0 to 1.6, its 95th percentile at 1.7 to 2.0, at an intensity of 1.58, on both networks, while the pixels
+from level 1 up were darkened on average. The Blender still has no such pixels.
+
 ### How the lens chooses the engine and falls back
 
 A start gets the fast engine when the lens is fullscreen, `fullscreen_engine` is not `stack`,
@@ -2185,7 +2267,10 @@ alone keeps 0.46. The fast engine gives that look with the switch Runs through p
 on the tab of pass 2, see Each pass's values.
 
 **Traps.** This add-on line resets its whole section to built-in defaults when `ConfigVersion` is
-missing or older than its own, and writes `ConfigVersion=2`, without a log line. Its own working
+missing or older than its own, and writes `ConfigVersion=2`, without a log line. It does the same
+for a newer one, and says so then. On a section 8.5.0-rc10 had written at 7, 5.2.1 logged
+`config schema v7 is stale (current v2); applying the built-in defaults`, see The Home menu
+add-on. Its own working
 resolution setting (`NRFollowInputRes`, `NRResolutionScale`) scales against a game's DLSS render
 resolution, which the lens has none of. With `NRFollowInputRes=2` and `NRResolutionScale=0.75`
 the log still said `NR input 2400x1800`, at the same cost and with the same output.
@@ -2193,21 +2278,180 @@ the log still said `NR input 2400x1800`, at the same cost and with the same outp
 The newer `renodx-dlss` add-on, with `DirectNeuralRenderingPassCount`, does not inject at all,
 see Dead ends.
 
+## The Home menu add-on
+
+Since 0.9.0 the ReShade engine runs one of two builds of the add-on, 5.2.1, the default, or
+8.5.0-rc10, chosen on the Picture page of Settings and kept in the ini as `addon`, `8.5` or no line
+for 5.2.1. Both are releases on the RHI repository. 8.5.0-rc10 was published there on 2026-09-26
+as an ordinary release. It is a release candidate of the 8.5 line, which has no final, and the
+last build of the add-on made public.
+
+```
+5.2.1        tag renodx-dlss5-5.2.1, renodx-dlss5_5.2.1.zip, 288,032 bytes
+             zip      125506B22EDD8E0D6F8117579FE2A516288440FC068A5310680065DB5D027129
+             add-on   A1B78052B58FC285F018362AC8652DF8A01D31BE9F3ECBB9E31776866EAD5887   655,360 bytes
+8.5.0-rc10   tag renodx-dlss5-8.5.0-rc10, renodx-dlss5_8.5.0-rc10.zip, 1,129,182 bytes
+             zip      A745040CB2E93E3A1500A6C5A322972ACC4C5C667108FCEA31C748285D6364A9
+             add-on   DCD93881E976AD033D83C2BB01F4BC3E4DDC59C15FE0DD4CA165BC5FC7D1AC68   3,141,632 bytes,
+                      file version 0.2026.0926.0210
+```
+
+**The setup** fetches both zips into the stack's `addons` folder, checks each zip and the add-on in
+it against those hashes, keeps both there, and writes the chosen build's add-on as
+`renodx-dlss5.addon64`. The choice comes from `--addon` or else from the lens's ini, so a repair
+keeps it. A new install's section gets the chosen build's `ConfigVersion`, 2 or 7. A repair that
+finds the section written for the other build carries it over to the build it installs, as a
+switch does below. The self test names the build in place. A copy of `ReShade.ini` that 8.5.0-rc10
+makes before migrating a section is removed when the self test made it, on a repair, and on
+uninstalling, which also takes the `addons` folder and the journal.
+
+**The switch.** The lens puts the chosen build in place as a presenter is about to start, once the
+old one is gone, since the presenter holds the add-on it loaded and reads the section only as it
+starts. A running fast engine has no add-on, so there the switch is made at once and the engine
+reads the section again. Where the zip is not in the `addons` folder, as in a stack an earlier
+setup made, the lens fetches it from RHI on a thread of its own, checked by hash, and the picture
+restarts once it is there. Should the download fail, a choice made in Settings goes back, and the
+bar says so. A stack whose add-on is neither build is left as it is, and Settings greys the choice
+with a line saying why.
+
+**The two schemas.** 5.2.1 resets its section on any `ConfigVersion` but its own 2. Started on the
+section 8.5.0-rc10 had migrated, 118 keys at 7, it logged `config schema v7 is stale (current v2);
+applying the built-in defaults` and wrote `ConfigVersion=2`, `NRIntensity=1`, `NRLocalTone=1`,
+`NRLocalStructure=1`, `NRPass2Intensity` to `NRPass4Intensity` at 1, `NRSkinStructure=-1`,
+`NRCodecMode=1`, `NRChainedHistory=0` and a new `NRAdaptiveExposure=1` over the values it found.
+8.5.0-rc10 migrates a section of any `ConfigVersion` but its own 7, once and key by key. From
+5.2.1's it first copies `ReShade.ini` beside itself as `ReShade.ini.renodx-dlss5-pre-v4-migration-`
+with the date and time and `.bak`, turns a stored `NRCodecMode=1` into 0 and `NRChainedHistory=0`
+into 1, pins `NRPQCalibration` at 2.5375 where a section of its own gets 1, and writes every key it
+has. On the trial's section of 21 keys that was 97 keys more, every stored value kept as it was and
+none rescaled. With `ConfigVersion=7` already there it writes nothing but that key until a value
+changes in its Home menu.
+
+So the lens never hands a build the other's section. At a switch it keeps the section as it was in
+`addons\section-5.2.1.ini` or `addons\section-8.5.ini`, and the build that comes reads its own
+`ConfigVersion`, then the keys only it reads, as its own copy has them, then each key both builds
+read with one meaning, from the section as it was, with a key the section lacks left out. Those are
+`EnableHooks`, `NeuralUplift`, `NRAutoMask`, `NRChainedHistory`, `NRCodecMode`, `NRColorStrength`,
+`NRDepthMode`, `NRDiffuseWhiteNits`, `NREnableUpscaling`, `NRFollowInputRes`, `NRGlobalTone`,
+`NRIntensity`, `NRLocalStructure`, `NRLocalTone`, `NRMaxWorksets`, `NRMVecScaleX`, `NRMVecScaleY`,
+`NRPaperWhiteScale`, `NRPass2Color` to `NRPass4Color`, `NRPass2Intensity` to `NRPass4Intensity`,
+`NRPasses`, `NRPreset`, `NRProxyAnchor`, `NRResolutionScale`, `NRScreenshotKey`, `NRSkinStructure`,
+`NRStyle`, `NRToggleKey`, `NRTransferStrength` and `NRUICorrection`, the names both files carry.
+`NREnableUpscaling` is the Feed's, which neither build reads. The Look stage's keys go across too,
+`NRDetailStability`, `NRLookMode`, `NRLookTone`, `NRLookDetail`, `NRLookDetailRadius`, `NRLookHalo`,
+`NRLookHaloBrightSide`, `NRLookStabilize`, `NRLookStabilizeMs`, `NRLookStabilizeDetail`,
+`NRLookMaxBrighten`, `NRLookMaxDarken` and `NRLookMaxColour`, which 8.5.0-rc10 and the fast engine
+read and 5.2.1 leaves as they are, and with them `NRKeepBlacks`, Keep blacks, which the fast engine
+alone reads, so a fullscreen lens keeps its look whichever build the window runs, see The Look
+stage. Three go across changed:
+
+- Denoise before upscaling, `NRPreUpscale` 0 or 1 under 5.2.1, is the hook point `NRHookPoint` 0
+  Upscaled or 1 Render under 8.5.0-rc10. Render is the same path and gives the same picture, 0.119
+  of 255 from 5.2.1's over the trial's still. Its 2, Present, which 8.5.0-rc10 never serves in a
+  program that presents through Vulkan and runs as Upscaled, goes to 5.2.1 as 0.
+- Skin structure runs from -1 to 1 under 8.5.0-rc10, which holds a value above 1 at 1, so such a
+  value goes to it as 1. Back at 5.2.1, a 1 the 8.5 build was left at goes back to the value 5.2.1's
+  copy has. While 8.5.0-rc10 is chosen the NR settings panel's slider stops at 1, so the fast
+  engine runs what the ReShade engine runs.
+- The codec's 2 Auto and 3 Display, which only 8.5.0-rc10 has, go back to 5.2.1 as its copy has
+  the codec, or stay out, where the lens's Classic fills it.
+
+A round trip with nothing changed between gives the section back key for key, checked windowlessly.
+
+**What the lens sets for 8.5.0-rc10.** As for 5.2.1, `NRChainedHistory=1` and `NRCodecMode=0` where
+the section holds no value for them. And `NRSkinIndependent=0` where it holds none. Its Independent
+skin, on by default, sends Structure at most 1 and a stock skin as 1 while the Character mask is on,
+where 5.2.1 sends both as they are, so off keeps a look's picture across the switch.
+`NRDetailStability` stays at its default, Auto, a quality filter that averages the network's change
+over about six frames along the motion vectors on the after path, a weight of 0.15 a frame, and
+never before upscaling. Its cost is in the table below, and its effect in motion was not measured.
+Since the lens writes `ConfigVersion=7` itself, 8.5.0-rc10 never migrates the section, so it never
+writes `NRPass2Intensity` to `NRPass4Intensity` at 1 where they were absent, which the fast engine
+would take for passes 2 to 4, and keeps `NRPQCalibration` at its own 1, which acts on HDR alone.
+
+**Profiles** record `addon_build`, the build their section was written for, and one from before has
+none and counts as 5.2.1's. Loaded under the other build, a profile's section is carried over as at
+a switch, with the section in `ReShade.ini` standing in for the build's copy. The values both
+builds read, the Look stage's and Denoise before upscaling come from the profile, and the keys only
+the build in place reads stay as they are. A profile saved before the Look stage holds none of its
+keys, so it loads with the look at its defaults. The star beside a profile's name compares the profile as it would
+load. The Profiles page shows the build and names the codec's four values. Its row Upscaling,
+`NREnableUpscaling`, which neither build reads, is gone.
+
+**Measured on 2026-10-05** with the stack trial tool on a test computer with an RTX 5090, driver
+617.14 and a 120 Hz monitor, against the shipped stack, where pictures of two runs of one stack lie
+0.2 to 0.45 of 255 apart and frame rates about 1 percent:
+
+```
+                                             5.2.1               8.5.0-rc10
+the presenter alone, 20 s                    600 evaluations     600 evaluations, engaged after
+                                                                 two declines at its start
+the still picture, against 5.2.1's                               0.21 of 255
+the pass's own effect                        1.63                1.60
+the whole monitor, one pass, no Cost Scaler  40.6, 40.1 fps      39.5, 39.1 fps, 2.6 percent less
+the same with NRDetailStability=1, Off       40.5, 40.1 fps      40.2, 40.0 fps, 0.4 percent less
+the harnesses                                                    150 checks, 0 failed
+```
+
+**Its notice.** 8.5.0-rc10 draws a card, Neural Rendering is active, at the top left of the picture
+for about four seconds when its status first turns green in a session, which in the lens is every
+presenter start. Over a 1400x1000 lens it showed from about 3.5 s to 6 s after the start, over
+ReShade's own start banner. It also shows a small pill there while its status is a warning, and
+issue notices when a health warning starts and every five minutes while it lasts. Only the notices
+have a switch, Issue notices in its Home menu. With Neural Rendering off by F6 its status is grey,
+so no pill shows.
+
+**Its network use.** 8.5.0-rc10 can send an issue report, a zip of its logs and settings, to a file host,
+and only on a click of the Upload button in the report dialog its Home menu opens. Its source states that
+nothing leaves the PC without that click, and nothing else in it reaches the network. The hosts are the
+ini-only key `NRReportHost`, litterbox or tempsh. 5.2.1 holds no network code at all.
+
+**Its journal.** 8.5.0-rc10 keeps `RenoDX-DLSS5-crash.log` beside the program it runs in, which is
+the presenter, a few lines for each start. A `[session]` line opens each, and how it ended follows,
+`[exit]` after its `[phase]` lines, `[unclean]` at the next start for a process that was ended, or
+`[crash]` with the module that faulted. It only ever adds to the file. The trial stack's held 41
+sessions, 7 KB, after an evening. As the lens starts it cuts the file back to its last 32 KB from a
+`[session]` line once it is over 64 KB, and `lens.log` says so.
+
+**Its F6.** 8.5.0-rc10 polls its toggle key, F6 unless its Home menu sets another, at every present
+with `GetAsyncKeyState`, but only while the window in front belongs to its own process, "without
+the focus check a key pressed in another application toggled NR" (dlssnr.hpp, PollHotkeys). While
+ReShade's overlay is open it reads the key from the overlay's own input instead. The presenter's
+window never takes the front in the lens but in tweak mode, so under 8.5.0-rc10 F6 works only
+while its Home menu is open, where 5.2.1 takes it from anywhere. The lens follows an F6 only where
+it reaches the add-on, see `Lens.f6_reaches_addon`, and says once in `lens.log` that one did not,
+and the menu's entry and the fullscreen note name F6 only for 5.2.1, see `Lens.nr_keys`. The
+menu's entry, which writes `NeuralUplift` and restarts the picture, works with both.
+
+**Its footer.** The last line of 8.5.0-rc10's Home menu reads `RenoDX DLSS5 Generic v8.5.0-rc10 |
+DLSSNR not loaded | lens-presenter.exe` while Neural Rendering runs. The middle part gives the
+version of the `nvngx_dlssnr.dll` the add-on loaded, which in the stack is the Cost Scaler's proxy,
+and the proxy has no version resource. The status card at the top of the menu is the one to read.
+
+**Not done.** 8.5.0-rc10 can give passes 2 to 4 values of their own under the ReShade engine,
+`NRPass2FollowPass1=0` with that pass's `NRPass2Style`, `NRPass2LocalTone`, `NRPass2Structure`,
+`NRPass2Skin`, `NRPass2AutoMask` and `NRPass2UICorrection`, all six together, since a key it lacks
+takes the build's default and not the first pass's. The lens does not write them. Under 5.2.1 the
+ReShade engine runs every pass but the first at the first pass's values apart from the intensity,
+so writing them would change the windowed picture of a profile with values of its own as the build
+changes, and that wants a measurement on screen first.
+
 ## The add-on's defaults on a new install
 
 With a section holding only `ConfigVersion=2`, 5.2.1 ran at its defaults, logged as
 `intensity=1.000000 color_strength=1.000000 transfer=1.000000 paper_white=2.537500 preset=0
 style=0 enabled=ON`, wrote back `EnableHooks=2`, `NeuralUplift=1` and `NREnableUpscaling=0`, and
 created and evaluated feature 18 at one pass. So that is all the setup writes into the section,
-and a repair keeps whatever the section holds. Since 0.6.1 the setup also keeps the lens's own
+with `NRPreset=1` since 0.9.0, see NVIDIA's model package, and a repair keeps whatever the section
+holds. Since 0.6.1 the setup also keeps the lens's own
 section, `[NeuralLens.Passes]`, on a repair and on an update that runs it, see Each pass's values.
 It writes the file anew from its template and puts that section after it byte for byte, finding it
 by its name as Windows reads it, whatever its case and with spaces or a comment on its name line,
 and its log says so. A file without the section comes out as before.
 
-Before each presenter starts, the lens writes `NRChainedHistory=1` and `NRCodecMode=0` where the
-add-on's section holds no value for them and leaves a value that is there, so a choice made in the
-add-on's overlay, which the add-on writes back to the section, stays.
+Before each presenter starts, the lens writes `NRChainedHistory=1`, `NRCodecMode=0` and, since
+0.9.0, `NRPreset=1` where the add-on's section holds no value for them and leaves a value that is
+there, so a choice made in the add-on's overlay, which the add-on writes back to the section, stays.
 
 The add-on's developer asked, for the v5 line, that the proxy codec be set to Classic,
 `NRCodecMode=0`, where the add-on's default is Anchored, `NRCodecMode=1`. Over a still the two
@@ -2215,6 +2459,80 @@ measure alike. Interleaved at the defaults, one pass, twice each, the change bet
 presented pictures measured 0.42 with Anchored and 0.40 with Classic, the change to the picture
 2.30 and 2.19, and the frame rate 118 fps and 116 fps. Over a model in Blender, Anchored left ghosting
 around the model and Classic did not.
+
+## NVIDIA's model package
+
+NVIDIA's RTX Remix names the package on GitHub. Its `packman-external.xml` on main has
+`<package name="rtx-remix-ngx_sdk_dlnr" version="2" />`, and
+`scripts-common/packman/external_config.packman.xml` gives the link a package is fetched by,
+`https://d1oqksizpb0e3d.cloudfront.net/${name}@${version}`. So the package is
+`https://d1oqksizpb0e3d.cloudfront.net/rtx-remix-ngx_sdk_dlnr@2.7z`, 367,851,723 bytes, sha256
+4BB8651B3AC2180F23DF1F39422C489810A13D445A94DC836C876C18C93ECEFE, served with a Last-Modified of
+2026-10-16 16:41 GMT.
+
+It is a 7z archive of eleven files, each in a block of its own, LZMA2 with a dictionary of 8 MiB:
+`LICENSE.txt`, eight headers in `include`, and the model for Windows on Arm and on x86_64,
+`lib/Windows_aarch64/rel/nvngx_dlssnr.dll` and `lib/Windows_x86_64/rel/nvngx_dlssnr.dll`. The
+setup reads that much of the 7z format with Python's own `lzma`, `read_7z` in `neural_stack.py`,
+and refuses a filter, a solid block or a password, which sends it to the `310.8.SF-v2` build. Taking
+the model out took 6.9 s on a test computer, and the setup holds the archive to the CRC it gives
+each file as well as the model to its hash.
+
+The x86_64 model is `nvngx_dlssnr.dll`, 266,424,944 bytes, sha256
+2BC19BC09A7B89DD44F73E2AC0108FCC586E2154BDD0830F242F4F040E28789F, FileVersion 310.9.16, with a
+valid Authenticode signature by NVIDIA Corporation. Its exports are those of the `310.8.SF-v2`
+build, and the Cost Scaler's proxy runs it unchanged. It asks the parameter object for what the
+310.8 builds ask for apart from `DLSSNR.ScalingRatio`, and for `DLSSNR.MaskBlendMode` as an int
+besides, whose default is 0, None. The fast engine sets that to 0 with the other values of an
+evaluate, so the runtime's list of reads shows it found. `LICENSE.txt` is 26,727 bytes, the
+NVIDIA RTX SDKs licence of 2024-03-14 with its RTX supplement, and the setup puts it beside the
+model as `NVIDIA-RTX-SDK-LICENSE.txt`.
+
+The model holds two networks. The preset the network's features are made with,
+`DLSSNR.Hint.Render.Preset`, chooses between them, and both engines take it from `NRPreset` in the
+add-on's section. Measured with the fast engine's self test over the Blender still, 6144x2526, at
+one pass, on a test computer with an RTX 5090:
+
+| model and preset | network | a pass at 2560x896 | video memory | a pass at 6144x2526 | video memory | the picture |
+|---|---|---|---|---|---|---|
+| `310.8.SF-v2`, any preset | large | 3.00 ms | 847 MiB | 13.53 ms | 2312 MiB | the reference |
+| 310.9.16, preset 1 (A) | large | 3.12 ms | 784 MiB | 13.99 ms | 1942 MiB | the reference byte for byte, at both sizes |
+| 310.9.16, presets 0, 2 and 3 | small FP8 | 1.78 ms | 752 MiB | 7.75 ms | 1906 MiB | 0.833 of 255 from the reference on average at 2560x896 (R 0.749, G 0.773, B 0.977, at most 24) and 0.746 at 6144x2526 (at most 35), the three presets byte for byte alike |
+
+Presets 4 to 7, D to G in NVIDIA's header, were not measured. On the same
+computer at the self test's reference size, 2560x1053, the `310.8.SF-v2` build gave the baseline
+pictures byte for byte at presets 0, 1 and 2, its network 3.34 ms a pass in 910 MiB. The 310.9.16
+model at preset 1 gave them byte for byte in the normal run and in the shared run of two passes,
+3.39 ms a pass in 833 MiB, and 6.73 ms for the two passes in 845 MiB. At preset 2 it took 1.97 ms
+a pass in 800 MiB, its picture 0.69 of 255 from the reference on average and at most 32, with a
+change of 3.245 against 3.209 and an edge of 271.0 against 270.3. The features were made in about
+190 ms on the CPU on the small network and 225 to 270 ms on the large one.
+
+NVIDIA's announcement of 2026-10-13 names the small network for the GeForce RTX 50 series and
+RTX Spark laptops. The package was measured on an RTX 5090 alone, so the setup fetches it for a
+card of compute capability 12.0 or higher, and every older card keeps the `310.8.SF-v2` build, as
+does a card where the package cannot be fetched, comes to another size or matches no hash. With
+that build the Model setting shows the small network greyed.
+
+The Model setting writes `NRPreset` as 1 for the large network or 2 for the small FP8 one. The
+model also runs the small network at 0, which is the add-on's default and what a section written
+before 0.9.0 holds, or at no `NRPreset` at all. So the setup writes 1 where the section holds 0, no
+number or nothing, once, which its install record notes, so a 0 chosen in the add-on's overlay
+since then stays, and a new install's section starts with 1. A profile saves `NRPreset` as the
+network the stack runs, 1 or 2, and a profile with 0 or none, saved before 0.9.0, loads as 1. The
+fast engine makes its features again for a new preset on a reload, as for a new quality step, and
+its stats line ends with `preset=N`, the preset of the features in use, 0 without a network, which
+the readout goes by when it names the small network.
+
+The licence lets the SDK be installed and used, and distributed only as incorporated in object
+code into an application with material additional functionality, never as a stand-alone product.
+It asks for NVIDIA to be notified before the commercial release of an application that
+incorporates or is based on the DLSS SDK or the NGX SDK, through
+https://developer.nvidia.com/sw-notification, and that such an application attribute the SDK and
+include the NVIDIA marks on splash screens, in the about box where there is one, and in credits for
+game applications, the marks shown only as NVIDIA approves each use. The lens distributes nothing
+of the package, since the setup fetches it on the user's computer, and its attribution is the
+sentence on the Program page of Settings and in README.md, Credits, in words.
 
 ## The Cost Scaler
 
@@ -2826,7 +3144,8 @@ would not do, since it re-asserts only the bar. Tk toplevels on Windows are not 
 root, which was measured rather than assumed. The bar stayed visible with the root minimised, and
 restoring fired exactly one `<Map>`. Close window on the button arrives as the root's delete
 request and quits the lens. The root is the button in every state, windowed, fullscreen and
-minimised. Neither the presenter's window nor the fast engine's has one.
+minimised, but for a lens minimised to the tray, which withdraws it, see Minimise to the tray.
+Neither the presenter's window nor the fast engine's has one.
 
 On a fullscreen lens that does not hold its menu key at that moment, because none is set, another
 program or another of the lens's actions has it, or a dialog of the lens's own is in front, the
@@ -2917,6 +3236,57 @@ presenter again as `watch_layout` would have.
 windows-capture takes its handlers by their names, `on_frame_arrived` and `on_closed`, so the
 close handler is made per capture and carries its generation. A capture that was stopped for a
 pause closing later is not a loss.
+
+### Minimise to the tray
+
+With Minimise to the tray on, on the Program page of Settings and `tray_minimise = 1` in the ini,
+a minimised lens has no taskbar button, and an icon in the notification area stands in for it.
+Minimise does all that is said above, then adds the icon, and only once Windows has taken it
+withdraws the tk root, which is the taskbar button, see The taskbar button is the tk root. So a
+lens whose icon Windows refuses is minimised to the taskbar as with the switch off, and
+`lens.log` says why. The way back takes the icon away and makes the root minimised again, as the
+lens's start leaves it, which brings the button back. Tk maps a toplevel again only as it goes
+back to its normal state, so going from withdrawn to minimised gives the root no `<Map>`, which
+the button's handler would take for a click. That is how Tk 8.6's code for Windows reads, and the
+lens's start makes the same move.
+
+- **The icon is the shell's.** It is given through `Shell_NotifyIconW` with a `NOTIFYICONDATAW`,
+  976 bytes in a 64 bit program, for a window of the lens's own and the number 1. Its picture is
+  the lens's own `assets\neural-lens.ico`, loaded at the size Windows gives small icons
+  (`SM_CXSMICON`), and its tooltip is Neural Lens, which `NIF_SHOWTIP` keeps under version 4. The
+  lens asks for `NOTIFYICON_VERSION_4`, under which a right click, or the key for a menu on the
+  icon, comes as `WM_CONTEXTMENU` with the place for the menu in wParam, as two signed words, a
+  double click as `WM_LBUTTONDBLCLK`, and Enter or Space on the icon as `NIN_KEYSELECT`. Where the
+  shell does not take version 4, a right click comes as `WM_RBUTTONUP` and the menu opens at the
+  pointer.
+- **Its window is at the top level and never shown.** The listener's thread, which makes the
+  window of the class `NeuralLensDo` for `--do`, makes a second one of the class
+  `NeuralLensTray`, a popup tool window of no size that is never shown, so it has no taskbar
+  button of its own. It is not a window that only takes messages, as `NeuralLensDo` is, since only
+  a window at the top level hears `TaskbarCreated`, the registered message the taskbar sends when
+  it starts again, having lost every icon. The lens then takes away any icon the taskbar kept and
+  adds its own again, or goes back to its taskbar button where that fails. The icon's message,
+  `WM_APP + 0x4E`, and `TaskbarCreated` are both let through to a lens started as administrator
+  by `ChangeWindowMessageFilterEx`. What the icon hears goes into a queue on that thread, with no
+  call into Tk, and the lens's 50 ms timer acts on it, waiting while the picture is replaced, as
+  it does for a word from `--do`.
+- **The menu is the lens menu.** `Lens.menu` makes it as for F7, so the two never differ, with
+  Show the lens as the first entry after the version and, in a fullscreen lens, the readout,
+  which a drawn look draws as the band at the head. Each theme draws it as it draws F7's. It opens
+  at the place the shell gave, kept inside the work area of that monitor, so it stands clear of
+  the taskbar on any side. The minimise entry of a fullscreen lens reads Minimise to the tray
+  while the switch is on, and is greyed in the icon's menu. Each other entry that does something,
+  but Quit Neural Lens, brings the lens back first and does its work on the timer's next look,
+  once a picture that the way back restarts is up. The menu's window is the lens's own, never
+  active, and closes on a click elsewhere or Escape by its own 30 ms poll, see Gotchas. A menu
+  from the tray needs that, since the lens never takes the foreground for it.
+- **The icon is never left behind.** It is taken away on the way back, in `Lens.quit` before
+  anything else of the lens is stopped, as the listener's thread ends and before it destroys the
+  window, and in `main` as it returns, for an end that does not come through `quit`. A second
+  delete is harmless. A lens ended by force leaves its icon to the shell, which takes such an icon
+  away once the pointer passes over it, as it does for any program.
+- **Nothing of it reaches another program.** The shell sends the lens's own window a message the
+  lens chose, and the lens sends nothing back and makes no input.
 
 ### The frame, for resizing by the edges
 
@@ -3369,11 +3739,14 @@ Facts measured while building it:
   without the variable each time it starts, see Nothing of the lens goes into another program.
 
 The card is checked by compute capability from the driver's own `nvidia-smi`, 7.5 or higher
-meaning the RTX 20 series and newer, rather than by marketing names, and one model serves every card
-that passes. The self test runs the presenter on its pattern source in a 960x540 window at the top
-left for nine seconds, and reads `ReShade.log` for `feature 18 created` and `evaluation succeeded`,
-the Feed's log for its motion vector provider, and the Cost Scaler's log for its load of the real
-model. `0xbad00001` is reported as the model refusing the card.
+meaning the RTX 20 series and newer, rather than by marketing names. The `310.8.SF-v2` build
+serves every card that passes, and one of 12.0 or higher, the RTX 50 series, gets NVIDIA's model
+package instead, see NVIDIA's model package. The self test runs the presenter on its pattern source
+in a 960x540 window at the top left for nine seconds, and reads `ReShade.log` for `feature 18
+created` and `evaluation succeeded`, the Feed's log for its motion vector provider, and the Cost
+Scaler's log for its load of the real model, and it names the model in the stack folder, by its
+size, with both networks or the large network alone. `0xbad00001` is reported as the model
+refusing the card.
 
 `install-record.json` lists every file written and the registry value set, and
 `--uninstall-stack` removes that, plus any layer value pointing inside the install that the record

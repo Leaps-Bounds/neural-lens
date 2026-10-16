@@ -3,6 +3,95 @@
 Versions follow semantic versioning. While the major version is 0 the project is beta, and
 settings, the state file format and behaviour may change between releases.
 
+## 0.9.0, 2026-10-25
+
+Frame generation in the fast engine, NVIDIA's own Neural Rendering model on an RTX 50 card with a
+choice of its two networks, a Look page on the NR settings panel that steadies or reshapes the
+network's change, a choice of the Home menu add-on, Minimise to the tray, a click outside the NR
+settings panel closing it, and a short first page for the README.
+
+- **Frame generation.** For a program slower than the screen, the fast engine can make a picture
+  between each two of its frames from the motion the card's motion estimator finds between them, so
+  the lens shows twice the program's rate, up to the screen's. Ahead carries the last frame half a
+  frame on with no delay. Between shows the picture halfway between the last two frames first and the
+  frame's own half a frame later. The choice is on the NR settings panel of a fullscreen lens and on
+  the Fullscreen page of Settings, off to begin with, and in the ini as `framegen`. The on-screen
+  readout's frame rate then gives the rate shown and the
+  pictures made.
+- **NVIDIA's own Neural Rendering model, and the Model setting.** On a card of compute capability
+  12.0 or higher, the RTX 50 series, the stack setup fetches NVIDIA's own package of the model,
+  which NVIDIA's RTX Remix names on GitHub, checks it by its size and hash, takes the 310.9.16 model
+  out of it, signed by NVIDIA, and puts NVIDIA's licence beside it as
+  `NVIDIA-RTX-SDK-LICENSE.txt`. That model holds two networks, which the Model setting names Large
+  and Small, FP8. The large network is the one every earlier model ran, NVIDIA's preset A, and the
+  pictures it draws are the `310.8.SF-v2` build's byte for byte. The small FP8 network is NVIDIA's
+  newer one, preset B, with fewer weights at 8-bit precision, which NVIDIA names for the RTX 50
+  series, and draws another picture with a pass about 1.7 times as fast and in less video memory,
+  measured on a test computer with an RTX 5090. The Model setting is on the NR settings panel of a
+  fullscreen lens and on the Picture page of Settings, Large to begin with. It is `NRPreset` in the
+  add-on's section of `ReShade.ini`, so a profile carries it, and one saved before this version
+  loads the large network. On the fast engine a change makes the network again while the picture
+  goes on, and the on-screen readout's quality step says small network while it runs. On the
+  ReShade engine a change restarts the picture. Since 0 runs the small network on this model, the
+  setup sets `NRPreset` to 1 once where the section holds 0 or nothing, and says so. On an older
+  card, or where the package cannot be fetched or does not check out, the setup takes the
+  `310.8.SF-v2` build through the RHI manifest as before, which holds the large network alone, and
+  the small network is greyed. The download comes to about 390 MB on an RTX 50 card. The Program
+  page of Settings names NVIDIA's part in the picture, as NVIDIA's licence asks.
+- **The Look page.** The NR settings panel of a fullscreen lens has a second page, Look, which the
+  Look row at the panel's foot opens, and the words beside that row say whether the picture is the
+  model's own, has its blacks kept, or is steadied or reshaped. On it, Detail stability blends the
+  network's change with that of the last few frames, following the motion the card's motion
+  estimator finds, so fine detail holds still in motion. Adjust the look turns on Tone, Detail,
+  Detail radius, Halo, Halo beside dark things, Stabilize with its time and detail, and soft limits
+  on brightening, darkening and colour, the fast engine's own versions of the look stage of the Home
+  menu add-on's 8.5.0-rc10. Keep blacks, the fast engine's own, keeps pure black pixels black,
+  letterbox bars among them, since the model lifts them by about a level. A change shows while the
+  picture goes on, and Escape or the Back row goes back to the first page. The values are the
+  add-on's own keys in its section of `ReShade.ini`, so 8.5.0-rc10 edits the same values in a
+  window, 5.2.1 leaves them alone, a switch of the build carries them over, and a profile carries
+  them, where one saved before this version loads with the look at its defaults. The Profiles page of
+  Settings names each profile's Detail stability, Keep blacks and Look. With every value at its
+  default the picture is the network's own, byte for byte. Measured on a test computer with an
+  RTX 5090 at 2560x1440, Detail stability along the motion with Halo on took the engine's frame from
+  3.94 to 4.50 ms.
+- **A choice of the Home menu add-on.** The ReShade engine, which every windowed lens runs on, can
+  run the Neural Rendering add-on's 8.5.0-rc10 in place of 5.2.1, with a larger Home menu.
+  8.5.0-rc10 is a release candidate and the last build of the add-on made public. The choice is on
+  the Picture page of Settings, 5.2.1 to begin with, and in the ini as `addon`. The stack setup
+  fetches both builds from the RHI repository, checked by hash, and keeps them in the stack's
+  `addons` folder. A change carries the settings both builds have over to the other and keeps the
+  rest for each, so going back loses nothing. 8.5.0-rc10 shows a notice of its own, Neural Rendering
+  is active, at the top left of the picture for about four seconds each time the picture starts. It
+  takes F6 only while its Home menu is open, so with it the menu's entry turns Neural Rendering off
+  and on. Its Detail stability, on by default, cost 2.6 percent of the frame rate over the whole
+  monitor at one pass on a test computer with an RTX 5090. Profiles record the build they were
+  saved under, and the Profiles page names the codec's four values and no longer has the row
+  Upscaling, which neither build reads.
+- **Minimise to the tray.** A switch on the Program page of Settings, off to begin with. With it
+  on, minimising the lens takes its taskbar button away too and leaves an icon of the lens's own
+  in the tray, the notification area by the clock. A double click on the icon brings the lens
+  back, and a right click opens the lens menu by the icon, with the entries F7 gives and Show the
+  lens first. Every other entry but Quit Neural Lens brings the lens back first and then does its
+  work. The minimise entry of a fullscreen lens's menu reads Minimise to the tray while the switch
+  is on, and the explanation of the minimise hotkey names the tray too. The icon goes when the
+  lens comes back or quits, and comes back when the taskbar starts again. Where Windows does not
+  take the icon, the lens is minimised to the taskbar as before. `tray_minimise = 1` in the ini is
+  the switch on.
+- **A click outside the NR settings panel closes it.** With Free the mouse on and the panel in
+  front, a click on the picture outside the panel closes the panel as Escape does, and the front
+  goes back to the program it was taken from. The click itself stays with the lens, so that
+  program does not get it. With Free the mouse off, or with another window in front, a click on
+  the picture goes to what is under it, as before.
+- **The panel keeps the front when the picture starts again.** With Free the mouse on, a pass more
+  or fewer chosen on the panel starts the picture again, and the new picture's window took the
+  front from the panel, so closing the panel then did not give the front back. The picture's
+  window now never takes the front.
+- **The README opens with a short first page.** Under the title and the version line, a few lines
+  say what the lens is, that it has two engines, which four keys a fullscreen lens has, what it
+  needs and how to get it, each with a link to the part of the README that says more. The version
+  line, which still said 0.6.1, now says 0.8.1.
+
 ## 0.8.1, 2026-10-12
 
 The NR settings panel and the lens menu light the row under the pointer sooner, with less drawn

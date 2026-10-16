@@ -33,9 +33,11 @@
 #ifndef AppGuid
   #define AppGuid "6B0B1D6E-4C7A-4D6E-9B7D-2A6C1E9F0A11"
 #endif
-#define AppVersion "0.8.1"
+#define AppVersion "0.9.0"
 #define AppExe "NeuralLens.exe"
 #define DownloadMB "150"
+; on an RTX 50 card, which gets NVIDIA's own model package, see DOWNLOAD_MB_PACKAGE in neural_stack.py
+#define DownloadMBPackage "390"
 
 ; a dist folder from a spec without the fast engine would install a lens whose
 ; fullscreen quietly falls back to the ReShade engine
@@ -122,7 +124,7 @@ procedure InitializeWizard();
 begin
   DownloadPage := CreateInputOptionPage(wpSelectTasks,
     'Neural Rendering stack',
-    'Setup can download about {#DownloadMB} MB now.',
+    'Setup can download about {#DownloadMB} MB now, or about {#DownloadMBPackage} MB on an RTX 50 card.',
     'The lens drives NVIDIA''s DLSS Neural Rendering through ReShade and two community add-ons.' + #13#10 +
     'None of that is included here, because those parts are published by other projects under' + #13#10 +
     'licences that do not allow this installer to carry copies. Setup fetches them from the' + #13#10 +
@@ -132,13 +134,13 @@ begin
     'If you clear this, the lens is installed on its own and you can fetch the stack later from' + #13#10 +
     'the Start Menu entry "' + '{#AppName}' + ' stack setup". The lens cannot render until you do.',
     False, False);
-  DownloadPage.Add('Download the Neural Rendering stack now (about {#DownloadMB} MB)');
+  DownloadPage.Add('Download the Neural Rendering stack now (about {#DownloadMB} MB, {#DownloadMBPackage} MB on an RTX 50 card)');
   DownloadPage.Values[0] := True;
 end;
 
-{ There is no card page. One Neural Rendering model serves every RTX card, so
-  there is nothing to choose and nothing to get wrong. The stack setup checks
-  for an RTX card itself and says so plainly if there is not one. }
+{ There is no card page. The stack setup reads the card itself, says so plainly
+  if it is not an RTX card, and fetches NVIDIA's own model package on an RTX 50
+  card and the SF-v2 build on any other, so there is nothing to choose here. }
 
 { ExecAndLogOutput calls this once per line the stack setup prints, and pumps
   the message queue itself, so the wizard stays alive without a busy wait. }

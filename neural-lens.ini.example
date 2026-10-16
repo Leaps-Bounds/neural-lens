@@ -47,6 +47,15 @@
 # this too.
 # motion_detail = full
 
+# Which build of the Neural Rendering add-on the ReShade engine runs, the build
+# that draws the Home menu. 5.2.1 is the default. 8.5 is the 8.5.0-rc10 build,
+# a release candidate and the last build of the add-on made public, with a
+# larger Home menu. It shows a notice of its own at the top left of the picture
+# for about four seconds each time the picture starts. The stack setup fetches
+# both, and a change carries the settings both builds have over to the other.
+# The Settings dialog has this too, on its Picture page.
+# addon = 5.2.1
+
 # What the title bar shows beside the size and the latency. size, the default,
 # is nothing more. fps is the new pictures a second the content under the lens
 # hands it, up to the frame rate limit below, and the Settings dialog has it as
@@ -126,6 +135,15 @@
 # of the screen, or shows or hides it. Off unless this says 1. The NR settings
 # panel and the Fullscreen page of the Settings dialog have this too.
 # free_mouse = 0
+
+# Frame generation, the fast engine's own. For a program slower than the screen
+# the engine makes a picture between each two of its frames, from the motion the
+# card finds between them, so the lens shows twice the program's rate, up to the
+# screen's. ahead carries the last frame half a frame on, with no delay, and
+# between shows the picture halfway between the last two frames first and the
+# frame's own half a frame later. Off unless this says ahead or between. The
+# Fullscreen page of the Settings dialog has this too.
+# framegen = off
 
 # A warning when Windows HDR is on for the monitor the lens is on while the
 # ReShade engine draws the picture, which then comes out washed out. That
@@ -231,6 +249,13 @@
 # Settings dialog and the NR settings panel have this too.
 # fast_quality = 3
 
+# The Model has no line here. It is NRPreset in the add-on's section of
+# ReShade.ini in the stack folder, [RenoDX.DLSS5], where both engines read it,
+# 1 for the large network and 2 for the small FP8 network, so a profile carries
+# it with that section. Only NVIDIA's 310.9.16 model, which the stack setup
+# fetches on an RTX 50 card, holds the small one. The Picture page of the
+# Settings dialog and the NR settings panel set it.
+
 # Load a profile by itself when the program it is tied to comes to the front.
 # A profile is tied to a program on the NR settings panel, or on the Profiles
 # page of the Settings dialog, by the title and the class of the program's
@@ -254,6 +279,16 @@
 # Slate's, and a themes.json in the data folder adds more. Takes effect at the
 # next launch. The Settings dialog has this too.
 # theme = Slate
+
+# Minimise to the tray. With this on, minimising the lens takes its taskbar
+# button away too and leaves an icon of the lens's own in the tray, the
+# notification area by the clock. A right click on the icon opens the lens
+# menu, with Show the lens as its first entry, and a double click brings the
+# lens back. Windows can keep the icon among its hidden icons, under the arrow
+# by the clock. Where Windows does not take the icon, the lens is minimised to
+# the taskbar as it is with this off. Off unless this says 1. The Program page
+# of the Settings dialog has this too.
+# tray_minimise = 0
 
 # Ask GitHub for the newest release when the lens starts, at most once a day,
 # and say so only when there is one newer than this. Off unless this says 1,

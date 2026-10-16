@@ -52,7 +52,9 @@ How it works. Every piece below was measured before it was built:
   7. MINIMISED to the taskbar, the lens hides its windows and tells the
      presenter to pause. It stops its capture and presents nothing, so no
      neural pass runs and the GPU is free, and the taskbar button brings
-     everything back as it was.
+     everything back as it was. With Minimise to the tray on, the taskbar
+     button goes too, and an icon of the lens's own in the notification
+     area, the tray, brings the lens back or opens its menu. See Tray.
 
   8. FULLSCREEN has a presenter of its own, the fast engine, lens-fast.exe:
      a D3D12 program that captures on the GPU and calls the neural model
@@ -84,7 +86,9 @@ How it works. Every piece below was measured before it was built:
      section of the lens's own in the same file. The intensity of passes 2
      to 4 goes into the add-on's own key for the pass, NRPass<n>Intensity,
      and the engine runs the pass at it unless the pass is ticked to follow
-     the first, see PASS_NAMES.
+     the first, see PASS_NAMES. A second page of the panel, Look, which the
+     row at its foot opens, holds the fast engine's Look stage, whose values
+     are the add-on's own keys in the same section, see LOOK_KEYS.
      At its top a picker loads and saves the lens's profiles, and a profile
      tied to a program loads by itself when that program comes to the front,
      with the switch on, see Lens.check_auto_profile. What the bar would have
@@ -611,10 +615,102 @@ def _pass_limit():
     return ADDON_MAX_PASSES if ADDON_PASSES else 1
 
 
+# The Home menu add-on: which of two builds of the add-on the ReShade engine
+# runs, and so which Home menu it draws. 5.2.1 is the default. 8.5 is the
+# 8.5.0-rc10 build, a release candidate and the last build of the add-on made
+# public, with a larger Home menu. It is addon in the ini, 8.5, or nothing for
+# 5.2.1. The stack setup fetches both into the stack's addons folder and puts
+# the chosen one in place. The lens puts the chosen one in place as a presenter
+# is about to start, once the old one is gone, since the presenter holds the
+# add-on it loaded, and gives the add-on's section of ReShade.ini to the build
+# that comes, with the values both builds read carried over and the rest kept
+# for each build, see Lens.sync_addon and neural_stack.addon_switch. The 8.5
+# build shows a notice of its own, Neural Rendering is active, at the top left
+# of the picture for a few seconds each time the picture starts, and its own
+# Detail stability filter, on by default, costs some speed, see docs/NOTES.md,
+# The Home menu add-on. The fast engine has no add-on, but it reads the same
+# section, and the 8.5 build holds skin structure at 1, so with it the NR
+# settings panel's slider stops at 1, see _nr_sliders.
+HOME_ADDON_BUILDS = {"5.2.1": "5.2.1", "8.5": "8.5.0-rc10"}      # each build by its version
+
+
+def _home_addon_named(word):
+    """The build a word names, as neural_stack.addon_build_named reads it: 8.5
+    for 8.5, 8.5.0-rc10 or rc10, and 5.2.1 for anything else."""
+    return "8.5" if str(word or "").strip().strip('"').lower() in ("8.5", "8.5.0-rc10", "rc10") else "5.2.1"
+
+
+HOME_ADDON = _home_addon_named(_INI.get("addon"))
+HOME_ADDON_LABEL = "Home menu add-on"
+HOME_ADDON_BESIDE = "a change restarts the ReShade engine"
+HOME_ADDON_WHY = ("Which build of the add-on the ReShade engine runs, with its own Home menu. Settings both "
+                  "builds have carry over.")
+HOME_ADDON_CHOICES = (
+    ("5.2.1", "5.2.1", "The default."),
+    ("8.5", "8.5.0-rc10", "More settings, a release candidate and the last public build. It shows its own "
+                          "notice at the top left as the picture starts, and takes F6 only while its Home menu "
+                          "is open."),
+)
+HOME_ADDON_OTHER = "The stack folder holds another build of the add-on, so this choice changes nothing."
+HOME_ADDON_OTHER_WHY = "The lens swaps only the two builds it knows. The stack setup puts the chosen one back."
+HOME_ADDON_RESTART = "changing the Home menu add-on ..."
+HOME_ADDON_FETCHING = "fetching the %s add-on ..."
+HOME_ADDON_FAILED = "The %s add-on could not be downloaded, so the lens stays on %s."
+HOME_ADDON_KEPT = "The Home menu add-on stays %s, since the lens could not change it. lens.log says why."
+
+
+def _set_home_addon(build):
+    """Change the Home menu add-on the lens asks for, from Settings, and record
+    it in the ini, where 5.2.1, the default, is left unwritten. The caller puts
+    it to work, see Lens.home_addon_go."""
+    global HOME_ADDON
+    HOME_ADDON = _home_addon_named(build)
+    _save_ini("addon", None if HOME_ADDON == "5.2.1" else HOME_ADDON)
+
+
+def _section_build(values=None):
+    """The build the add-on's section of ReShade.ini was written for, by its
+    ConfigVersion: 8.5 for the 8.5 build's 7, and 5.2.1 for anything else, see
+    neural_stack.section_build. values is the section as _read_addon_section
+    gives it, read here when not given."""
+    values = _read_addon_section() if values is None else values
+    version = next((str(v) for k, v in values.items() if str(k).lower() == "configversion"), "")
+    return "8.5" if version.strip() == "7" else "5.2.1"
+
+
+def _trim_addon_journal():
+    """Cut the 8.5 build's journal in the stack folder, which it adds a few
+    lines to at every presenter start and never cuts itself, back to its newest
+    lines once it is over 64 KB, see neural_stack.addon_journal_trim. As the
+    lens starts, before any presenter of its own has the file open. lens.log
+    says so."""
+    if not STACK_DIR:
+        return
+    try:
+        import neural_stack
+        kept = neural_stack.addon_journal_trim(STACK_DIR)
+    except Exception:
+        return
+    if kept is not None:
+        print("%s in the stack folder was over %d KB, so it was cut back to its newest %d KB"
+              % (neural_stack.ADDON_JOURNAL, neural_stack.ADDON_JOURNAL_MOST // 1024, (kept + 1023) // 1024),
+              flush=True)
+
+
+def _nr_sliders():
+    """NR_SLIDERS as the NR settings panel offers them now. With the 8.5 build
+    chosen, skin structure stops at 1, where that build holds it, so the fast
+    engine runs the value the ReShade engine does, see HOME_ADDON."""
+    if HOME_ADDON != "8.5":
+        return NR_SLIDERS
+    return tuple((key, text, lo, min(hi, 1.0) if key == "NRSkinStructure" else hi, default)
+                 for key, text, lo, hi, default in NR_SLIDERS)
+
+
 def _write_addon_settings(n, nr=None):
     """Write the add-on's section of ReShade.ini for a presenter about to start,
-    keeping the rest: NRPasses as n, and chained temporal history and the codec
-    where the section holds no value for them.
+    keeping the rest: NRPasses as n, and chained temporal history, the codec
+    and the model's network where the section holds no value for them.
 
     The add-on reads its settings only when its process starts: measured, an
     edit while it ran had changed nothing twelve seconds later, and a process
@@ -628,7 +724,11 @@ def _write_addon_settings(n, nr=None):
     add-on's developer asks for on the v5 line: with the add-on's default,
     Anchored, a model in Blender showed ghosting around it. A value the section
     already holds stays, so a choice made in the add-on's overlay, which the
-    add-on writes back, is kept. The measurements are in docs/NOTES.md.
+    add-on writes back, is kept. The measurements are in docs/NOTES.md. The
+    model's network goes to the large one, MODEL_KEY at MODEL_LARGE, the
+    Model setting's default: missing, the key is 0 to both engines, which runs
+    the small FP8 network on NVIDIA's 310.9.16 model. The stack setup writes it
+    as well, so this is for a section that lost it.
 
     nr, when given, is written as well, as NeuralUplift, the add-on's own record
     of its F6 toggle. The fast engine has no add-on in it to write that back, so
@@ -640,20 +740,27 @@ def _write_addon_settings(n, nr=None):
     _sync_tied_passes. The add-on's overlay may have moved the first pass's
     while the ReShade engine ran, and the add-on that starts reads its keys
     as they are.
+
+    Under the 8.5 build of the Home menu add-on its Independent skin goes off
+    where the section holds no value for it, which sends skin as 5.2.1 sends
+    it, so a look stays as it was with the build, see HOME_ADDON.
     """
     if not STACK_DIR:
         return False
     path = os.path.join(STACK_DIR, "ReShade.ini")
-    keys = {"NRPasses": str(n), "NRChainedHistory": "1", "NRCodecMode": "0"}
+    keys = {"NRPasses": str(n), "NRChainedHistory": "1", "NRCodecMode": "0", MODEL_KEY: MODEL_LARGE}
     if nr is not None:
         keys["NeuralUplift"] = "1" if nr else "0"
-    keep = {"NRChainedHistory", "NRCodecMode"}      # a value already there wins
+    keep = {"NRChainedHistory", "NRCodecMode", MODEL_KEY}      # a value already there wins
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
             lines = fh.read().splitlines(True)
     except OSError:
         return False
     out, inside, done = [], False, set()
+    if _section_build() == "8.5":
+        keys["NRSkinIndependent"] = "0"         # the 8.5 build's Independent skin off, see above
+        keep.add("NRSkinIndependent")
 
     def rest():
         for k, v in keys.items():
@@ -1212,6 +1319,43 @@ def _sync_tied_passes():
     return _set_ini_values(changes)
 
 
+def _profile_addon(p, now=None):
+    """The add-on's section profile p holds, as the build whose section
+    ReShade.ini holds now reads it, without ADDON_KEEP, or None where the
+    profile holds no section. now is that section as _read_addon_section gives
+    it, read here when not given. A profile saved under that build gives its
+    own. One saved under the other build, see capture_profile, is carried over
+    as a switch carries the section, see neural_stack.section_convert: the
+    values both builds read, before upscaling among them, come from the
+    profile, and those only the build in place reads stay as they are. A
+    profile from before the choice was saved under 5.2.1."""
+    if not isinstance(p.get("addon"), dict):
+        return None
+    keep = {k.lower() for k in ADDON_KEEP}
+    new = {str(k): str(v) for k, v in p["addon"].items() if str(k).lower() not in keep}
+    now = _read_addon_section() if now is None else now
+    theirs, ours = _home_addon_named(p.get("addon_build")), _section_build(now)
+    if theirs == ours:
+        return new
+    import neural_stack
+    carried = neural_stack.section_convert(list(new.items()), theirs, ours, list(now.items()))
+    return {k: v for k, v in carried if k.lower() not in keep}
+
+
+def _profile_carried(p):
+    """Profile p as the build whose section ReShade.ini holds now loads it: p
+    itself where it was saved under that build, or holds no add-on's section,
+    and else a copy with the section carried over, see _profile_addon, for
+    _profile_changes, see Lens.apply_profile."""
+    if not isinstance(p.get("addon"), dict):
+        return p
+    now = _read_addon_section()
+    ours = _section_build(now)
+    if _home_addon_named(p.get("addon_build")) == ours:
+        return p
+    return dict(p, addon=_profile_addon(p, now), addon_build=ours)
+
+
 def _profile_changes(p):
     """The lines that make ReShade.ini what profile p says, as one change for
     _set_ini_values. The add-on's section and the lens's own section each
@@ -1221,12 +1365,16 @@ def _profile_changes(p):
     section as it is, and one from before the passes had values of their own
     empties the lens's, so the switch that runs the passes after the first
     through the first pass's network and the one that scales the change go off
-    with it, see SHARED_KEY and STRENGTH_SWITCH_KEY."""
+    with it, see SHARED_KEY and STRENGTH_SWITCH_KEY. The model's network goes
+    in as the profile carries it, see _profile_model, so one from before the
+    Model setting, with NRPreset at 0 or none, loads the large network it ran."""
     changes = {ADDON_SECTION: {}, PASS_SECTION: {}}
     keep = {k.lower() for k in ADDON_KEEP}
     addon = _read_addon_section()
     if isinstance(p.get("addon"), dict):
-        new = {str(k): str(v) for k, v in p["addon"].items() if str(k).lower() not in keep}
+        new = {str(k): str(v) for k, v in p["addon"].items()
+               if str(k).lower() not in keep and str(k).lower() != MODEL_KEY.lower()}
+        new[MODEL_KEY] = _profile_model(p)
         low = {k.lower() for k in new}
         changes[ADDON_SECTION] = {k: None for k in addon if k.lower() not in keep and k.lower() not in low}
         changes[ADDON_SECTION].update(new)
@@ -1488,7 +1636,7 @@ def _write_proxy(enabled, scale):
 # process's id, so two lenses at once, one per monitor say, never pick up each
 # other's presenter.
 TITLE = "LensNR %d" % os.getpid()
-__version__ = "0.8.1"        # beta; see CHANGELOG.md
+__version__ = "0.9.0"        # beta; see CHANGELOG.md
 
 DATA_DIR = (os.environ.get("NEURAL_LENS_DATA") or _INI.get("data_dir")
             or os.path.join(_script_dir(), "data"))
@@ -2019,6 +2167,45 @@ def _set_fullscreen_engine(mode):
     _save_ini("fullscreen_engine", None if mode == "fast" else mode)
 
 
+# Frame generation, the fast engine's own, see fast_engine\src\framegen.h: a
+# picture made between the frames of a program slower than the screen, from
+# the motion the card's motion estimator finds between the last two frames, so
+# the lens shows twice the program's rate, up to the screen's. off, the
+# default, makes none. ahead carries the last frame half a frame on, with no
+# delay. between shows the picture halfway between the last two frames first
+# and the frame's own half a frame later, which delays each frame by half a
+# frame. The fast engine takes it at its start, --framegen, and live, the
+# command "framegen WORD", and counts the pictures it made on its stats line,
+# generated=N, which the readout shows beside the frame rate. It is on the
+# Fullscreen page of Settings and on the NR settings panel of a fullscreen
+# lens, the row under the Model row, see _panel_framegen. A card whose motion
+# estimator the engine cannot use has it say "framegen unavailable REASON"
+# once, which greys the panel's row with FRAMEGEN_NONE_WHY, see
+# _panel_framegen_look.
+FRAMEGEN_MODES = ("off", "ahead", "between")
+FRAMEGEN = str(_INI.get("framegen", "off")).strip().lower()
+if FRAMEGEN not in FRAMEGEN_MODES:
+    FRAMEGEN = "off"
+FRAMEGEN_LABEL = "Frame generation"
+FRAMEGEN_WHY = "Pictures made between a program's frames, doubling its rate."
+FRAMEGEN_CHOICES = (
+    ("off", "Off", "None made."),
+    ("ahead", "Ahead", "The last frame carried half a frame on. No delay."),
+    ("between", "Between", "Halfway between the last two frames. Half a frame late."),
+)
+FRAMEGEN_NONE_WHY = ("This card has no motion estimator the fast engine can use, so it makes no pictures between "
+                     "frames.")
+
+
+def _set_framegen(mode):
+    """Change the frame generation a fullscreen lens asks for, from Settings
+    or the NR settings panel, and record it in the ini, where off, the default,
+    is left unwritten. The caller tells a running fast engine."""
+    global FRAMEGEN
+    FRAMEGEN = mode if mode in FRAMEGEN_MODES else "off"
+    _save_ini("framegen", None if FRAMEGEN == "off" else FRAMEGEN)
+
+
 # The fast engine's quality steps, from 0 to 5. Toward the lower steps the
 # network works on a smaller copy of the picture, which costs less power and
 # loses some of the fine detail the network adds. The original's own detail is
@@ -2100,6 +2287,344 @@ TITLE_SIZE = str(_INI.get("title_size", "1")).strip().lower() in ("1", "yes", "o
 TITLE_STYLE = str(_INI.get("title_style", "0")).strip().lower() in ("1", "yes", "on", "true")
 TITLE_INTENSITY = str(_INI.get("title_intensity", "0")).strip().lower() in ("1", "yes", "on", "true")
 STYLE_NAMES = {"0": "Default", "1": "Natural", "2": "Cinematic"}     # the add-on's NRStyle
+# The Model setting: which network of the model draws the picture, NRPreset in
+# the add-on's section, the preset both engines create the network's features
+# with, see MODEL_KEY in neural_stack.py. NVIDIA's 310.9.16 model, which the
+# stack setup takes from NVIDIA's own package on an RTX 50 card, holds two
+# networks: at 1, MODEL_LARGE, the large network, NVIDIA's preset A, which
+# every earlier model ran and a new install starts on, and at 2, MODEL_SMALL,
+# the small FP8 network, NVIDIA's preset B, newer, with fewer weights at 8-bit
+# precision, which the model also runs at any value but 1, 0 among them,
+# measured on 2026-10-16. The names in the code are the ones the lens gave the
+# networks first, and what it calls them now is MODEL_NAMES, the choices'
+# labels, and MODEL_SAID, the words a sentence names them by, set here alone.
+# The lens writes 1 or 2. On the fast engine a change is a reload, which makes
+# the network's features again while the pictures go on, and on the ReShade
+# engine a restart of the picture, as a style change is, since the add-on reads
+# the key as its presenter starts. Every other model holds the large network
+# alone and draws the same picture at 0, 1 and 2, measured, so with one of those
+# in the stack the small one is greyed, with MODEL_ONE_WHY, see _model_two. A
+# profile carries the key with the add-on's section, and one from before the
+# setting, whose section had NRPreset at 0, the add-on's default then, or none,
+# ran the large network, the only one there was, see _profile_model.
+MODEL_KEY = "NRPreset"
+MODEL_LARGE, MODEL_SMALL = "1", "2"
+MODEL_NAMES = {MODEL_LARGE: "Large", MODEL_SMALL: "Small, FP8"}
+MODEL_SAID = {MODEL_LARGE: "the large network", MODEL_SMALL: "the small FP8 network"}
+MODEL_LABEL = "Model"
+MODEL_WHY = ("Which of the two networks in NVIDIA's model draws the picture. Large is the network every earlier model "
+             "ran, NVIDIA's preset A. Small is NVIDIA's newer network, preset B, with fewer weights at 8-bit "
+             "precision.")
+MODEL_ONE_WHY = ("The model in this stack holds the large network alone. On a card NVIDIA made the small FP8 network "
+                 "for, the stack setup fetches NVIDIA's own model, which holds both.")
+# Settings says how a change applies as well, as its other explanations do
+MODEL_SETTINGS_WHY = MODEL_WHY + " On the ReShade engine a change restarts the picture."
+# what the on-screen readout's quality step adds while the small network runs,
+# see small_runs
+MODEL_READOUT = "small network"
+# The attribution NVIDIA's licence for its DLSS and NGX software asks for, in
+# the about box of a program that has one, which the lens has not: it stands on
+# the Program page of Settings, where the lens says what it is, with its version
+# at the foot, and in README.md, Credits. Words only, since the licence lets the
+# NVIDIA marks be shown only as NVIDIA approves each use.
+NVIDIA_CREDIT_HEADING = "Credits"
+NVIDIA_CREDIT = "Neural Rendering by NVIDIA DLSS. This software contains software provided by NVIDIA Corporation."
+NVIDIA_CREDIT_WHY = "NVIDIA's licence for its DLSS model asks a program that uses it to say so where it names itself."
+
+
+def _model_note(code):
+    """The notice while the picture restarts for a network, see set_model."""
+    return "restarting with %s ..." % MODEL_SAID[code]
+
+
+def _model_two():
+    """Whether the stack's model holds both networks, NVIDIA's 310.9.16, as
+    neural_stack.model_in tells it by the file's size. False without a stack."""
+    if not STACK_DIR:
+        return False
+    try:
+        import neural_stack
+        return neural_stack.model_in(STACK_DIR) == neural_stack.NVIDIA_MODEL
+    except Exception:
+        return False
+
+
+def _model_value(addon):
+    """NRPreset as a section, the add-on's or a profile's, has it, as a number:
+    None where it is missing or not a number."""
+    if not isinstance(addon, dict):
+        return None
+    for k, v in addon.items():
+        if str(k).strip().lower() == MODEL_KEY.lower():
+            try:
+                return float(str(v).strip())
+            except ValueError:
+                return None
+    return None
+
+
+def _model_code(addon=None):
+    """The network the stack runs, as the Model setting shows it: on a model
+    with both networks MODEL_LARGE where the add-on's section has NRPreset
+    at 1 and MODEL_SMALL at any other value, as the model runs them, and
+    MODEL_LARGE on any other model, which has nothing else. addon is the
+    section as _read_addon_section gives it, read here when not given."""
+    if not _model_two():
+        return MODEL_LARGE
+    value = _model_value(_read_addon_section() if addon is None else addon)
+    return MODEL_LARGE if value == 1.0 else MODEL_SMALL
+
+
+def _profile_model(p):
+    """The network a profile carries in its add-on's section: MODEL_SMALL
+    where NRPreset is 2, and MODEL_LARGE at any other value or none, which a
+    profile saved before the Model setting has and which ran the large network
+    then.
+    The lens saves a profile's NRPreset as 1 or 2 alone, see capture_profile.
+    None for a profile without an add-on's section, which leaves the section as
+    it is, see _profile_changes."""
+    addon = p.get("addon") if isinstance(p, dict) else None
+    if not isinstance(addon, dict):
+        return None
+    return MODEL_SMALL if _model_value(addon) == 2.0 else MODEL_LARGE
+
+
+# The fast engine's Look stage, see fast_engine\src\look.h and docs/NOTES.md,
+# The Look stage. After the network's passes and the strength it can average
+# the network's change over frames, which is Detail stability, and with Adjust
+# the look on it can reshape that change: its broad part and its fine part, the
+# dark halos it can leave beside bright things and beside dark ones, how steady
+# it stays over time, and how far it may brighten, darken or move a colour.
+# Beside it, Keep blacks has the composite leave pixels that are pure black as
+# they are, since the network lifts them by about a level, see docs/NOTES.md,
+# The Look stage. The values are LOOK_KEYS, keys in the add-on's section of
+# ReShade.ini: the add-on's own, which the 8.5.0-rc10 build of the Home menu
+# add-on edits in a window and 5.2.1 leaves alone, and Keep blacks,
+# NRKeepBlacks, the fast engine's own, which neither build reads. So a profile
+# carries them with the rest of the section, and a switch of the build carries
+# them over, see ADDON_SHARED in neural_stack.py. The engine reads them at a
+# reload, so a change shows while the picture goes on. It reads
+# NRDetailStability and NRKeepBlacks always, a missing key being Off, and the
+# others only while NRLookMode is on, each held to its range and a choice
+# outside its range taken as its default, see _look_values. The NR settings
+# panel has them on a page of its own, the Look page, which the row LOOK_LABEL
+# at the foot of its first page opens, see _panel_page_to, and the Profiles
+# page of Settings names them, see _look_summary and _look_word.
+LOOK_KEYS = ("NRDetailStability", "NRKeepBlacks", "NRLookMode", "NRLookTone", "NRLookDetail", "NRLookDetailRadius",
+             "NRLookHalo", "NRLookHaloBrightSide", "NRLookStabilize", "NRLookStabilizeMs", "NRLookStabilizeDetail",
+             "NRLookMaxBrighten", "NRLookMaxDarken", "NRLookMaxColour")
+LOOK_STABILITY_KEY, LOOK_MODE_KEY, LOOK_STABILIZE_KEY = "NRDetailStability", "NRLookMode", "NRLookStabilize"
+LOOK_KEEP_KEY = "NRKeepBlacks"
+# the two choices, each value as the engine reads it and its name on the panel.
+# Auto and Always run the same filter in the fast engine, where nothing is
+# upscaled, and only the 8.5.0-rc10 build in a window tells them apart
+LOOK_STABILITY_NAMES = {"0": "Auto", "1": "Off", "2": "Always"}
+LOOK_STABILIZE_NAMES = {"0": "Off", "1": "In place", "2": "Along the motion"}
+LOOK_CHOICES = {LOOK_STABILITY_KEY: LOOK_STABILITY_NAMES, LOOK_STABILIZE_KEY: LOOK_STABILIZE_NAMES}
+LOOK_SWITCHES = (LOOK_KEEP_KEY, LOOK_MODE_KEY, "NRLookStabilizeDetail")
+# each slider by its key, its label, its lowest and highest value, its default
+# and the step a press of Left or Right moves it by, see _look_number for the
+# unit its number shows
+LOOK_SLIDERS = (
+    ("NRLookTone", "Tone", 0.0, 2.0, 1.0, 0.01),
+    ("NRLookDetail", "Detail", 0.0, 2.0, 1.0, 0.01),
+    ("NRLookDetailRadius", "Detail radius", 0.25, 4.0, 1.0, 0.01),
+    ("NRLookHalo", "Halo", 0.0, 1.0, 0.0, 0.01),
+    ("NRLookHaloBrightSide", "Halo beside dark things", 0.0, 1.0, 0.0, 0.01),
+    ("NRLookStabilizeMs", "Stabilize time", 10.0, 250.0, 60.0, 1.0),
+    ("NRLookMaxBrighten", "Max brightening", 0.0, 4.0, 0.0, 0.01),
+    ("NRLookMaxDarken", "Max darkening", 0.0, 4.0, 0.0, 0.01),
+    ("NRLookMaxColour", "Max colour", 0.0, 2.0, 0.0, 0.01),
+)
+LOOK_RANGES = {s[0]: s[2:] for s in LOOK_SLIDERS}      # by key, (lowest, highest, default, step)
+LOOK_LABELS = dict([(LOOK_STABILITY_KEY, "Detail stability"), (LOOK_KEEP_KEY, "Keep blacks"),
+                    (LOOK_MODE_KEY, "Adjust the look"), (LOOK_STABILIZE_KEY, "Stabilize"),
+                    ("NRLookStabilizeDetail", "Stabilize detail")] + [(s[0], s[1]) for s in LOOK_SLIDERS])
+# what the engine runs with a key missing, which the page shows then
+LOOK_DEFAULTS = dict([(LOOK_STABILITY_KEY, "1"), (LOOK_KEEP_KEY, False), (LOOK_MODE_KEY, False),
+                      (LOOK_STABILIZE_KEY, "0"), ("NRLookStabilizeDetail", False)]
+                     + [(s[0], s[4]) for s in LOOK_SLIDERS])
+# the rows Adjust the look greys while it is off, every one after it, and of
+# them the two Stabilize alone uses, greyed while it is Off as well
+LOOK_GATED = LOOK_KEYS[LOOK_KEYS.index(LOOK_MODE_KEY) + 1:]
+LOOK_UNDER_STABILIZE = ("NRLookStabilizeMs", "NRLookStabilizeDetail")
+# The row that opens the page, at the foot of the panel's first page, with a
+# word or two beside it that say what the page does to the picture now, see
+# _look_state: nothing, pure blacks kept alone, the change averaged over frames
+# alone, or reshaped. The page's head says how to leave it, with the panel's
+# key in the first line and without one in the second, and its last row goes
+# back too.
+LOOK_LABEL = "Look"
+LOOK_BACK_LABEL = "Back"
+LOOK_STATE_WORDS = {"own": "Model's own", "blacks": "Blacks kept", "steady": "Steadied", "reshaped": "Reshaped"}
+# the arrows of the two rows in the classic look, the drawn looks drawing
+# their own, see lens_look.panel.Panel.page_row
+LOOK_ARROW, LOOK_BACK_ARROW = "›", "‹"
+LOOK_LINE = "%s closes it, Escape goes back"
+LOOK_LINE_ESC = "Escape goes back"
+# What each row of the page does, as the panel's other rows have it, see
+# PANEL_WHY, what the setting does and no more. The engine's cost and what was
+# measured are in docs/NOTES.md, The Look stage.
+LOOK_ROW_WHY = ("Enter or a click opens the Look page, which can steady the network's change over frames, keep "
+                "pure blacks black, or reshape the change. The words beside it say what it does to the picture now.")
+LOOK_WHY = {
+    "NRDetailStability": "Blends the network's change with that of the last few frames, following what moves, so "
+                         "fine detail holds still instead of shimmering. Auto and Always both turn it on, and "
+                         "Stabilize takes its place while on.",
+    "NRKeepBlacks": "Keeps pixels that are pure black as they are, since the network lifts them a little. All "
+                    "but the darkest shades stay as the network made them.",
+    "NRLookMode": "Turns on the settings below, which reshape the network's change. Off, they are greyed and do "
+                  "nothing.",
+    "NRLookTone": "Scales the broad part of the network's change, the light and shade it adds over larger areas.",
+    "NRLookDetail": "Scales the fine part of the network's change, the texture and small shapes it adds.",
+    "NRLookDetailRadius": "How large a shape can be and still count as fine, as a share of the picture's height. "
+                          "Tone and Detail split the change there.",
+    "NRLookHalo": "Takes back the dark rim the network can leave beside bright things, and leaves other darkening "
+                  "alone.",
+    "NRLookHaloBrightSide": "Takes back the soft dark band the network can leave on the bright side of dark "
+                            "things.",
+    "NRLookStabilize": "Evens out the broad part of the change from frame to frame. In place suits a still view, "
+                       "and Along the motion follows what moves. Either can make a change of light arrive a "
+                       "little late.",
+    "NRLookStabilizeMs": "How far back Stabilize looks, while it is on. Longer is calmer, and slower to show a "
+                         "change of light.",
+    "NRLookStabilizeDetail": "Has Stabilize even out the fine part of the change as well, while it is on.",
+    "NRLookMaxBrighten": "Limits how far the network may brighten any part of the picture, easing in near the "
+                         "limit. None sets no limit.",
+    "NRLookMaxDarken": "Limits how far the network may darken any part of the picture, easing in near the limit. "
+                       "None sets no limit.",
+    "NRLookMaxColour": "Limits how far the network may shift any colour, easing in near the limit. None sets no "
+                       "limit.",
+    "back": "Enter or a click goes back to the panel's first page, as Escape does.",
+}
+
+
+def _look_read(low, key, default):
+    """One of the Look stage's numbers as the fast engine reads it, see
+    section_number in the engine's common.cpp: the number the value starts
+    with, or default where the key is missing, or its value starts with no
+    number or is not finite. low is the section by its keys in lower case."""
+    m = re.match(r"\s*[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?", low.get(key.lower(), ""))
+    if not m:
+        return default
+    try:
+        v = float(m.group(0))
+    except ValueError:
+        return default
+    return v if v == v and abs(v) != float("inf") else default
+
+
+def _look_values(addon=None):
+    """The Look page's values as the fast engine reads them from the add-on's
+    section, see read_nr_passes in the engine's common.cpp: each choice as its
+    code, a code outside its range at its default, each switch as a bool, on
+    for any whole number but 0, and each slider held to its range, a missing
+    key at its default, see LOOK_DEFAULTS. The values Adjust the look gates are
+    given whether it is on or not, as the page shows them, greyed while it is
+    off. addon is the section as _read_addon_section gives it, read here when
+    not given."""
+    addon = _read_addon_section() if addon is None else addon
+    low = {str(k).strip().lower(): str(v).strip() for k, v in (addon or {}).items()}
+    out = dict(LOOK_DEFAULTS)
+    for key, names in LOOK_CHOICES.items():
+        code = str(int(_look_read(low, key, float(LOOK_DEFAULTS[key]))))
+        out[key] = code if code in names else LOOK_DEFAULTS[key]
+    for key in LOOK_SWITCHES:
+        out[key] = int(_look_read(low, key, 0.0)) != 0
+    for key, _label, lo, hi, default, _step in LOOK_SLIDERS:
+        out[key] = max(lo, min(hi, _look_read(low, key, default)))
+    return out
+
+
+def _look_reshapes(values):
+    """Whether values, as _look_values gives them, reshape the network's
+    change: Adjust the look on and any of its values away from the network's
+    own, as the engine's NrLook counts them. The detail radius, the
+    stabiliser's time and Stabilize detail change nothing by themselves."""
+    v = values
+    return bool(v[LOOK_MODE_KEY]) and (v["NRLookTone"] != 1.0 or v["NRLookDetail"] != 1.0 or v["NRLookHalo"] > 0
+                                       or v["NRLookHaloBrightSide"] > 0 or v[LOOK_STABILIZE_KEY] != "0"
+                                       or v["NRLookMaxBrighten"] > 0 or v["NRLookMaxDarken"] > 0
+                                       or v["NRLookMaxColour"] > 0)
+
+
+def _look_state(values):
+    """What the Look page does to the picture with these values: reshaped, or
+    steady where Detail stability runs without that, blacks where Keep blacks
+    alone is on, or own where the picture is the network's own, see
+    LOOK_STATE_WORDS. The fast engine's stats line says look=1 for the first
+    two and look=0 for the others, since Keep blacks is the composite's and not
+    the Look stage's."""
+    if _look_reshapes(values):
+        return "reshaped"
+    if values[LOOK_STABILITY_KEY] != "1":
+        return "steady"
+    return "blacks" if values[LOOK_KEEP_KEY] else "own"
+
+
+def _look_text(key, value):
+    """A Look value as the lens writes it into the add-on's section: a switch
+    as 1 or 0, a choice as its code, the stabiliser's time in whole
+    milliseconds and any other number as the add-on writes its own, see
+    _nr_text."""
+    if key in LOOK_SWITCHES:
+        return "1" if value else "0"
+    if key in LOOK_CHOICES:
+        return str(value)
+    if key == "NRLookStabilizeMs":
+        return "%d" % int(round(float(value)))
+    return _nr_text(value)
+
+
+def _look_number(key, value):
+    """A Look slider's value as its number shows it, with its unit: the detail
+    radius as a percent of the picture's height, the stabiliser's time in
+    milliseconds and the three limits in stops, with none for 0, which sets no
+    limit."""
+    v = float(value)
+    if key == "NRLookStabilizeMs":
+        return "%d ms" % int(round(v))
+    if key == "NRLookDetailRadius":
+        return "%.2f%%" % v
+    if key in ("NRLookMaxBrighten", "NRLookMaxDarken", "NRLookMaxColour"):
+        return "none" if v <= 0 else "%.2f stops" % v
+    return "%.2f" % v
+
+
+def _look_summary(addon):
+    """The Look row of the Profiles page of Settings for a profile's section:
+    off while Adjust the look is off, and else on, with each value of the page
+    that differs from its default, see _look_values."""
+    v = _look_values(addon)
+    if not v[LOOK_MODE_KEY]:
+        return "off"
+    parts = ["on"]
+    for key in LOOK_GATED:
+        if v[key] == LOOK_DEFAULTS[key]:
+            continue
+        name = LOOK_LABELS[key].lower()
+        if key in LOOK_CHOICES:
+            parts.append("%s %s" % (name, LOOK_CHOICES[key][v[key]].lower()))
+        elif key in LOOK_SWITCHES:
+            parts.append("%s %s" % (name, "on" if v[key] else "off"))
+        else:
+            parts.append("%s %s" % (name, _look_number(key, v[key])))
+    return ", ".join(parts)
+
+
+def _look_word(addon, key):
+    """A row of the Profiles page for one of the two values the Look page has
+    outside Adjust the look's switch, Detail stability and Keep blacks, for a
+    profile's section: the choice's name, or on or off, or default where the
+    section has no key for it, as the page's other rows say."""
+    if key.lower() not in {str(k).strip().lower() for k in (addon or {})}:
+        return "default"
+    v = _look_values(addon)[key]
+    if key in LOOK_CHOICES:
+        return LOOK_CHOICES[key][v]
+    return "on" if v else "off"
+
+
 # What the lens's own NR settings panel holds beside the style, each a key of
 # the add-on's section of ReShade.ini, where both engines read them: the name on
 # the panel, the lowest and the highest value, and the model's own default, which
@@ -2128,7 +2653,8 @@ NR_DEFAULTS = {"NRStyle": 0.0, "NRIntensity": 1.0, "NRLocalTone": 1.0, "NRLocalS
 # the program in front holds the mouse, see Lens._panel_line
 FREE_MOUSE_LABEL = "Free the mouse"
 FREE_MOUSE_WHY = ("While the panel is open, the lens brings it to the front, as Alt+Tab does, so you can use the "
-                  "mouse on it. A game may pause until the panel closes and gives it the front back.")
+                  "mouse on it. A click on the picture outside the panel closes it. A game may pause until the "
+                  "panel closes and gives it the front back.")
 PANEL_ARROWS = "Use the arrow keys to pick and change a setting."
 PANEL_HELD = "The program in front holds the mouse. Free the mouse lets you use it here."
 PANEL_KEPT = "The program in front kept the mouse, so the keys are the way."
@@ -2155,6 +2681,8 @@ PANEL_WHY = {
     "scale_change": STRENGTH_SWITCH_WHY,
     "strength": STRENGTH_WHY,
     "quality": FAST_QUALITY_WORDS,
+    "model": MODEL_WHY,
+    "look": LOOK_ROW_WHY,
 }
 # The explanations of the two buttons a drawn look's panel has beside its
 # profile picker, in the words of the profile list's own entries, see
@@ -2201,6 +2729,28 @@ def _set_auto_profile(on):
     global AUTO_PROFILE
     AUTO_PROFILE = bool(on)
     _save_ini("auto_profile", "1" if on else None)
+
+
+# Minimise to the tray: a minimised lens leaves no taskbar button, and an icon
+# of the lens's own in the notification area, the tray, brings it back or
+# opens its menu, see Tray and Lens.to_tray. Off unless the ini says
+# tray_minimise = 1. Its label and explanation on the Program page of
+# Settings, the entry its menu has first, and the icon's tooltip
+TRAY_MINIMISE = str(_INI.get("tray_minimise", "0")).strip().lower() in ("1", "yes", "on", "true")
+TRAY_LABEL = "Minimise to the tray"
+TRAY_WHY = ("Minimising hides the lens's taskbar button and leaves its icon in the tray. A right click on the icon "
+            "opens the lens menu, and a double click brings the lens back. Windows can keep the icon among its "
+            "hidden icons, under the arrow by the clock.")
+TRAY_SHOW = "Show the lens"
+TRAY_TIP = "Neural Lens"
+
+
+def _set_tray_minimise(on):
+    """Change the switch, from Settings, and record it in the ini, where the
+    default, off, is left unwritten. It counts from the next minimise."""
+    global TRAY_MINIMISE
+    TRAY_MINIMISE = bool(on)
+    _save_ini("tray_minimise", "1" if on else None)
 
 
 def _short_title(text, most=40):
@@ -2336,6 +2886,20 @@ def _set_free_mouse(on):
     global FREE_MOUSE
     FREE_MOUSE = bool(on)
     _save_ini("free_mouse", "1" if FREE_MOUSE else None)
+
+
+# With Free the mouse on, a click on the picture outside the NR settings panel
+# closes the panel, as a click outside a menu closes the menu, see
+# Lens._panel_catch. The picture lets every click through to what is under
+# it, so while the panel has the front a window of the lens's own lies right
+# under the picture to take such a click. A layered window lets a click
+# through where its alpha is zero, so that window's alpha is just above zero,
+# and the picture over it hides it whole.
+CATCH_ALPHA = 0.01
+# A press on that window gets the answer that it is not to be made the active
+# window, see Lens._catcher_still: the window's procedure, which Tk gives it,
+# is wrapped for that one message, through _u32
+GWLP_WNDPROC, WM_MOUSEACTIVATE, MA_NOACTIVATE = -4, 0x0021, 3
 
 
 class CURSORINFO(ctypes.Structure):
@@ -2809,6 +3373,9 @@ for _name, _res, _args in (
                                      ctypes.c_int, ctypes.c_int, w.HWND, w.HMENU, w.HINSTANCE, ctypes.c_void_p]),
         ("DestroyWindow", w.BOOL, [w.HWND]),
         ("DefWindowProcW", LRESULT, [w.HWND, ctypes.c_uint, w.WPARAM, w.LPARAM]),
+        ("GetWindowLongPtrW", ctypes.c_ssize_t, [w.HWND, ctypes.c_int]),
+        ("SetWindowLongPtrW", ctypes.c_ssize_t, [w.HWND, ctypes.c_int, ctypes.c_ssize_t]),
+        ("CallWindowProcW", LRESULT, [ctypes.c_void_p, w.HWND, ctypes.c_uint, w.WPARAM, w.LPARAM]),
         ("ChangeWindowMessageFilterEx", w.BOOL, [w.HWND, ctypes.c_uint, w.DWORD, ctypes.c_void_p]),
         ("GetMessageW", ctypes.c_int, [ctypes.POINTER(w.MSG), w.HWND, ctypes.c_uint, ctypes.c_uint]),
         ("TranslateMessage", w.BOOL, [ctypes.POINTER(w.MSG)]),
@@ -2841,6 +3408,9 @@ class Commands:
         self.stopping = False
         self.tid = 0
         self.proc = WNDPROC(self._message)      # kept, since Windows calls it for as long as the window lives
+        # the icon in the tray, whose window this thread makes and hears too, see Tray
+        self.tray = Tray()
+        self.tray_proc = WNDPROC(self._tray_message)
         threading.Thread(target=self._run, daemon=True).start()
 
     def stop(self):
@@ -2880,6 +3450,16 @@ class Commands:
             pass
         return 0
 
+    def _tray_message(self, hwnd, msg, wp, lp):
+        """The tray window's messages: what the icon heard goes into the
+        tray's queue, see Tray.heard_message, and the rest to Windows."""
+        try:
+            if self.tray.heard_message(msg, wp, lp):
+                return 0
+        except Exception:
+            pass
+        return _u32.DefWindowProcW(hwnd, msg, wp, lp)
+
     def _run(self):
         self.tid = k32.GetCurrentThreadId()
         wc = WNDCLASSW()
@@ -2896,10 +3476,34 @@ class Commands:
         # a lens started as administrator still hears a process that was not:
         # Windows drops a message from below unless the window lets it through
         _u32.ChangeWindowMessageFilterEx(self.hwnd, DO_MESSAGE, 1, None)       # MSGFLT_ALLOW
+        # the window the icon in the tray tells of its clicks. It is at the top
+        # level and never shown, rather than one that only takes messages, since
+        # only a window at the top level hears that the taskbar has started
+        # again, which takes every icon away, see Tray
+        tc = WNDCLASSW()
+        tc.lpfnWndProc = self.tray_proc
+        tc.hInstance = wc.hInstance
+        tc.lpszClassName = TRAY_CLASS
+        _u32.RegisterClassW(ctypes.byref(tc))
+        tray = _u32.CreateWindowExW(WS_EX_TOOLWINDOW, TRAY_CLASS, TRAY_CLASS, WS_POPUP, 0, 0, 0, 0, None, None,
+                                    wc.hInstance, None)
+        if tray:
+            for m in (TRAY_MESSAGE, TASKBAR_CREATED):
+                _u32.ChangeWindowMessageFilterEx(tray, m, 1, None)             # from the shell, as above
+            self.tray.hwnd = tray
+        else:
+            _u32.UnregisterClassW(TRAY_CLASS, wc.hInstance)
         msg = w.MSG()
         while not self.stopping and _u32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
             _u32.TranslateMessage(ctypes.byref(msg))
             _u32.DispatchMessageW(ctypes.byref(msg))
+        # the icon goes before its window, so it is never left in the tray,
+        # see Tray.remove, which Lens.quit has called already where it ran
+        self.tray.remove()
+        if tray:
+            self.tray.hwnd = None
+            _u32.DestroyWindow(tray)
+            _u32.UnregisterClassW(TRAY_CLASS, wc.hInstance)
         _u32.DestroyWindow(self.hwnd)
         self.hwnd = None
         _u32.UnregisterClassW(DO_CLASS, wc.hInstance)
@@ -3061,6 +3665,161 @@ def _taskbar_list(on=True):
 def _other_lens():
     """Whether another lens is running beside this one, by its listening window."""
     return any(_window_pid(h) != os.getpid() for h in _lens_windows())
+
+
+# ---- the icon in the tray
+# With Minimise to the tray on, a minimised lens has no taskbar button, and an
+# icon in the notification area, the tray, stands in for it, see
+# Lens.to_tray. The icon is the shell's, given through Shell_NotifyIconW, and
+# it tells of its clicks with TRAY_MESSAGE to a window of the lens's own,
+# which Commands makes on its thread, see Commands._run. So nothing of it
+# reaches another program: the shell sends the lens's own window a message
+# that the lens itself chose, and the lens sends nothing back.
+TRAY_CLASS = "NeuralLensTray"       # the class of that window, which is never seen
+TRAY_MESSAGE = 0x8000 + 0x4E        # in WM_APP's range, the window's own: what the icon heard
+TRAY_ID = 1                         # the icon's number among the window's icons, it has the one
+TASKBAR_CREATED = _u32.RegisterWindowMessageW("TaskbarCreated")     # the taskbar started again
+WS_EX_TOOLWINDOW, WS_POPUP = 0x00000080, 0x80000000
+WM_CONTEXTMENU, WM_LBUTTONDBLCLK, WM_RBUTTONUP = 0x007B, 0x0203, 0x0205
+NIN_KEYSELECT = 0x0401              # Enter or Space on the icon, which the keyboard has picked
+NIM_ADD, NIM_DELETE, NIM_SETVERSION = 0, 2, 4
+NIF_MESSAGE, NIF_ICON, NIF_TIP, NIF_SHOWTIP = 0x01, 0x02, 0x04, 0x80
+NOTIFYICON_VERSION_4 = 4
+
+
+class NOTIFYICONDATAW(ctypes.Structure):
+    _fields_ = [("cbSize", w.DWORD), ("hWnd", w.HWND), ("uID", ctypes.c_uint), ("uFlags", ctypes.c_uint),
+                ("uCallbackMessage", ctypes.c_uint), ("hIcon", w.HICON), ("szTip", ctypes.c_wchar * 128),
+                ("dwState", w.DWORD), ("dwStateMask", w.DWORD), ("szInfo", ctypes.c_wchar * 256),
+                ("uVersion", ctypes.c_uint), ("szInfoTitle", ctypes.c_wchar * 64), ("dwInfoFlags", w.DWORD),
+                ("guidItem", GUID), ("hBalloonIcon", w.HICON)]
+
+
+_sh32 = ctypes.WinDLL("shell32", use_last_error=True)
+_sh32.Shell_NotifyIconW.restype = w.BOOL
+_sh32.Shell_NotifyIconW.argtypes = [w.DWORD, ctypes.POINTER(NOTIFYICONDATAW)]
+for _name, _res, _args in (
+        ("LoadImageW", w.HANDLE, [w.HINSTANCE, w.LPCWSTR, ctypes.c_uint, ctypes.c_int, ctypes.c_int, ctypes.c_uint]),
+        ("LoadIconW", w.HICON, [w.HINSTANCE, ctypes.c_void_p])):
+    getattr(_u32, _name).restype, getattr(_u32, _name).argtypes = _res, _args
+_TRAYS_UP = set()                   # every Tray whose icon is in the tray now, see _trays_gone
+
+
+def _tray_icon():
+    """The lens's own icon at the size Windows gives small icons, for the
+    tray, or Windows' own icon for a program where the lens's cannot be read."""
+    size = _u32.GetSystemMetrics(49)                    # SM_CXSMICON
+    icon = _u32.LoadImageW(None, _asset("neural-lens.ico"), 1, size, size, 0x0010)      # IMAGE_ICON, LR_LOADFROMFILE
+    return icon or _u32.LoadIconW(None, 32512)          # IDI_APPLICATION
+
+
+class Tray:
+    """The lens's icon in the tray, shown while a minimised lens has no
+    taskbar button, see Lens.to_tray. add and remove run on the Tk thread,
+    and remove also on the listener's thread as it ends, see Commands._run,
+    and in main, so the icon is never left behind. A second remove does
+    nothing, and the shell takes a delete of an icon that is gone as
+    harmless.
+
+    What the icon hears comes to the listener's thread, see heard_message,
+    and waits in heard for the lens's timer, see Lens.poll_tray: show for a
+    double click, or Enter on the icon, menu with the place of a right
+    click, and again when the taskbar has started again, which takes every
+    icon away."""
+
+    def __init__(self):
+        import queue
+        self.hwnd = None            # the window the icon tells, once Commands has made it
+        self.shown = False          # the icon is in the tray
+        self.v4 = False             # the shell speaks to it as NOTIFYICON_VERSION_4 asks
+        self.icon = None            # the icon's picture, made once
+        self.heard = queue.Queue()  # (what, the place of a right click or None)
+
+    def _data(self, flags):
+        d = NOTIFYICONDATAW()
+        d.cbSize = ctypes.sizeof(NOTIFYICONDATAW)
+        d.hWnd = self.hwnd
+        d.uID = TRAY_ID
+        d.uFlags = flags
+        d.uCallbackMessage = TRAY_MESSAGE
+        d.hIcon = self.icon
+        d.szTip = TRAY_TIP
+        return d
+
+    def add(self):
+        """Put the icon in the tray, with its tooltip. Returns None once it is
+        there, else what went wrong, as text. Version 4 has the shell tell of
+        a right click, or the key for a menu on the icon, as WM_CONTEXTMENU
+        with the place for the menu. Where the shell will not speak so, a
+        right click comes as WM_RBUTTONUP, see heard_message."""
+        if self.shown:
+            return None
+        if not self.hwnd:
+            return "the lens has no window for it"
+        if self.icon is None:
+            self.icon = _tray_icon()
+        d = self._data(NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP)
+        if not _sh32.Shell_NotifyIconW(NIM_ADD, ctypes.byref(d)):
+            return "Windows did not take it"
+        d.uVersion = NOTIFYICON_VERSION_4
+        self.v4 = bool(_sh32.Shell_NotifyIconW(NIM_SETVERSION, ctypes.byref(d)))
+        self.shown = True
+        _TRAYS_UP.add(self)
+        return None
+
+    def remove(self):
+        """Take the icon out of the tray, if it is there."""
+        if not self.shown:
+            return
+        self.shown = False
+        _TRAYS_UP.discard(self)
+        d = self._data(0)
+        _sh32.Shell_NotifyIconW(NIM_DELETE, ctypes.byref(d))
+
+    def again(self):
+        """Put the icon back after the taskbar started again, which takes every
+        icon away. Returns as add does, None where there was no icon to put back.
+        An icon the taskbar kept is taken away first, since the shell refuses
+        to add one it has."""
+        if not self.shown:
+            return None
+        self.remove()
+        return self.add()
+
+    def heard_message(self, msg, wp, lp):
+        """A message to the tray window, on the listener's thread: whether it
+        was one of the icon's. Nothing here calls into Tk. With version 4 the
+        icon's event is the low word of lp and the place for a menu is in wp,
+        a pair of signed words, else lp is the mouse's message itself and the
+        place is the pointer's."""
+        if msg == TASKBAR_CREATED:
+            self.heard.put(("again", None))
+            return True
+        if msg != TRAY_MESSAGE:
+            return False
+        event = lp & 0xFFFF
+        if event in (WM_LBUTTONDBLCLK, NIN_KEYSELECT):
+            self.heard.put(("show", None))
+        elif event == WM_CONTEXTMENU or (event == WM_RBUTTONUP and not self.v4):
+            at = None
+            if self.v4 and event == WM_CONTEXTMENU:
+                at = (ctypes.c_short(wp & 0xFFFF).value, ctypes.c_short((wp >> 16) & 0xFFFF).value)
+            if not at or at == (0, 0):
+                pt = w.POINT()
+                _u32.GetCursorPos(ctypes.byref(pt))
+                at = (pt.x, pt.y)
+            self.heard.put(("menu", at))
+        return True
+
+
+def _trays_gone():
+    """Every icon of this process taken out of the tray, from main as it
+    returns, for an end that did not come through Lens.quit."""
+    for tray in list(_TRAYS_UP):
+        try:
+            tray.remove()
+        except Exception:
+            pass
 
 
 u = ctypes.windll.user32
@@ -3490,6 +4249,7 @@ class PopupMenu:
         self.cmds = []              # what each of them does, None for one that does nothing
         self.lit = None             # the entry the pointer or the arrow keys lit, by its place in labels
         self.live = None            # the one that shows the readout, see Lens.menu
+        self.clicked_off = 0.0      # when a click elsewhere last closed it, see Lens._popup_click
 
     def toggle(self, items, name="menu"):
         if self.win is not None:
@@ -3497,7 +4257,10 @@ class PopupMenu:
         else:
             self.open(items, name)
 
-    def open(self, items, name="menu"):
+    def open(self, items, name="menu", at=None, room=None):
+        """Show these entries. at is where the menu opens from, as (x, top,
+        bottom), else Lens.menu_anchor says, and room the rectangle it is kept
+        inside, else the monitor at that place, see Lens.menu for the tray."""
         lens = self.lens
         t = lens._own_window()
         self.win, self.name = t, name
@@ -3506,7 +4269,7 @@ class PopupMenu:
         # _open_drawn. Where they cannot be drawn they are made as below
         if not LOOK.classic and lens_look is not None and "menu" not in _DRAWN_FAULT:
             if not self._open_drawn(t, items, name):
-                return self.open(items, name)
+                return self.open(items, name, at, room)
         else:
             t.configure(bg=ACCENT)
             box = tk.Frame(t, bg=BG)
@@ -3528,10 +4291,10 @@ class PopupMenu:
                     lbl.bind("<Button-1>", lambda e, n=n: self.choose(n, "click"))
         t.update_idletasks()
         wd, ht = t.winfo_reqwidth(), t.winfo_reqheight()
-        bx, top, bottom = lens.menu_anchor()
+        bx, top, bottom = at if at is not None else lens.menu_anchor()
         # the monitor the anchor itself is on: with a fullscreen lens that is the
         # pointer, which can be at the very edge of its monitor
-        mx, my, mw, mh = monitor_rect(bx + 6, top)
+        mx, my, mw, mh = room if room is not None else monitor_rect(bx + 6, top)
         x = max(mx, min(bx + 6, mx + mw - wd))
         y = bottom
         if y + ht > my + mh:
@@ -3674,6 +4437,7 @@ class PopupMenu:
             u.GetCursorPos(ctypes.byref(pt))
             if not self.inside(self.win, pt.x, pt.y) and not any(
                     self.inside(wdg, pt.x, pt.y) for wdg in self.lens.menu_widgets()):
+                self.clicked_off = time.perf_counter()
                 self.close()
                 self.lens.act("%s closed (a click elsewhere)" % self.name)
                 return
@@ -3995,6 +4759,10 @@ class Lens:
         self.readout_win = None     # the on-screen readout of a fullscreen lens, see show_readout
         self.readout_drawn = None   # what it shows and where, as last drawn
         self.fps_now = None         # new pictures a second, as stats last worked it out
+        self.gen_frames = 0         # pictures the fast engine made between frames, see FRAMEGEN
+        self.made_now = None        # of those, a second, as stats last worked it out, None for none
+        self.framegen_refused = None    # why the engine that runs can make none, by its own word, see FRAMEGEN
+        self._made_hist = collections.deque(maxlen=3)
         self.idle_now = False       # and whether nothing under the lens has changed for a while
         self.exclusive = False      # a program in exclusive fullscreen, as last seen, see check_exclusive
         self.quality_set = FAST_QUALITY     # the quality step the ini names, or None for the default
@@ -4004,11 +4772,17 @@ class Lens:
         self.engine_default = None      # (width, height, step): the step a fast engine took by itself
         self.engine_asked = None        # whether the fast engine that runs was given a step
         self.engine_shared = None       # whether its passes run through one network, by its own word, see _read_presenter
+        self.engine_preset = None       # the model preset its network runs with, by its own word, see small_runs
+        self.engine_look = None         # 1 while its Look stage changes the picture, by its own word, see LOOK_KEYS
         self.shared_failed = False      # it could not make its network again for the key, see remake_failed
         self.panel = None           # the NR settings panel's window while it is open, see open_panel
         self.panel_ui = {}          # its controls, by name
         self.panel_vals = {}        # what ReShade.ini holds for each of its keys, as the panel knows it
         self.panel_shared = False   # the switch on the tab of pass 2 as the panel last read it, see _panel_shared
+        self.panel_model = MODEL_LARGE  # the Model setting as the panel last read it, see _panel_model
+        self.panel_look = dict(LOOK_DEFAULTS)   # the Look page's values as the panel last read them, see _panel_look_set
+        self.panel_look_pos = {}    # where the panel itself put each of the Look page's sliders, see _panel_look_slider
+        self.panel_page = "main"    # the page it shows, its first or the Look page, see _panel_page_to
         self.panel_scale = False    # the switch that scales the change, as the panel last read it, see _panel_scale_change
         self.panel_strength = STRENGTH_LEAST    # and the strength, which its slider shows while the switch is on
         self.panel_pos = {}         # where the panel itself put each slider, see _panel_slider
@@ -4026,6 +4800,12 @@ class Lens:
         self.panel_front_prev, self.panel_front_held = None, None
         self.mouse_held, self.mouse_watch = False, None
         self.mouse_pins = 0             # readings in a row with the pointer pinned to the front window's centre
+        # and the window under the picture that takes a click outside the
+        # panel while the panel has the front, None, or False where it could
+        # not be put up, and whether a press on it waits for its release, see
+        # _panel_catch, and the procedure that keeps it from being made the
+        # active window, see _catcher_still
+        self.panel_catcher, self.catcher_pressed, self.catcher_still = None, False, None
         self.panel_row = None       # the one the arrow keys are on
         self.panel_said = {}        # {key: (value, how, timer)}: a change on it still to be logged
         self.panel_pass_at = 0.0    # when the arrow keys last changed the pass count on it
@@ -4059,16 +4839,20 @@ class Lens:
         self.max_fps = MAX_FPS      # new pictures a second at most, 0 for no limit
         self.motion_detail = MOTION_DETAIL     # full, half or quarter, see _write_motion_detail
         self.md_written = None                 # the detail last written to the preset, see sync_motion_detail
+        self.addon_fetching = None             # the Home menu add-on on its way, see home_addon_fetch
+        self.addon_said = None                 # what sync_addon could not do, said once
         self.clip_shots = CLIP_SHOTS   # the joined before and after to the clipboard too
         self.fs_note = FULLSCREEN_NOTE  # the note on going fullscreen, see show_note
         self.note_win = None            # its window, while it is up
         self.check_updates_on = CHECK_UPDATES
         self.latency_ms = None      # its latest reading, the whole delay, see _whole_delay
         self.latency_raw = None     # the measured part alone, capture to present
-        self._shown = None          # (time, out_frames) behind the fps readout
+        self._shown = None          # (time, out_frames, gen_frames) behind the fps readout
         self._fps_hist = collections.deque(maxlen=3)
         self.restart = False        # set by the folder settings, read by main()
         self.minimized = False      # hidden, with the presenter paused, until the taskbar button
+        self.in_tray = False        # minimised to the tray, with no taskbar button, see to_tray
+        self.tray_after = []        # entries of the tray icon's menu that wait for the lens, see _from_tray
         self.profiles = _load_profiles()
         self.profile = self.profiles.get("current")      # the name on the bar, or None
         if self.profile not in self.profiles["profiles"]:
@@ -4265,8 +5049,10 @@ class Lens:
         # ---- the presenter. The add-on's settings go into ReShade.ini before
         # it starts, see _write_addon_settings, and the Cost Scaler's ini is set
         # for this size and count. Which presenter it is comes first, since
-        # apply_proxy leaves that ini alone for the fast engine.
+        # apply_proxy leaves that ini alone for the fast engine. The chosen
+        # Home menu add-on goes in place before them, see sync_addon.
         self.pick_engine()
+        self.sync_addon()
         if ADDON_PASSES:
             _write_addon_settings(passes)
         self.sync_motion_detail()
@@ -4376,13 +5162,16 @@ class Lens:
             except OSError:
                 pass
             cmd = [FAST_EXE] + args + ["--stack", STACK_DIR, "--data", data, "--passes", str(self.passes)] + (
-                ["--quality", str(self.quality_set)] if self.quality_set is not None else [])
+                ["--quality", str(self.quality_set)] if self.quality_set is not None else []) + (
+                ["--framegen", FRAMEGEN] if FRAMEGEN != "off" else [])
+            self.framegen_refused = None        # the new engine says for itself, see FRAMEGEN
             self.engine_quality, self.engine_asked = None, self.quality_set is not None
             # a step given at the start is answered by the ready line, which
             # names the step the engine runs, see check_quality
             self.quality_asked = None if self.quality_set is None else (self.quality_set, time.perf_counter())
             self.quality_heard = None
             self.engine_shared, self.shared_failed = None, False     # the new engine says for itself
+            self.engine_preset = self.engine_look = None
         else:
             cmd = [PRESENTER_EXE] + ([PRESENTER_SCRIPT] if PRESENTER_SCRIPT else []) + args
         errlog = os.path.join(LOGDIR, "presenter-stderr.log")
@@ -4548,10 +5337,16 @@ class Lens:
         once the engine has made its network again for it, so the readout
         goes by it, see readout_text. An engine
         that could not make its network again for the key says so in a line
-        of its own, see remake_failed. The line ends with network=MS, the
-        network's GPU time a picture, the mean over the second's runs, nan
-        where it did not run, which the summary and the warning that the lens
-        runs behind go by, see summarise and check_behind.
+        of its own, see remake_failed. The line has network=MS, the network's
+        GPU time a picture, the mean over the second's runs, nan where it did
+        not run, which the summary and the warning that the lens runs behind
+        go by, see summarise and check_behind. After it come generated=N, the
+        pictures it made between the frames, see FRAMEGEN, preset=N, the
+        model preset its network was made with, 0 without a network, which the
+        readout goes by, see small_runs, and look=1 while its Look
+        stage changes the picture and look=0 while the picture is the network's
+        own, see LOOK_KEYS, kept as engine_look. The lens takes the pairs it
+        knows by name, so a line without the last ones reads as before.
         """
         for line in proc.stdout:
             line = line.strip()
@@ -4564,6 +5359,20 @@ class Lens:
                     continue
                 if kv.get("shared") in ("on", "off"):
                     self.engine_shared = kv["shared"] == "on"
+                try:
+                    self.gen_frames += int(kv.get("generated", 0))   # pictures the engine made, see FRAMEGEN
+                except ValueError:
+                    pass
+                if "preset" in kv:
+                    try:
+                        self.engine_preset = int(kv["preset"])      # the network it runs, see small_runs
+                    except ValueError:
+                        pass
+                if "look" in kv:
+                    try:
+                        self.engine_look = int(kv["look"])          # 1 while its Look stage works, see LOOK_KEYS
+                    except ValueError:
+                        pass
                 shown = None            # the fast engine's delay, which the stack presenter does not report
                 if "delay" in kv:
                     try:
@@ -4665,6 +5474,13 @@ class Lens:
                         self.engine_stage[proc.pid] = stage
                         said = rest
                     self.engine_words[proc.pid] = said
+            elif line.startswith("framegen unavailable"):
+                # the engine cannot use the card's motion estimator, which it
+                # says once, with why, see FRAMEGEN. The panel's row is greyed
+                # at the next sync on the Tk thread, see _panel_framegen_look,
+                # since nothing is called from here, as for the engine's lines
+                self.framegen_refused = line[len("framegen unavailable"):].strip() or "no reason given"
+                print(line, flush=True)
             elif line.startswith("presenter ready") or line in ("paused", "resumed"):
                 if line.startswith("presenter ready"):
                     # the fast engine's ready line has the quality step it runs
@@ -5012,10 +5828,46 @@ class Lens:
             except Exception:
                 pass
         self.t.withdraw()
-        print("minimised to the taskbar", flush=True)
+        if TRAY_MINIMISE and self.to_tray():
+            print("minimised to the tray", flush=True)
+        else:
+            print("minimised to the taskbar", flush=True)
+
+    def to_tray(self):
+        """For a lens being minimised with Minimise to the tray on: its icon in
+        the tray, see Tray, and its taskbar button taken away by withdrawing
+        the root, which is that button, see show_in_taskbar. The button goes
+        only once Windows has taken the icon, so the lens is never left with
+        neither. Returns whether the lens is in the tray."""
+        tray = self.commands.tray if self.commands is not None else None
+        wrong = tray.add() if tray is not None else "the lens has no window for it"
+        if wrong:
+            print("the tray icon could not be added (%s), so the lens is minimised to the taskbar" % wrong,
+                  flush=True)
+            return False
+        self.in_tray = True
+        self.root.withdraw()
+        return True
+
+    def from_tray(self):
+        """The way back from the tray, for a lens being brought back: the icon
+        gone, and the root parked minimised again, as show_in_taskbar leaves
+        it, which brings the taskbar button back. Tk maps a window again only
+        as it goes back to its normal state, so this gives no <Map>, which
+        would read as a click on the button, see _taskbar_click."""
+        if not self.in_tray:
+            return
+        self.in_tray = False
+        if self.commands is not None:
+            self.commands.tray.remove()
+        try:
+            self.root.iconify()
+        except Exception:
+            pass
 
     def restore(self, how=None):
-        """Bring a minimised lens back as it was, from the taskbar button.
+        """Bring a minimised lens back as it was, from the taskbar button, or
+        from the icon in the tray, see from_tray.
 
         The presenter is shown again where it was and told to capture and
         present again. Had the monitors changed meanwhile, it is replaced
@@ -5027,6 +5879,8 @@ class Lens:
             return
         if how:
             self.act("brought back (%s)" % how)
+        came = "the tray" if self.in_tray else "the taskbar"
+        self.from_tray()
         self.minimized = False
         # a paused engine's stats line from just before is no part of the next summary
         self.fast_seconds.clear()
@@ -5066,7 +5920,7 @@ class Lens:
         self.bring_back()
         self.place()
         self.aim()
-        print("back from the taskbar", flush=True)
+        print("back from %s" % came, flush=True)
 
     # ---- live A/B split
     # The lens is see-through, so the raw source is already on screen under the
@@ -5627,9 +6481,10 @@ class Lens:
     def menu_widgets(self):
         """The controls whose clicks the menu leaves alone: they toggle it themselves.
         A fullscreen lens has none of them in view but the NR settings panel's
-        profile picker, while the panel is open."""
+        profile picker, while the panel is open, and a minimised lens, whose
+        menu comes from the icon in the tray, has none at all."""
         picker = [self.panel_ui["profile"]] if self.panel is not None and "profile" in self.panel_ui else []
-        if self.fullscreen:
+        if self.fullscreen or self.minimized:
             return picker
         return [self.menu_btn, self.prof_btn] + ([self.tab] if self.tab is not None else []) + picker
 
@@ -5792,6 +6647,7 @@ class Lens:
                 self.hotkey_action(self.hotkeys.fired.get_nowait())
             self._panel_key_up()        # a hold of Left or Right on a slider ends once its key is up
             self.poll_commands()
+            self.poll_tray()
         except Exception:
             pass
         self.root.after(50, self.poll_hotkeys)
@@ -5803,6 +6659,60 @@ class Lens:
         while (heard is not None and not (self.closing or self.rebuilding or self.nr_wait is not None)
                and not heard.asked.empty()):
             self.do_command(heard.asked.get_nowait())
+
+    def poll_tray(self):
+        """Act on what the icon in the tray heard, see Tray: a double click
+        brings the lens back, a right click opens the lens menu by the icon,
+        and a taskbar that started again gets the icon again. An entry of the
+        icon's menu that waits for the lens to be back goes first, see
+        _from_tray. While the picture is being replaced all of it waits for
+        the new one, as a word does."""
+        if self.commands is None:
+            return
+        tray = self.commands.tray
+        while not (self.closing or self.rebuilding or self.nr_wait is not None):
+            if self.tray_after:
+                command = self.tray_after.pop(0)
+                try:
+                    command()
+                except Exception:
+                    import traceback
+                    traceback.print_exc()
+                continue
+            if tray.heard.empty():
+                return
+            what, at = tray.heard.get_nowait()
+            if not self.in_tray:
+                continue                # the icon went before what it heard was read
+            if what == "show":
+                self.restore("tray icon")
+            elif what == "menu":
+                self.tray_menu(at)
+            elif what == "again":
+                wrong = tray.again()
+                if wrong:
+                    print("the taskbar started again and the tray icon could not be added again (%s), so the "
+                          "lens is minimised to the taskbar" % wrong, flush=True)
+                    self.in_tray = False
+                    self.root.iconify()
+                else:
+                    print("the taskbar started again, so the tray icon is added again", flush=True)
+
+    def tray_menu(self, at):
+        """The lens menu from a right click on the icon in the tray, at the
+        place Windows gave for it, see menu."""
+        self.menu(None, "tray icon", tray=at)
+
+    def _from_tray(self, command):
+        """An entry of the tray icon's menu, chosen while the lens is in the
+        tray: the lens comes back first, as it does for a word from the
+        taskbar list, see do_command, and the entry does what it does on the
+        next look at the icon, see poll_tray, once a picture that the way back
+        replaces is up."""
+        if self.minimized:
+            self.restore("tray menu")
+        if not self.minimized and not self.closing:
+            self.tray_after.append(command)
 
     def do_command(self, word):
         """What a word from the taskbar button's list, or from any process
@@ -5907,7 +6817,8 @@ class Lens:
         message box say, which takes the keys itself. Only a real dialog
         counts. The windows made never to take the foreground do not, should
         one be in front all the same: the bar, the tab, the divider, the menu,
-        the NR settings panel, the note, the notice and the readout. Nor does
+        the NR settings panel, the window under the picture that takes a click
+        outside it, the note, the notice and the readout. Nor does
         the hidden window that stands in for the taskbar button, which a click
         on the button brings to the front and which then lies minimised and
         unseen, see show_in_taskbar, nor any window that is minimised."""
@@ -5924,7 +6835,7 @@ class Lens:
         # each looked up as it may be, since the lens asks this from its very
         # start, before its title bar is made, see __init__
         wins = [getattr(self, name, None) for name in ("root", "t", "tab", "divider", "panel", "note_win", "notice",
-                                                       "readout_win")]
+                                                       "readout_win", "panel_catcher")]
         for win in wins + [getattr(getattr(self, "popup", None), "win", None)]:
             if win is not None:
                 try:
@@ -6115,10 +7026,30 @@ class Lens:
         the ReShade engine, whose add-on reads it itself, and never under the
         fast engine, which has the NR key alone, see _nr_toggled. The NR key
         is held only while the lens is fullscreen and in view."""
-        keys = ["F6"] if self.engine != "fast" else []
+        keys = ["F6"] if self.engine != "fast" and self.f6_anywhere() else []
         if self.fullscreen and not self.minimized and self.key_for("nr_toggle"):
             keys.append(self.key_for("nr_toggle"))
         return keys
+
+    def f6_anywhere(self):
+        """Whether the add-on of the ReShade engine takes F6 whichever window is
+        in front, as 5.2.1 does. The 8.5 build takes it only while a window of
+        its own process is in front, which in the lens is the presenter's only
+        while tweak mode has given it the keyboard, see f6_reaches_addon."""
+        try:
+            import neural_stack
+            return neural_stack.addon_in_place(STACK_DIR) != "8.5" if STACK_DIR else True
+        except Exception:
+            return True
+
+    def f6_reaches_addon(self):
+        """Whether a real F6 pressed now reaches the add-on of the ReShade
+        engine: always with 5.2.1, and with the 8.5 build only while a
+        presenter of the lens is the window in front, see f6_anywhere."""
+        if self.f6_anywhere():
+            return True
+        fg = u.GetForegroundWindow()
+        return bool(fg) and _window_pid(fg) in {s["proc"].pid for s in self.stages if s.get("proc") is not None}
 
     def note_first(self):
         """The note's first line: the lens is out of sight while the picture
@@ -6360,6 +7291,13 @@ class Lens:
             x, y = self.inner()
             cw, ch = self.cw, self.ch
         addon = {k: v for k, v in _read_addon_section().items() if k not in ADDON_KEEP}
+        # the model's network as the stack runs it, 1 or 2 and no other value,
+        # which tells a profile saved from now on from one saved before the
+        # Model setting, see _profile_model
+        model = _model_code(addon)
+        for k in [k for k in addon if k.lower() == MODEL_KEY.lower()]:
+            del addon[k]
+        addon[MODEL_KEY] = model
         # the values the passes from the second on have of their own, the
         # lens's own section whole, and the quality step in force
         return {"width": cw, "height": ch, "x": x, "y": y, "fullscreen": bool(self.fullscreen),
@@ -6368,6 +7306,8 @@ class Lens:
                 "readout": self.readout, "latency": bool(self.latency_on),
                 "title_size": bool(self.show_size), "title_style": bool(self.show_style),
                 "title_intensity": bool(self.show_intensity), "addon": addon,
+                # the build of the Home menu add-on the section was written for, see _profile_addon
+                "addon_build": _section_build(),
                 "per_pass": _read_pass_section(), "quality": int(self.quality_now())}
 
     def profile_same(self, p):
@@ -6376,8 +7316,9 @@ class Lens:
         of the network for every pass the lens can run, as the file has them
         against the profile's, number by number, the quality step too, whether
         the passes after the first run through the first pass's network, see
-        SHARED_KEY, and whether the change is scaled and by how much, see
-        STRENGTH_SWITCH_KEY."""
+        SHARED_KEY, whether the change is scaled and by how much, see
+        STRENGTH_SWITCH_KEY, the model's network, see _profile_model, and the
+        Look page's values, see LOOK_KEYS."""
         try:
             same = (p.get("passes") == self.passes and p.get("cost_scaler") == COST_SCALER
                     and bool(p.get("ready")) == self.ready and p.get("readout") == self.readout
@@ -6392,13 +7333,21 @@ class Lens:
             if "quality" in p and int(p["quality"]) != self.quality_now():
                 return False
             addon, own = _read_addon_section(), _read_pass_section()
-            theirs_addon = p.get("addon") if isinstance(p.get("addon"), dict) else {}
+            # as it would load under the build of the Home menu add-on in place
+            theirs_addon = _profile_addon(p, addon) or {}
             theirs_own = p.get("per_pass") if isinstance(p.get("per_pass"), dict) else {}
+            # the model's network, see _profile_model, where the profile has the add-on's section
+            if _profile_model(p) not in (None, _model_code(addon)):
+                return False
             for n in range(1, _pass_limit() + 1):
                 now, then = _pass_state(n, addon, own), _pass_state(n, theirs_addon, theirs_own)
                 for key in PASS_NAMES:
                     if now[key] != then[key]:
                         return False
+            # the Look page's values as the fast engine reads them, so a key
+            # missing in either counts as its default, see LOOK_KEYS
+            if _look_values(addon) != _look_values(theirs_addon):
+                return False
             # a profile from before the switches has no key for them, which is off,
             # and the strength counts only while its switch is on
             if _shared_on(own) != _shared_on(theirs_own) or _strength_on(own) != _strength_on(theirs_own):
@@ -6888,7 +7837,7 @@ class Lens:
         # of passes 2 to 4, which comes from the add-on's own NRPass<n>Intensity
         # saved in the profile. A write that Windows refuses for a moment, as
         # while the engine reads the file, is tried again
-        changes = _profile_changes(p)
+        changes = _profile_changes(_profile_carried(p))     # under the build of the Home menu add-on in place
         written = not STACK_DIR or not any(changes.values()) or _set_ini_values(changes)
         tries = 0
         while not written and tries < 10:
@@ -7198,6 +8147,7 @@ class Lens:
             self.stages = []
             self.pick_engine(stand_in)  # before the proxy's ini, which the fast engine leaves alone
             self.apply_proxy()
+            self.sync_addon()           # the chosen Home menu add-on, now that no presenter holds one
             if nr is not None and not _set_addon_values({"NeuralUplift": "1" if nr else "0"}):
                 unswitched = True
                 print("ReShade.ini could not be written, so Neural Rendering starts as the file says", flush=True)
@@ -7402,6 +8352,130 @@ class Lens:
             _save_ini("motion_detail", None if seen == "full" else seen)
         _write_motion_detail(self.motion_detail)
         self.md_written = self.motion_detail
+
+    def sync_addon(self):
+        """Put the chosen Home menu add-on in place for a presenter about to
+        start, with the add-on's section of ReShade.ini given to it, see
+        HOME_ADDON and neural_stack.addon_switch. It runs while no presenter of
+        the ReShade engine holds the add-on, before the add-on's settings are
+        written. A build whose zip the stack's addons folder does not hold yet
+        is fetched in the background, see home_addon_fetch, and until it is
+        there the presenter starts with the build in place. A stack whose
+        add-on is neither build, or a change that fails, leaves the stack as it
+        is, and the log and the bar say so once. Returns whether the add-on or
+        its section changed."""
+        if not STACK_DIR:
+            return False
+        try:
+            import neural_stack
+        except ImportError:
+            return False
+        try:
+            changed = neural_stack.addon_switch(STACK_DIR, HOME_ADDON, log=lambda s: print(s, flush=True))
+        except (neural_stack.StackError, OSError) as exc:
+            have = neural_stack.addon_in_place(STACK_DIR)
+            if have in HOME_ADDON_BUILDS and have != HOME_ADDON and neural_stack.addon_zip(
+                    STACK_DIR, HOME_ADDON, fetch_missing=False) is None:
+                self.home_addon_fetch()         # the picture starts again once it is there
+                return False
+            why = (str(exc).splitlines() or [type(exc).__name__])[0]
+            if why != getattr(self, "addon_said", None):
+                self.addon_said = why
+                print("the Home menu add-on stays %s, since %s" % (neural_stack.addon_words(have), why), flush=True)
+                if have != "other":
+                    try:
+                        self.hold_note(HOME_ADDON_KEPT % neural_stack.addon_words(have), 8.0, windowed=True)
+                    except Exception:
+                        pass
+            return False
+        if changed:
+            self.addon_said = None
+        return changed
+
+    def home_addon_go(self, was=None):
+        """Put the Home menu add-on chosen in Settings to work. Under the
+        ReShade engine the picture starts again, and the new presenter starts
+        with the chosen build in place, see sync_addon. A fast engine has no
+        add-on, so it goes on, the switch is made at once and the engine reads
+        the add-on's section again. A build whose zip the stack does not hold
+        yet is fetched first, and was is the build to go back to should that
+        fail, see home_addon_fetch. Nothing happens where the build is in place
+        already, or where the stack's add-on is neither build."""
+        if not STACK_DIR or self.closing:
+            return
+        try:
+            import neural_stack
+            have = neural_stack.addon_in_place(STACK_DIR)
+            missing = have != HOME_ADDON and neural_stack.addon_zip(STACK_DIR, HOME_ADDON, fetch_missing=False) is None
+        except Exception:
+            return
+        if have == "other" or (have == HOME_ADDON and _section_build() == HOME_ADDON):
+            return
+        if missing:
+            self.home_addon_fetch(was)
+            return
+        if self.engine == "fast" and self.stages and not self.standing_in():
+            if self.sync_addon():
+                self.tell_presenter("reload")
+                self.load_panel()
+            return
+        if self.minimized:
+            self.restore()
+        self.restart_presenter(HOME_ADDON_RESTART)
+
+    def home_addon_fetch(self, was=None):
+        """Fetch the chosen build's zip into the stack's addons folder, as the
+        stack setup fetches it, checked by its hash, on a thread of its own, and
+        put the build to work once it is there, see home_addon_go. The bar says
+        so meanwhile. Should the download fail, the lens says so, and where was
+        names the build Settings changed from, the choice goes back to it. A
+        fetch already on its way takes was, and no second one starts."""
+        if getattr(self, "addon_fetching", None) is not None:
+            if was is not None:
+                self.addon_fetching["was"] = was
+            return
+        import neural_stack
+        state = self.addon_fetching = {"build": HOME_ADDON, "was": was, "done": False, "error": None}
+        version = HOME_ADDON_BUILDS[HOME_ADDON]
+        print("fetching the %s add-on into %s" % (version, os.path.join(STACK_DIR, neural_stack.ADDON_DIR)),
+              flush=True)
+        self.say(HOME_ADDON_FETCHING % version, WARN, 30.0)
+
+        def work():
+            try:
+                neural_stack.addon_zip(STACK_DIR, state["build"], log=lambda s: print(s.strip(), flush=True))
+            except Exception as exc:
+                state["error"] = (str(exc).splitlines() or [type(exc).__name__])[0]
+            state["done"] = True
+
+        threading.Thread(target=work, daemon=True).start()
+        self.root.after(250, self._home_addon_fetched)
+
+    def _home_addon_fetched(self):
+        """The end of home_addon_fetch, looked for four times a second."""
+        state = self.addon_fetching
+        if state is None or self.closing:
+            return
+        if not state["done"] or self.rebuilding:
+            self.root.after(250, self._home_addon_fetched)
+            return
+        self.addon_fetching = None
+        version = HOME_ADDON_BUILDS[state["build"]]
+        if state["error"] is None:
+            print("the %s add-on is in the stack's addons folder" % version, flush=True)
+            if state["build"] == HOME_ADDON:
+                self.home_addon_go(state["was"])
+            return
+        print("the %s add-on could not be downloaded (%s)" % (version, state["error"]), flush=True)
+        if state["was"] is not None and HOME_ADDON == state["build"]:
+            _set_home_addon(state["was"])
+            print("the Home menu add-on goes back to %s" % HOME_ADDON_BUILDS[HOME_ADDON], flush=True)
+        try:
+            import neural_stack
+            stays = neural_stack.addon_words(neural_stack.addon_in_place(STACK_DIR))
+        except Exception:
+            stays = HOME_ADDON_BUILDS[HOME_ADDON]
+        self.hold_note(HOME_ADDON_FAILED % (version, stays), 8.0, windowed=True)
 
     def apply_proxy(self):
         """Set the Cost Scaler for this lens: on for fullscreen at the scale the
@@ -7691,7 +8765,9 @@ class Lens:
     def _watch_mouse(self):
         """While the panel is open: whether the program in front holds the
         mouse, read a few times a second, for the panel's top line and for the
-        pointer, which the panel ignores while the mouse is held."""
+        pointer, which the panel ignores while the mouse is held, and whether
+        the panel still has the front, for the window under the picture, see
+        _panel_catch."""
         self.mouse_watch = None
         if self.panel is None:
             return
@@ -7704,6 +8780,7 @@ class Lens:
         if held != self.mouse_held:
             self.mouse_held = held
             self._panel_line()
+        self._panel_catch()
         self.mouse_watch = self.root.after(250, self._watch_mouse)
 
     def _mouse_pinned(self):
@@ -7761,13 +8838,16 @@ class Lens:
               else "the NR settings panel could not take the front, the program in front kept it (free mouse)",
               flush=True)
         self._panel_line()
+        self._panel_catch()
 
     def _panel_front_back(self):
         """Give the foreground back, on closing the panel or on switching Free
         the mouse off: only to the window that had it when the panel took it,
         and only while a window of the lens's own still has it, never pulled
         back from somewhere the person went meanwhile. The panel, where it
-        stays open, is made again never to be active."""
+        stays open, is made again never to be active. The window under the
+        picture goes once the front is back, see _panel_catch, so Windows
+        never has to choose a window for the front, should that one have it."""
         prev, self.panel_front_prev = self.panel_front_prev, None
         self.panel_front_held = None
         if self.panel is not None:
@@ -7775,17 +8855,164 @@ class Lens:
                 self._own_styles(self.panel)
             except Exception:
                 pass
-        if not prev:
-            return
+        if prev:
+            try:
+                front = u.GetForegroundWindow()
+                if front and self._is_own(front) and u.IsWindow(prev):
+                    u.SetForegroundWindow(prev)
+                    print("the front given back (free mouse)", flush=True)
+                else:
+                    print("the front left where it went (free mouse)", flush=True)
+            except Exception as exc:
+                print("the front not given back, %s (free mouse)" % exc, flush=True)
+        self._panel_catch()
+
+    def _panel_catching(self):
+        """Whether a click on the picture outside the NR settings panel is the
+        lens's to take, see _panel_catch: Free the mouse is on, the lens is
+        fullscreen with its picture up, and the panel's own window has the
+        foreground, so the program in front has let go of the mouse. The
+        window under the picture in front counts as the panel's, should a
+        click have made it the active window all the same, see
+        _catcher_still. With the switch off, or the front anywhere else, the
+        picture lets every click through as always."""
+        if (self.panel is None or not FREE_MOUSE or not self.fullscreen or self.minimized or self.closing
+                or not self.stages):
+            return False
+        h = u.GetParent(self.panel.winfo_id()) or self.panel.winfo_id()
+        front = u.GetForegroundWindow()
+        return bool(h) and bool(front) and front in (h, self._catcher_window())
+
+    def _catcher_window(self):
+        """The window under the picture, the one that carries its styles, or
+        None while there is none."""
+        t = self.panel_catcher
+        if t is None or t is False:
+            return None
+        return u.GetParent(t.winfo_id()) or t.winfo_id()
+
+    def _panel_catch(self):
+        """With Free the mouse on, a click on the picture outside the NR
+        settings panel closes the panel, as a click outside a menu closes the
+        menu, and the front goes back to the program it was taken from, as on
+        any closing, see close_panel. The picture lets every click through to
+        what is under it, so while the panel has the front a window of the
+        lens's own lies right under the picture, as large as the picture, and
+        takes such a click, see _catcher_up. The click goes no further: the
+        program under the lens gets nothing of it, nothing is sent anywhere,
+        and the cursor is left as it is. The window is put up or taken away
+        as _panel_catching says: when the panel has taken the front, at each
+        reading of the held mouse, a few times a second, and as the front is
+        given back. Whatever goes wrong here, the panel and the watch go on
+        as they are."""
         try:
-            front = u.GetForegroundWindow()
-            if front and self._is_own(front) and u.IsWindow(prev):
-                u.SetForegroundWindow(prev)
-                print("the front given back (free mouse)", flush=True)
-            else:
-                print("the front left where it went (free mouse)", flush=True)
+            want = self._panel_catching()
+            if want and self.panel_catcher is None:
+                self._catcher_up()
+            elif not want and self.panel_catcher is not None:
+                self._catcher_down()
+        except Exception:
+            pass
+
+    def _catcher_up(self):
+        """The window under the picture, see _panel_catch: a window of the
+        lens's own as _own_window makes them, never active, on top and out
+        of the picture, as large as the picture and put right under it among
+        the windows on top, so the picture covers it whole and the panel, the
+        menu and the lens's other windows over the picture stay above it. Its
+        alpha is CATCH_ALPHA. Where it cannot be put up, lens.log says so and
+        a click outside the panel goes through the picture as before, until
+        the front is given back."""
+        t = self._own_window()
+        self.panel_catcher, self.catcher_pressed = t, False
+        try:
+            x, y = self.inner()
+            t.configure(bg="black")
+            t.geometry("%dx%d+%d+%d" % (self.cw, self.ch, x, y))
+            t.bind("<ButtonPress>", self._catcher_press)
+            t.bind("<ButtonRelease>", self._catcher_release)
+            self._show_own(t, CATCH_ALPHA)
+            self.catcher_still = self._catcher_still(t)
+            h = u.GetParent(t.winfo_id()) or t.winfo_id()
+            if not u.SetWindowPos(h, self.visible(), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE):
+                raise OSError("Windows did not put it under the picture")
         except Exception as exc:
-            print("the front not given back, %s (free mouse)" % exc, flush=True)
+            self._catcher_down()
+            self.panel_catcher = False
+            print("the window that takes a click outside the NR settings panel could not be put up, %s (free mouse)"
+                  % exc, flush=True)
+
+    def _catcher_down(self):
+        """Take the window under the picture away, see _panel_catch, with the
+        procedure it had put back first, see _catcher_still."""
+        t, self.panel_catcher, self.catcher_pressed = self.panel_catcher, None, False
+        still, self.catcher_still = self.catcher_still, None
+        if still is not None:
+            try:
+                h, new, old = still
+                if _u32.GetWindowLongPtrW(h, GWLP_WNDPROC) == ctypes.cast(new, ctypes.c_void_p).value:
+                    _u32.SetWindowLongPtrW(h, GWLP_WNDPROC, old)
+            except Exception:
+                pass
+        if t is not None and t is not False:
+            try:
+                t.destroy()
+            except Exception:
+                pass
+
+    def _catcher_still(self, t):
+        """Have the window under the picture answer a press with
+        MA_NOACTIVATE, so a click on it never makes it the active window and
+        the panel keeps the front until the button is up. Its style that
+        keeps it from ever being active is not enough: measured on screen, a
+        click made it the active window all the same while the panel, a
+        window of the same program, had the foreground, so the click closed
+        nothing. Tk answers that message itself, so the procedure of the
+        window the click lands on is wrapped: that one message gets the
+        answer here and every other goes on to the procedure the window had.
+        Returns what _catcher_down needs to put that procedure back, or None
+        where it could not be wrapped, when the window under the picture in
+        front counts as the panel's, see _panel_catching."""
+        h = t.winfo_id()
+        old = _u32.GetWindowLongPtrW(h, GWLP_WNDPROC)
+        if not old:
+            return None
+
+        def proc(hwnd, msg, wp, lp):
+            if msg == WM_MOUSEACTIVATE:
+                return MA_NOACTIVATE
+            return _u32.CallWindowProcW(old, hwnd, msg, wp, lp)
+
+        new = WNDPROC(proc)
+        if not _u32.SetWindowLongPtrW(h, GWLP_WNDPROC, ctypes.cast(new, ctypes.c_void_p).value):
+            return None
+        return h, new, old
+
+    def _catcher_press(self, _event=None):
+        """A button pressed on the window under the picture, a click outside
+        the panel: it closes the panel once the button is up, see
+        _catcher_release, while the panel has the front, unless the lens menu
+        or a list of the lens's own is open over the panel, which a click
+        elsewhere closes by itself, see PopupMenu.watch, and then the panel
+        stays."""
+        self.catcher_pressed = self._panel_catching() and not self._popup_click()
+
+    def _catcher_release(self, _event=None):
+        """The button of that press is up: the panel closes, and the front goes
+        back to the program it was taken from, as on any closing, see
+        close_panel. It closes as the button comes up rather than as it goes
+        down, so the whole click stays with the lens: the program the front
+        goes back to would otherwise have the button come up in it."""
+        pressed, self.catcher_pressed = self.catcher_pressed, False
+        if pressed and self.panel is not None:
+            self.close_panel("a click elsewhere")
+
+    def _popup_click(self):
+        """Whether a press now is the lens menu's or a list's, open over the
+        panel, or closed by that very press a moment ago, see
+        PopupMenu.watch, which reads the buttons every 30 ms."""
+        p = self.popup
+        return p.win is not None or time.perf_counter() - p.clicked_off < 0.25
 
     def _panel_line(self):
         """The panel's top line: the arrow keys always; while the program in
@@ -7886,13 +9113,16 @@ class Lens:
         # The new pictures the presenter actually showed over the last few
         # seconds, which is the number a person means by fps. Its counter
         # restarts with the presenter, so a step backwards starts the average over.
-        now, n = time.perf_counter(), self.out_frames
+        now, n, g = time.perf_counter(), self.out_frames, self.gen_frames
         if self._shown is not None and n >= self._shown[1] and now > self._shown[0]:
             self._fps_hist.append((n - self._shown[1]) / (now - self._shown[0]))
+            self._made_hist.append((g - self._shown[2]) / (now - self._shown[0]))
         elif self._shown is not None and n < self._shown[1]:
             self._fps_hist.clear()
-        self._shown = (now, n)
+            self._made_hist.clear()
+        self._shown = (now, n, g)
         shown = sum(self._fps_hist) / len(self._fps_hist) if self._fps_hist else None
+        made = sum(self._made_hist) / len(self._made_hist) if self._made_hist else None
         # The stack presenter standing in for the fast engine has frames, so the
         # screen gives pictures again and the fast engine can have its turn now,
         # which _recover gives it. Not under tweak mode, which the restart would end
@@ -7917,6 +9147,7 @@ class Lens:
         # new picture is history
         idle = shown is not None and shown < 0.5
         self.fps_now, self.idle_now = shown, idle       # for the readout, see show_readout
+        self.made_now = made if made is not None and made >= 0.5 else None
         if self.t_first and self.frames > 0:
             parts = ["%d x %d" % (self.cw, self.ch)] if self.show_size else []
             if self.engine == "fast":
@@ -7965,7 +9196,9 @@ class Lens:
         show_readout, or "" where it shows nothing: the figures Settings,
         Fullscreen switches on, see FS_READOUT, in their own order. The frame
         rate and the latency are the ones the menu's readout line has, the
-        quality step is the fast engine's alone, the passes read NR off while
+        quality step is the fast engine's alone, with the small network named
+        after it while the engine runs that network, by its own word, see
+        small_runs, the passes read NR off while
         Neural Rendering is off and say shared where the fast engine runs two
         or more through the first pass's network, by the engine's own word and
         not the file's key, see SHARED_KEY and _read_presenter, so it says shared
@@ -7976,11 +9209,19 @@ class Lens:
         if self.fullscreen and not self.minimized and not self.closing and self.stages:
             idle = self.idle_now
             if "fps" in FS_READOUT and (idle or self.fps_now is not None):
-                parts.append("idle" if idle else "%.0f fps" % self.fps_now)
+                if idle:
+                    parts.append("idle")
+                elif self.made_now:
+                    # with frame generation the rate shown and, of it, the pictures made, see FRAMEGEN
+                    parts.append("%.0f fps, %.0f made" % (self.fps_now + self.made_now, self.made_now))
+                else:
+                    parts.append("%.0f fps" % self.fps_now)
             if "latency" in FS_READOUT and self.latency_ms is not None and not idle:
                 parts.append("latency %s%.0f ms" % ("" if self.engine == "fast" else "~", self.latency_ms))
             if "step" in FS_READOUT and self.engine == "fast":
-                parts.append("step " + FAST_QUALITY_NAMES[self.quality_now()])
+                # with the network's name while the small network runs, see small_runs
+                parts.append("step " + FAST_QUALITY_NAMES[self.quality_now()]
+                             + (", " + MODEL_READOUT if self.small_runs() else ""))
             if "passes" in FS_READOUT:
                 if not self.nr_on:
                     parts.append("NR off")
@@ -7992,6 +9233,48 @@ class Lens:
                 code = str(_read_addon_section().get("NRStyle", "0")).strip()
                 parts.append("style " + STYLE_NAMES.get(code, "Default"))
         return "   ".join(parts)
+
+    def small_runs(self):
+        """Whether the fast engine runs the small FP8 network, MODEL_SMALL:
+        Neural Rendering on, the stack's model one with both networks, see
+        _model_two, and the engine's last stats line naming a preset other than
+        the large network's, see _read_presenter. By the engine's word, so the
+        readout follows a change once the engine has made its network again
+        for it."""
+        preset = getattr(self, "engine_preset", None)
+        return (self.engine == "fast" and bool(self.nr_on) and preset is not None
+                and str(preset) != MODEL_LARGE and _model_two())
+
+    def set_model(self, code, how=None, restart=True):
+        """The Model setting, see MODEL_KEY: the network into the add-on's
+        section, and the picture onto it. The fast engine is told reload,
+        which makes its network again for the new preset while the pictures go
+        on, and the readout names the small network once the engine runs it.
+        The ReShade engine's picture restarts, as for a style, since the add-on
+        reads the key as its presenter starts, unless restart is False, where
+        the caller restarts it, as Settings' Save does once for all it changed.
+        The small network only where the stack's model holds it, see
+        _model_two. how is the way it was asked for, for the log. Returns
+        whether the section changed."""
+        if code not in MODEL_NAMES or self.closing:
+            return False
+        if code != MODEL_LARGE and not _model_two():
+            return False
+        if _model_value(_read_addon_section()) == float(code):
+            return False
+        if not _set_addon_values({MODEL_KEY: code}):
+            print("ReShade.ini could not be written, so the model's network stays as it was", flush=True)
+            return False
+        if how:
+            self.act("model %s (%s)" % (MODEL_NAMES[code], how))
+        print("the model runs %s" % MODEL_SAID[code], flush=True)
+        self.update_profile_label()
+        self.load_panel()
+        if self.engine == "fast":
+            self.tell_presenter("reload")
+        elif restart and self.stages and not self.rebuilding and self.rs is None:
+            self.restart_presenter(_model_note(code))
+        return True
 
     def show_readout(self):
         """The on-screen readout of a fullscreen lens: readout_text on one line
@@ -8506,11 +9789,19 @@ class Lens:
     # or with a Home the user presses, which has closed the overlay already;
     # either way the viewport goes back to click-through and the keyboard to the
     # window that had it.
-    def menu(self, e, how="title bar"):
+    def menu(self, e, how="title bar", tray=None):
         """The lens menu, or with a menu open, that menu closed. how is the way
         it was asked for, for the log: the title bar, the tab, a key, the
-        taskbar button or its list. The log names the list that closes, which
-        can be the style list or the profile list, see PopupMenu."""
+        taskbar button or its list, or the icon in the tray. The log names the
+        list that closes, which can be the style list or the profile list, see
+        PopupMenu.
+
+        tray is the place of a right click on the icon in the tray, see
+        tray_menu. The menu is then made here as for any other way, so the two
+        never differ, with Show the lens as its first entry, and it opens at
+        that place, kept inside the work area of its monitor, so it stands
+        above the taskbar and not over it. The lens is in the tray, so every
+        entry but Quit Neural Lens brings it back first, see _from_tray."""
         if self.popup.win is not None:
             was = self.popup.name
             self.popup.close()
@@ -8534,6 +9825,7 @@ class Lens:
         else:
             nr_entry = ("Tweak NR settings  (ReShade overlay, Home)", lambda: self.toggle_tweak("menu"))
         nr_keys = _either(self.nr_keys())       # the keys as they are set, F6 only under the ReShade engine
+        leave = lambda: self.quit(how="menu")       # the last entry, which the tray's menu knows by it
         # a bug report is much easier to act on when the reporter can read the
         # version off the app rather than having to work out which build they have
         items = [("Neural Lens %s  (beta)" % __version__, None, False)]
@@ -8544,7 +9836,9 @@ class Lens:
             items += [(self.readout_now or "%d x %d" % (self.cw, self.ch), None, False),
                       None,
                       ("Leave fullscreen", lambda: self.toggle_fullscreen("menu"), True),
-                      ("Minimise to the taskbar", lambda: self.minimize("menu"), True)]
+                      # where minimising goes, with the switch on the Program page
+                      ("Minimise to the tray" if TRAY_MINIMISE else "Minimise to the taskbar",
+                       lambda: self.minimize("menu"), not self.minimized)]
         items += [
             None,
             (nr_entry[0], nr_entry[1], True),
@@ -8580,15 +9874,36 @@ class Lens:
             None,
             # Quit and not Close, which could be read as closing only this menu
             # or a dialog
-            ("Quit Neural Lens", lambda: self.quit(how="menu"), True),
+            ("Quit Neural Lens", leave, True),
         ]
-        self.popup.open(items, "menu")
+        at = room = None
+        if tray is not None:
+            # every entry that does something, but Quit, brings the lens back
+            # first, and Show the lens comes after the version and the readout,
+            # the head a drawn look draws as a band, see lens_look.menus.rows_of.
+            # In a fullscreen lens it joins Leave fullscreen and Minimise
+            items = [it if it is None or it[1] is None or not it[2] or it[1] is leave
+                     else (it[0], lambda c=it[1]: self._from_tray(c), True) for it in items]
+            k = items.index(None) + 1
+            items[k:k] = [(TRAY_SHOW, lambda: self.restore("tray menu"), True)] + ([] if full else [None])
+            room = work_area(*tray)
+            l, t, wd, ht = room
+            px, py = max(l, min(tray[0], l + wd - 1)), max(t, min(tray[1], t + ht - 1))
+            at = (px - 6, py, py)
+        self.popup.open(items, "menu", at=at, room=room)
         if self.popup.win is not None:
             self.act("menu opened (%s)" % how)
         if full and self.popup.win is not None and len(self.popup.labels) > 1:
             self.popup.live = self.popup.labels[1]
 
     def set_interactive(self, hwnd, on):
+        """Have a presenter's window take the mouse and the keyboard, for tweak
+        mode, or let every click through and never be active. Made
+        click-through it is not activated either: SetWindowPos without
+        SWP_NOACTIVATE activates a window, which Windows allows while the lens
+        has the foreground, as the NR settings panel has it with Free the
+        mouse on, so the window of a new picture, which a pass more or fewer
+        starts, would take the front from the panel."""
         ex = u.GetWindowLongPtrW(hwnd, GWL_EXSTYLE)
         if on:
             ex &= ~(WS_EX_TRANSPARENT | WS_EX_NOACTIVATE)
@@ -8596,7 +9911,7 @@ class Lens:
             ex |= WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE
         u.SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex)
         u.SetWindowPos(hwnd, 0, 0, 0, 0, 0,
-                       SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED)
+                       SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED | (0 if on else SWP_NOACTIVATE))
 
     def focus(self, hwnd):
         """Give the keyboard to the presenter, for tweak mode. hwnd is only
@@ -8856,6 +10171,15 @@ class Lens:
             _write_addon_settings(self.passes, nr=self.nr_on)
             print("Neural Rendering %s" % ("on" if self.nr_on else "off"), flush=True)
             self.update_info()
+            return
+        # the 8.5 build of the add-on takes F6 only while a window of its own
+        # process is in front, so an F6 with another window in front leaves
+        # Neural Rendering as it is, and the lens with it, see f6_reaches_addon
+        if how == "F6" and not self.f6_reaches_addon():
+            if not self.f6_said:
+                self.f6_said = True
+                print("F6 does nothing under the 8.5 add-on while another window is in front. It takes the key "
+                      "while its Home menu is open, and the lens menu turns Neural Rendering off and on", flush=True)
             return
         # the add-on reads the key on a present, and an idle presenter presents
         # four times a second, so it presents at full rate for a moment; and the
@@ -9120,10 +10444,16 @@ class Lens:
         t = self._own_window()
         self.panel = t
         t.configure(bg=ACCENT)
-        box = tk.Frame(t, bg=BG)
-        box.pack(padx=1, pady=1)
+        # the head, the page shown and the foot, one under another: the first
+        # page, box, or the Look page in its place, see _panel_page_to
+        whole = tk.Frame(t, bg=BG)
+        whole.pack(padx=1, pady=1)
+        whole.grid_columnconfigure(0, weight=1)
+        box = tk.Frame(whole, bg=BG)
+        box.grid(row=1, column=0, sticky="nwe")
         ui = self.panel_ui = {}
         self.panel_rows, self.panel_row, self.panel_tabs = [], None, []
+        self.panel_page = "main"        # it opens on its first page, see _panel_page_to
         self.panel_pass = max(1, min(max(1, self.passes), self.panel_pass))
         font, small = ("Segoe UI", 10), ("Segoe UI", 9)
         tick = dict(bg=BG, fg=FG, selectcolor=FIELD, activebackground=BG, activeforeground=FG,
@@ -9139,8 +10469,8 @@ class Lens:
                 hints.add(wdg, PANEL_WHY[name])
 
         # the head, which the panel is dragged by, with the cross that closes it
-        head = tk.Frame(box, bg=CAP)
-        head.grid(row=0, column=0, columnspan=4, sticky="we")
+        head = tk.Frame(whole, bg=CAP)
+        head.grid(row=0, column=0, sticky="we")
         name = tk.Label(head, text="  NR settings", bg=CAP, fg=FG, font=("Segoe UI", 10, "bold"), pady=5)
         # the top line, under the title across the head: the arrow keys, and
         # while the program in front holds the mouse, the switch that frees it,
@@ -9153,6 +10483,8 @@ class Lens:
         hint = tk.Label(head, text="%s or Escape closes it" % key if key else "Escape closes it", bg=CAP, fg=DIM,
                         font=small)
         hint.pack(side="left", padx=(12, 0))
+        # the title and the line beside it, which the Look page has its own of, see _panel_page_to
+        ui["title"], ui["hint"], ui["whole"], ui["main_page"] = name, hint, whole, box
         cross = tk.Label(head, text=self.glyphs["close"], bg=CAP, fg=FG, font=self.capfont, padx=11)
         cross.pack(side="right", fill="y")
         cross.bind("<Button-1>", lambda e: self.close_panel("cross"))
@@ -9247,7 +10579,7 @@ class Lens:
         ui["tie_box"]["NRStyle"].update_idletasks()
         box.grid_columnconfigure(3, minsize=ui["tie_box"]["NRStyle"].winfo_reqwidth() + 22)
         row = 6
-        for nr_key, text, lo, hi, _default in NR_SLIDERS:
+        for nr_key, text, lo, hi, _default in _nr_sliders():
             ui[nr_key + " word"] = label(row, text)
             scale = tk.Scale(box, from_=lo, to=hi, resolution=0.01, orient="horizontal", showvalue=False,
                              length=240, width=14, sliderlength=22, bg=DIM, troughcolor=FIELD,
@@ -9351,15 +10683,71 @@ class Lens:
         ui["quality"].grid(row=row + 7, column=1, sticky="w", pady=(6, 0))
         ui["quality_name"].grid(row=row + 7, column=2, columnspan=2, sticky="w", padx=(8, 12), pady=(4, 0))
         why("quality", ui["quality_word"], ui["quality"], ui["quality_name"])
-        # the foot, one line: the keys that work the panel and how a setting's
-        # explanation comes up, see PANEL_KEYS and PANEL_HELP. What a setting
-        # does, the quality step's included, is its own explanation, and what
-        # the ReShade engine makes of these settings is in README.md
+        # the model's network under it, see MODEL_KEY: the small network greyed where
+        # the stack's model has the large network alone, with its own explanation, see
+        # _panel_model_look
+        ui["model_word"] = label(row + 8, MODEL_LABEL)
+        models = ui["model_row"] = tk.Frame(box, bg=BG)
+        models.grid(row=row + 8, column=1, columnspan=3, sticky="w", pady=(4, 0))
+        ui["model"] = tk.StringVar(master=t, value=MODEL_LARGE)
+        ui["model_btns"] = []
+        for code, text in MODEL_NAMES.items():
+            b = tk.Radiobutton(models, text=text, variable=ui["model"], value=code, command=self._panel_model, **tick)
+            b.pack(side="left", padx=(0, 8))
+            ui["model_btns"].append(b)
+        why("model", ui["model_word"], models)     # MODEL_ONE_WHY where it applies, see _panel_model_look
+        # last, the row that opens the Look page, with the words that say what
+        # the page does to the picture now and the arrow that says it opens a
+        # page, in a field a click opens it from, see LOOK_KEYS and
+        # _panel_page_to
+        ui["look_word"] = label(row + 10, LOOK_LABEL)
+        opener = ui["look_row"] = tk.Frame(box, bg=FIELD)
+        opener.grid(row=row + 10, column=1, columnspan=3, sticky="w", pady=(4, 0))
+        ui["look_state"] = tk.Label(opener, text="", bg=FIELD, fg=FG, font=font, padx=8, pady=2)
+        ui["look_state"].pack(side="left")
+        ui["look_arrow"] = tk.Label(opener, text=LOOK_ARROW, bg=FIELD, fg=FG, font=font, padx=6, pady=2)
+        ui["look_arrow"].pack(side="left")
+
+        def field(on):
+            for wdg in (opener, ui["look_state"], ui["look_arrow"]):
+                wdg.config(bg=HOVER if on else FIELD)
+
+        for wdg in (ui["look_word"], opener, ui["look_state"], ui["look_arrow"]):
+            wdg.bind("<Button-1>", lambda e: self._panel_page_to("look", "click"))
+        for wdg in (opener, ui["look_state"], ui["look_arrow"]):
+            wdg.bind("<Enter>", lambda e: field(True))
+            wdg.bind("<Leave>", lambda e: field(False))
+        why("look", ui["look_word"], opener)
+        # between the Model row and the Look row, frame generation, the fast
+        # engine's own, the choice of the Fullscreen page of Settings in its
+        # words, see FRAMEGEN and _panel_framegen, greyed where the engine
+        # cannot use the card's motion estimator, see _panel_framegen_look,
+        # which gives each part its explanation
+        ui["framegen_word"] = label(row + 9, FRAMEGEN_LABEL)
+        gens = ui["framegen_row"] = tk.Frame(box, bg=BG)
+        gens.grid(row=row + 9, column=1, columnspan=3, sticky="w", pady=(4, 0))
+        ui["framegen"] = tk.StringVar(master=t, value=FRAMEGEN)
+        ui["framegen_btns"] = []
+        for mode, text, _why in FRAMEGEN_CHOICES:
+            b = tk.Radiobutton(gens, text=text, variable=ui["framegen"], value=mode, command=self._panel_framegen,
+                               **tick)
+            b.pack(side="left", padx=(0, 8))
+            ui["framegen_btns"].append(b)
+        # the Look page, which takes the first page's place while it shows
+        page = ui["look_page"] = tk.Frame(whole, bg=BG)
+        page.grid(row=1, column=0, sticky="nwe")
+        page.grid_remove()
+        self._panel_look_page(page, tick, font)
+        # the foot, one line under either page: the keys that work the panel
+        # and how a setting's explanation comes up, see PANEL_KEYS and
+        # PANEL_HELP. What a setting does, the quality step's included, is its
+        # own explanation, and what the ReShade engine makes of these settings
+        # is in README.md
         texts = (PANEL_KEYS + " " + PANEL_HELP % (PANEL_HELP_F1 if _f1_free() else ""),)
         ui["foot"] = []                 # the foot's lines, for a test to read
         for i, text in enumerate(texts):
-            foot = tk.Label(box, text=text, bg=BG, fg=DIM, font=small, justify="left", wraplength=430)
-            foot.grid(row=row + 8 + i, column=0, columnspan=4, sticky="w", padx=12,
+            foot = tk.Label(whole, text=text, bg=BG, fg=DIM, font=small, justify="left", wraplength=430)
+            foot.grid(row=2 + i, column=0, sticky="w", padx=12,
                       pady=(8 if i == 0 else 2, 10 if i == len(texts) - 1 else 0))
             ui["foot"].append(foot)
         self.load_panel()
@@ -9406,6 +10794,7 @@ class Lens:
         self.panel = t
         ui = self.panel_ui = {}
         self.panel_rows, self.panel_row, self.panel_tabs = [], None, []
+        self.panel_page = "main"        # it opens on its first page, see _panel_page_to
         self.panel_pass = max(1, min(max(1, self.passes), self.panel_pass))
         hints = t.hints = Hints(self, t, own=True)
         x, y = self.inner()
@@ -9445,7 +10834,7 @@ class Lens:
                 p.tie(key, "Same as pass 1", ui["tie"][key], lambda k=key: self._panel_tie(k), PANEL_WHY["tie"])
 
             tie("NRStyle")
-            for nr_key, text, lo, hi, _default in NR_SLIDERS:
+            for nr_key, text, lo, hi, _default in _nr_sliders():
                 p.slider(nr_key, text, lo, hi, lambda v, k=nr_key: self._panel_slider(k, v), RESET_GLYPH, RESET_FONT,
                          PANEL_WHY[nr_key])
                 reset = ui[nr_key + " reset"]
@@ -9477,15 +10866,26 @@ class Lens:
             p.strength(STRENGTH_LABEL, STRENGTH_LEAST, STRENGTH_MOST, self._panel_strength, PANEL_WHY["strength"])
             p.quality("Quality step", lambda parent: self.quality_control(parent, self._panel_quality, drawn=p),
                       PANEL_WHY["quality"])
+            # the model's network, as on the classic panel, see _panel_model_look
+            ui["model"] = tk.StringVar(master=t, value=MODEL_LARGE)
+            p.choice("model", MODEL_LABEL, ui["model"], MODEL_NAMES, self._panel_model,
+                     PANEL_WHY["model"] if _model_two() else MODEL_ONE_WHY)
             # the foot's line as open_panel has it, for a test to read, made
             # and not shown: the keys are the footer, the explanation's part
             # shows PANEL_IDLE while no row is picked, and the line under a
             # slider's explanation says what its reset button does
             texts = (PANEL_KEYS + " " + PANEL_HELP % (PANEL_HELP_F1 if _f1_free() else ""),)
             p.foot(texts)
+            # frame generation, as on the classic panel, which lens_look.panel
+            # lays out right under the Model row, see its FOLLOWS, with each
+            # part's explanation from _panel_framegen_look
+            ui["framegen"] = tk.StringVar(master=t, value=FRAMEGEN)
+            p.choice("framegen", FRAMEGEN_LABEL, ui["framegen"], dict((m, w) for m, w, _y in FRAMEGEN_CHOICES),
+                     self._panel_framegen, FRAMEGEN_WHY)
             p.finish(((("Up", "Down"), "Pick a setting"), (("Left", "Right"), "Change it"), (("Enter",), "Switch"),
                       ((key, "or", "Esc") if key else ("Esc",), "Close")),
                      PANEL_IDLE, PANEL_RESET_WHY, "Pass %d")
+            self._panel_pages_drawn(p)      # the Look row last, and the Look page
             self.load_panel()
             self._panel_laid_out()
         except Exception as e:
@@ -9556,14 +10956,415 @@ class Lens:
         self.panel_shared = _shared_on(own)
         self.panel_scale = _strength_on(own)
         self.panel_strength = _strength_value(own)
+        # and the model's network, as the stack runs it, see _model_code
+        self.panel_model = _model_code(addon)
         try:
             self.panel_ui["shared"].set(self.panel_shared)
             self.panel_ui["scale"].set(self.panel_scale)
             self._panel_strength_look()
         except Exception:
             pass
+        self._panel_model_look()
+        self._panel_look_load(addon)        # the Look page's values, see LOOK_KEYS
+        self._panel_framegen_look()         # frame generation as the lens has it, see FRAMEGEN
         self.panel_show_pass(min(self.panel_pass, max(1, self.passes)))
         self.sync_panel()
+
+    def _panel_model_look(self):
+        """The Model row as the stack's model has it: the network it runs
+        chosen, and where the model holds the large network alone, see
+        _model_two, the small network greyed and the row's explanation MODEL_ONE_WHY in
+        place of MODEL_WHY, so that the row says why. Its explanation follows
+        in a drawn look's own part as well, which reads the same texts."""
+        ui = self.panel_ui
+        if self.panel is None or "model" not in ui:
+            return
+        two = _model_two()
+        try:
+            ui["model"].set(self.panel_model)       # a variable set is no click, so no change, see _panel_model
+            for b in ui.get("model_btns", ()):
+                b.config(state="normal" if two or str(b.cget("value")) == MODEL_LARGE else "disabled")
+            why = MODEL_WHY if two else MODEL_ONE_WHY
+            for w in [ui.get("model_word"), ui.get("model_row")] + list(ui.get("model_btns", ())):
+                if w is not None:
+                    self.panel.hints.add(w, why)
+        except Exception:
+            pass
+
+    def _panel_model(self, how="mouse"):
+        """The Model row's choice, see MODEL_KEY: the key into the add-on's
+        section at once and the fast engine told to read it, the way a value
+        of a pass goes, see _panel_flush, where its reload makes the network
+        again for the new preset while the pictures go on. The small network only where
+        the stack's model holds it, see _panel_model_look. how is mouse or
+        keyboard, for the log."""
+        ui = self.panel_ui
+        if self.panel is None or "model" not in ui or not self.panel_live:
+            return
+        code = str(ui["model"].get())
+        if code not in MODEL_NAMES or code == self.panel_model:
+            return
+        if code != MODEL_LARGE and not _model_two():
+            ui["model"].set(self.panel_model)
+            return
+        self.panel_model = code
+        self.panel_pending.setdefault(ADDON_SECTION, {})[MODEL_KEY] = code
+        self._panel_said(MODEL_KEY, MODEL_NAMES[code], how)
+        if self.panel_timer is None:
+            self._panel_flush()
+
+    # ---- the Look page, see LOOK_KEYS
+
+    def _panel_look_page(self, page, tick, font):
+        """The classic panel's Look page in page, a frame of the panel's own
+        that takes the first page's place while it shows, see _panel_page_to:
+        a row for each value in LOOK_KEYS' order, the rows Adjust the look
+        gates standing in under it, and Back at the foot, in a field a click
+        goes back from. The controls are the panel_ui keys a drawn look's page
+        makes too, see lens_look.panel.Panel.look_slider and the methods beside
+        it, and _panel_look_load sets them from the file."""
+        ui, hints = self.panel_ui, self.panel.hints
+        r = 0
+        for key in LOOK_KEYS:
+            text, why = LOOK_LABELS[key], LOOK_WHY[key]
+            pad = 32 if key in LOOK_GATED else 12
+            top = 8 if r == 0 else 4
+            if key in LOOK_SWITCHES:
+                ui[key] = tk.BooleanVar(master=page, value=bool(LOOK_DEFAULTS[key]))
+                box = tk.Checkbutton(page, text=text, variable=ui[key], command=lambda k=key: self._panel_look_switch(k),
+                                     **tick)
+                box.grid(row=r, column=0, columnspan=3, sticky="w", padx=(pad - 4, 12), pady=(top, 0))
+                ui[key + " box"] = box
+                hints.add(box, why)
+                r += 1
+                continue
+            word = ui[key + " word"] = tk.Label(page, text=text, bg=BG, fg=FG, font=font)
+            word.grid(row=r, column=0, sticky="w", padx=(pad, 10), pady=(top, 0))
+            if key in LOOK_CHOICES:
+                strip = ui[key + " row"] = tk.Frame(page, bg=BG)
+                strip.grid(row=r, column=1, columnspan=2, sticky="w", pady=(top, 0))
+                ui[key] = tk.StringVar(master=page, value=LOOK_DEFAULTS[key])
+                ui[key + " btns"] = []
+                for code, name in LOOK_CHOICES[key].items():
+                    b = tk.Radiobutton(strip, text=name, variable=ui[key], value=code,
+                                       command=lambda k=key: self._panel_look_choice(k), **tick)
+                    b.pack(side="left", padx=(0, 8))
+                    ui[key + " btns"].append(b)
+                for wdg in [word, strip] + ui[key + " btns"]:
+                    hints.add(wdg, why)
+            else:
+                lo, hi, _default, step = LOOK_RANGES[key]
+                scale = tk.Scale(page, from_=lo, to=hi, resolution=step, orient="horizontal", showvalue=False,
+                                 length=240, width=14, sliderlength=22, bg=DIM, troughcolor=FIELD,
+                                 activebackground=ACCENT, highlightthickness=0, bd=0, sliderrelief="flat",
+                                 command=lambda v, k=key: self._panel_look_slider(k, v))
+                scale.grid(row=r, column=1, sticky="w", pady=(top + 2, 0))
+                # the number with its unit, see _look_number
+                shown = tk.Label(page, text="", bg=BG, fg=FG, font=("Consolas", 10), width=10, anchor="e")
+                shown.grid(row=r, column=2, sticky="e", padx=(8, 12), pady=(top, 0))
+                ui[key] = (scale, shown)
+                for wdg in (word, scale, shown):
+                    hints.add(wdg, why)
+            r += 1
+        back = ui["look_back"] = tk.Label(page, text=LOOK_BACK_ARROW + "  " + LOOK_BACK_LABEL, bg=FIELD, fg=FG,
+                                          font=font, padx=8, pady=2)
+        back.grid(row=r, column=0, columnspan=3, sticky="w", padx=12, pady=(10, 2))
+        back.bind("<Button-1>", lambda e: self._panel_page_to("main", "click"))
+        back.bind("<Enter>", lambda e: back.config(bg=HOVER))
+        back.bind("<Leave>", lambda e: back.config(bg=FIELD))
+        hints.add(back, LOOK_WHY["back"])
+
+    def _panel_pages_drawn(self, p):
+        """The Look row at the foot of a drawn look's first page and the Look
+        page, made by lens_look.panel once the look's own rows are laid out,
+        with the words, variables, commands and panel_ui keys open_panel and
+        _panel_look_page give them in the classic look, see Panel.pages. The
+        page's head says how to leave it, and its key footer has Escape go
+        back and the panel's key close it."""
+        t, ui = self.panel, self.panel_ui
+        key = self.key_for("nr_panel")
+        p.page_row(LOOK_LABEL, lambda: self._panel_page_to("look", "click"), PANEL_WHY["look"])
+        for k in LOOK_KEYS:
+            gated = k in LOOK_GATED
+            if k in LOOK_SWITCHES:
+                ui[k] = tk.BooleanVar(master=t, value=bool(LOOK_DEFAULTS[k]))
+                p.look_switch(k, LOOK_LABELS[k], ui[k], lambda k=k: self._panel_look_switch(k), LOOK_WHY[k], gated)
+            elif k in LOOK_CHOICES:
+                ui[k] = tk.StringVar(master=t, value=LOOK_DEFAULTS[k])
+                p.look_choice(k, LOOK_LABELS[k], ui[k], LOOK_CHOICES[k], lambda k=k: self._panel_look_choice(k),
+                              LOOK_WHY[k], gated)
+            else:
+                lo, hi, default, step = LOOK_RANGES[k]
+                p.look_slider(k, LOOK_LABELS[k], lo, hi, step, default,
+                              lambda v, k=k: self._panel_look_slider(k, v), LOOK_WHY[k], gated)
+        p.back_row(LOOK_BACK_LABEL, lambda: self._panel_page_to("main", "click"), LOOK_WHY["back"])
+        keys = [(("Up", "Down"), "Pick a setting"), (("Left", "Right"), "Change it"), (("Enter",), "Switch"),
+                (("Esc",), "Back")]
+        if key:
+            keys.append(((key,), "Close"))
+        p.pages(LOOK_LABEL, LOOK_LINE % key if key else LOOK_LINE_ESC, tuple(keys))
+
+    def _panel_page(self):
+        """The page the panel shows, main for its first and look for the Look
+        page, see _panel_page_to. main with no panel open."""
+        return getattr(self, "panel_page", "main") if self.panel is not None else "main"
+
+    def _panel_page_to(self, page, how=None):
+        """Show the panel's first page, main, or its Look page, look, see
+        LOOK_KEYS: that page's rows in place of the other's, the head's title
+        and line for it, and the arrow keys' walk with them, lit on the page's
+        first row on the way to the Look page and on the Look row on the way
+        back. In a drawn look the look shows the page, with its own key footer,
+        see lens_look.panel.Panel.page. Escape on the Look page, its Back row
+        and the Look row ask for it. how is the way it was asked for, for the
+        log."""
+        t, ui = self.panel, self.panel_ui
+        if t is None or page not in ("main", "look") or "look_word" not in ui or page == self._panel_page():
+            return
+        self.panel_hold = None
+        look = getattr(t, "look_panel", None)
+        try:
+            if look is not None:
+                look.page(page)
+            else:
+                main, other = ui["main_page"], ui["look_page"]
+                words = ui.setdefault("head_words", (ui["title"].cget("text"), ui["hint"].cget("text")))
+                if page == "look":
+                    # as wide as the first page, so the panel keeps its width
+                    ui["whole"].grid_columnconfigure(0, minsize=max(main.winfo_width(), main.winfo_reqwidth()))
+                    main.grid_remove()
+                    other.grid()
+                    key = self.key_for("nr_panel")
+                    ui["title"].config(text="  " + LOOK_LABEL)
+                    ui["hint"].config(text=LOOK_LINE % key if key else LOOK_LINE_ESC)
+                else:
+                    other.grid_remove()
+                    main.grid()
+                    ui["title"].config(text=words[0])
+                    ui["hint"].config(text=words[1])
+        except Exception:
+            pass
+        self.panel_page = page
+        self.panel_row = None
+        if page == "look":
+            self.panel_rows = self._panel_look_walk()
+            lit = 0
+        else:
+            self.panel_rows = []
+            self.panel_show_pass(self.panel_pass)
+            pairs = [tuple(r[:2]) for r in self.panel_rows]
+            lit = pairs.index(("page", "look")) if ("page", "look") in pairs else None
+        self.panel_light(lit)
+        self._panel_keyed()
+        self._panel_fit()
+        if how:
+            self.act("NR settings %s (%s)" % ("Look page" if page == "look" else "first page", how))
+
+    def _panel_look_walk(self):
+        """The Look page's rows for the arrow keys, see panel_key, in the order
+        they stand, each (kind, its key, the widget the keys light): a choice
+        and a slider by its label, a switch by its check button, and Back."""
+        ui, rows = self.panel_ui, []
+        for key in LOOK_KEYS:
+            if key in LOOK_SWITCHES:
+                rows.append(("look_switch", key, ui[key + " box"]))
+            elif key in LOOK_CHOICES:
+                rows.append(("look_choice", key, ui[key + " word"]))
+            else:
+                rows.append(("look_slider", key, ui[key + " word"]))
+        rows.append(("page", "main", ui["look_back"]))
+        return rows
+
+    def _panel_look_load(self, addon=None):
+        """The Look page's controls and the Look row's words as the add-on's
+        section has the values, as the fast engine reads them, see
+        _look_values, which is not a change to write back: when the panel
+        opens, when a new engine has started, and when a profile has been
+        loaded in place, see load_panel. addon is the section as
+        _read_addon_section gives it, read here when not given."""
+        self.panel_look = _look_values(addon)
+        ui = self.panel_ui
+        if self.panel is None or "look_word" not in ui:
+            return
+        live, self.panel_live = self.panel_live, False
+        try:
+            for key in LOOK_KEYS:
+                v = self.panel_look[key]
+                if key in LOOK_SWITCHES or key in LOOK_CHOICES:
+                    ui[key].set(v)              # a variable set is no click, so no change
+                    continue
+                scale, shown = ui[key]
+                scale.config(state="normal")    # a greyed slider takes no value
+                scale.set(v)
+                shown.config(text=_look_number(key, v))
+                self.panel_look_pos[key] = v
+        except Exception:
+            pass
+        finally:
+            self.panel_live = live
+        self._panel_look_show()
+
+    def _panel_look_show(self):
+        """The Look page's rows live or greyed, the rows Adjust the look gates
+        greyed while it is off and the two Stabilize alone uses while it is Off
+        as well, the numbers greyed with their sliders, and the words beside
+        the Look row on the first page, see _look_state."""
+        ui = self.panel_ui
+        if self.panel is None or "look_word" not in ui:
+            return
+        v = self.panel_look
+        try:
+            for key in LOOK_KEYS:
+                live = key not in LOOK_GATED or (bool(v[LOOK_MODE_KEY]) and (
+                    key not in LOOK_UNDER_STABILIZE or v[LOOK_STABILIZE_KEY] != "0"))
+                state = "normal" if live else "disabled"
+                if key in LOOK_SWITCHES:
+                    ui[key + " box"].config(state=state)
+                elif key in LOOK_CHOICES:
+                    for b in ui[key + " btns"]:
+                        b.config(state=state)
+                    strip = ui.get(key + " row")
+                    if hasattr(strip, "refresh"):
+                        strip.refresh()         # a drawn look's strip, its edge greyed with its choices
+                else:
+                    scale, shown = ui[key]
+                    scale.config(state=state)
+                    shown.config(fg=FG if live else DIM)
+            ui["look_state"].config(text=LOOK_STATE_WORDS[_look_state(v)])
+        except Exception:
+            pass
+
+    def _panel_look_set(self, key, value, how="mouse"):
+        """A value of the Look page changed on the panel: into the add-on's
+        section at once and the fast engine told to read it, the way a value
+        of a pass goes, see _panel_flush, which the engine takes while the
+        picture goes on. The rows it greys or makes live and the Look row's
+        words follow, see _panel_look_show. how is mouse or keyboard, for the
+        log, which gets one line once the value has held still, see
+        _panel_said."""
+        if self.panel is None or key not in LOOK_KEYS or self.panel_look.get(key) == value:
+            return
+        self.panel_look[key] = value
+        text = _look_text(key, value)
+        self.panel_pending.setdefault(ADDON_SECTION, {})[key] = text
+        self._panel_said(key, text, how)
+        if self.panel_timer is None:
+            self._panel_flush()
+        self._panel_look_show()
+
+    def _panel_look_switch(self, key, how="mouse"):
+        """A switch of the Look page, Adjust the look or Stabilize detail, by
+        its check button's own call or by Enter, see panel_key."""
+        if self.panel is None or key not in self.panel_ui or not self.panel_live:
+            return
+        self._panel_look_set(key, bool(self.panel_ui[key].get()), how)
+
+    def _panel_look_choice(self, key, how="mouse"):
+        """A choice of the Look page, Detail stability or Stabilize, by its
+        radio button's own call or by Left and Right, see panel_key."""
+        if self.panel is None or key not in self.panel_ui or not self.panel_live:
+            return
+        code = str(self.panel_ui[key].get())
+        if code in LOOK_CHOICES[key]:
+            self._panel_look_set(key, code, how)
+
+    def _panel_look_slider(self, key, value):
+        """A slider's own call on the Look page, which Tk also makes when the
+        panel itself has put the slider somewhere, and a drawn look's slider
+        once it is first shown: only a place it was not put at is a change,
+        as for a pass's slider, see _panel_slider."""
+        try:
+            v = float(value)
+        except ValueError:
+            return
+        if not self.panel_live or self.panel is None or abs(v - self.panel_look_pos.get(key, v)) < 0.004:
+            return
+        self._panel_look_move(key, v, "mouse")
+
+    def _panel_look_move(self, key, v, how):
+        """Put a slider of the Look page at v, held to its range and its step,
+        and set its value, see _panel_look_set, for the arrow keys and the
+        slider's own call alike. The slider's own call that follows a move by
+        the keys is then no second change."""
+        lo, hi, _default, step = LOOK_RANGES[key]
+        v = round(max(lo, min(hi, round(float(v) / step) * step)), 2)
+        scale, shown = self.panel_ui[key]
+        self.panel_look_pos[key] = v
+        if abs(float(scale.get()) - v) >= 0.004:
+            scale.set(v)
+        shown.config(text=_look_number(key, v))
+        self._panel_look_set(key, v, how)
+
+    # ---- frame generation, see FRAMEGEN
+
+    def _framegen_live(self):
+        """Whether the panel's Frame generation row takes a change: in a
+        fullscreen lens on the fast engine, as long as the engine that runs
+        has not said that it cannot use the card's motion estimator, see
+        framegen_refused."""
+        return bool(self.fullscreen and self.engine == "fast" and getattr(self, "framegen_refused", None) is None)
+
+    def _panel_framegen_look(self):
+        """The Frame generation row as the lens has it, the value the
+        Fullscreen page of Settings shows as well, see FRAMEGEN. Live, the row
+        is explained by FRAMEGEN_WHY and each choice by its own words from
+        FRAMEGEN_CHOICES, as on that page. Where the engine cannot make the
+        pictures, see _framegen_live, its choices are greyed and every part of
+        it is explained by FRAMEGEN_NONE_WHY. load_panel and sync_panel call
+        it, so a change in Settings and the engine's word show within a
+        second, and the row's parts are set again only where it turned greyed
+        or live. A drawn look explains the choice under the pointer by its own
+        words, see lens_look.panel.Panel.picked, and the row again where it is
+        lit as it turns."""
+        ui = self.panel_ui
+        if self.panel is None or "framegen" not in ui:
+            return
+        live = self._framegen_live()
+        try:
+            if str(ui["framegen"].get()) != FRAMEGEN:
+                ui["framegen"].set(FRAMEGEN)        # a variable set is no click, so no change, see _panel_framegen
+            if ui.get("framegen_live") == live:
+                return
+            turned = "framegen_live" in ui
+            ui["framegen_live"] = live
+            hints = self.panel.hints
+            look = getattr(self.panel, "look_panel", None)
+            for part in (ui.get("framegen_word"), ui.get("framegen_row")):
+                if part is not None:
+                    hints.add(part, FRAMEGEN_WHY if live else FRAMEGEN_NONE_WHY)
+            for b, (_mode, words, own) in zip(ui.get("framegen_btns", ()), FRAMEGEN_CHOICES):
+                b.config(state="normal" if live else "disabled")
+                hints.add(b, own if live else FRAMEGEN_NONE_WHY)
+                if look is not None:
+                    look.titles[b] = words
+            strip = ui.get("framegen_row")
+            if hasattr(strip, "refresh"):
+                strip.refresh()         # a drawn look's strip, its edge greyed with its choices
+            n = self.panel_row
+            if turned and n is not None and n < len(self.panel_rows) and self.panel_rows[n][0] == "framegen":
+                self.panel_light(n)     # the lit row's explanation as it is now
+        except Exception:
+            pass
+
+    def _panel_framegen(self, how="mouse"):
+        """The Frame generation row's choice, which does what Save does with
+        the Fullscreen page's own: the ini at once, see _set_framegen, and the
+        fast engine told, "framegen WORD", which it takes while the picture
+        goes on. Nothing while the row is greyed, see _framegen_live. how is
+        mouse or keyboard, for the log."""
+        ui = self.panel_ui
+        if self.panel is None or "framegen" not in ui or not self.panel_live:
+            return
+        mode = str(ui["framegen"].get())
+        if mode not in FRAMEGEN_MODES or mode == FRAMEGEN:
+            return
+        if not self._framegen_live():
+            ui["framegen"].set(FRAMEGEN)
+            return
+        _set_framegen(mode)
+        self._panel_said("framegen", FRAMEGEN, how)
+        if self.engine == "fast":
+            self.tell_presenter("framegen " + FRAMEGEN)     # the running engine takes it live
 
     def panel_show_pass(self, n, how=None):
         """Show pass n's values on the panel's controls, and make them set that
@@ -9610,7 +11411,7 @@ class Lens:
                 b.config(state="normal" if own else "disabled")
             # the sliders, each greyed where the pass runs at the first pass's value
             self.panel_pos = {}
-            for key, _text, lo, hi, _default in NR_SLIDERS:
+            for key, _text, lo, hi, _default in _nr_sliders():
                 text, own = st[key]
                 try:
                     v = float(text)
@@ -9674,26 +11475,40 @@ class Lens:
                 # the strength's slider is on the walk while it shows, see _panel_strength_look
                 rows.append(("strength", "strength", ui["strength_word"]))
             rows.append(("quality", "quality", ui["quality_word"]))
+            rows.append(("model", "model", ui["model_word"]))
             if look is not None:
                 # a drawn look's rows, the same ones in the order of its
                 # drawing, see lens_look.walk
                 rows = [(k, w_, lens_look.walk.lit_widget(ui, key))
                         for k, w_, key in lens_look.walk.panel_walk(LOOK, n, self.panel_scale)]
-            before = [tuple(r[:2]) for r in self.panel_rows]
-            self.panel_rows = rows
-            pairs = [(k, w_) for k, w_, _lit in rows]
-            if was is not None and was not in pairs and was[0] == "tie":
-                was = {"NRStyle": ("choice", "style"), "NRAutoMask": ("switch", "mask")}.get(was[1], ("slider", was[1]))
-            elif was == ("strength", "strength") and was not in pairs:
-                was = ("switch", "scale_change")     # the slider went with its switch, which stays lit
-            if was is not None and was not in pairs and look is not None:
-                # on a drawn look the row below the one that went
-                was = lens_look.walk.follow_on(was, before, pairs)
-            if was is not None:
-                self.panel_row = pairs.index(was) if was in pairs else pairs.index(("passes", "passes"))
-            elif self.panel_row is not None:
-                self.panel_row = None
-            self.panel_light(self.panel_row)
+            # right under the Model row in every look, frame generation, where
+            # the panel has its row, see _panel_framegen
+            if ui.get("framegen_word") is not None:
+                at = next((i + 1 for i, r in enumerate(rows) if tuple(r[:2]) == ("model", "model")), len(rows))
+                rows.insert(at, ("framegen", "framegen", ui["framegen_word"]))
+            # last in every look, the row that opens the Look page, where the
+            # panel has one, see _panel_page_to
+            if ui.get("look_word") is not None:
+                rows.append(("page", "look", ui["look_word"]))
+            if self._panel_page() != "look":
+                before = [tuple(r[:2]) for r in self.panel_rows]
+                self.panel_rows = rows
+                pairs = [(k, w_) for k, w_, _lit in rows]
+                if was is not None and was not in pairs and was[0] == "tie":
+                    was = {"NRStyle": ("choice", "style"), "NRAutoMask": ("switch", "mask")}.get(was[1],
+                                                                                                ("slider", was[1]))
+                elif was == ("strength", "strength") and was not in pairs:
+                    was = ("switch", "scale_change")     # the slider went with its switch, which stays lit
+                if was is not None and was not in pairs and look is not None:
+                    # on a drawn look the row below the one that went
+                    was = lens_look.walk.follow_on(was, before, pairs)
+                if was is not None:
+                    self.panel_row = pairs.index(was) if was in pairs else pairs.index(("passes", "passes"))
+                elif self.panel_row is not None:
+                    self.panel_row = None
+                self.panel_light(self.panel_row)
+            # while the Look page shows, the arrow keys keep its rows, and the
+            # first page's wait until it comes back, see _panel_page_to
             self._panel_fit()
         except Exception:
             pass
@@ -9750,6 +11565,10 @@ class Lens:
             ui["auto"].set(bool(AUTO_PROFILE))
             if "free" in ui:
                 ui["free"].set(bool(FREE_MOUSE))
+            # frame generation as the lens has it, which the Fullscreen page of
+            # Settings changes as well, greyed once the engine has said it
+            # cannot make the pictures, see _panel_framegen_look
+            self._panel_framegen_look()
             # the note beside the switch comes and goes with the key being in
             # effect, and the panel's window takes the size its contents ask
             # for then. A new pass count shows the tabs anew, the switch's row
@@ -10081,13 +11900,19 @@ class Lens:
         """An arrow key, Enter, Escape or F1 while the panel is open over a
         fullscreen lens, see nav_key. Up and Down move from setting to setting,
         which the panel shows in the accent colour, Left and Right change the
-        style, a slider, the pass count or the quality step, load the profile
+        style, a slider, the pass count, the quality step or the model's
+        network, load the profile
         before or after the one in use, or show another pass's values, Enter
-        switches a switch, a tie included, or opens the profile list, F1 shows
+        switches a switch, a tie included, opens the profile list, or opens
+        the Look page from its row and goes back from its Back row, F1 shows
         what the setting the arrow keys are on does, below it, or with none
         picked what the one under the pointer does, as in Settings, see Hints,
-        and Escape closes the panel. A slider moves a hundredth a press, and
-        further with each repeat of a key held down, see _panel_step."""
+        and Escape closes the panel, or on the Look page goes back to the
+        first page. On the Look page Left and Right change its choices and
+        sliders as well, see LOOK_KEYS. A slider moves a hundredth a press, the
+        stabiliser's time a millisecond, and further with each repeat of a key
+        held down, see _panel_step. Left and Right choose frame generation's
+        mode on its row as well, see _panel_framegen."""
         rows = self.panel_rows
         if self.panel is None or not rows:
             return
@@ -10098,6 +11923,9 @@ class Lens:
         except Exception:
             pass
         if name == "escape":
+            if self._panel_page() == "look":
+                self._panel_page_to("main", "Escape")      # back to the first page, which Escape closes
+                return
             self.close_panel("Escape")
             return
         if name == "help":
@@ -10151,9 +11979,16 @@ class Lens:
                     return              # the pass runs at the first pass's auto mask
                 ui["mask"].set(not ui["mask"].get())
                 self.panel_set("NRAutoMask", "1" if ui["mask"].get() else "0", "keyboard")
+            elif kind == "page":
+                self._panel_page_to(what, "keyboard")      # the Look page, or back from it
+            elif kind == "look_switch":
+                if str(ui[what + " box"].cget("state")) == "disabled":
+                    return              # greyed while Adjust the look, or Stabilize, is off
+                ui[what].set(not ui[what].get())
+                self._panel_look_switch(what, "keyboard")
             return
         d = -1 if name == "left" else 1
-        if kind not in ("slider", "strength"):
+        if kind not in ("slider", "strength", "look_slider"):
             self.panel_hold = None
         if kind == "profile":
             # the profile before or after the one in use, by name, loaded. A load
@@ -10197,6 +12032,41 @@ class Lens:
             step = max(0, min(len(FAST_QUALITY_NAMES) - 1, self.quality_now() + d))
             if step != self.quality_now():
                 self.set_quality(step, "panel")
+        elif kind == "model":
+            # Large on the left, Small on the right, where the stack's model has it
+            codes = list(MODEL_NAMES)
+            now = str(ui["model"].get())
+            i = max(0, min(len(codes) - 1, (codes.index(now) if now in codes else 0) + d))
+            if codes[i] != now and (codes[i] == MODEL_LARGE or _model_two()):
+                ui["model"].set(codes[i])
+                self._panel_model("keyboard")
+        elif kind == "look_choice":
+            if str(ui[what + " btns"][0].cget("state")) == "disabled":
+                return                  # greyed while Adjust the look is off
+            codes = list(LOOK_CHOICES[what])
+            now = str(ui[what].get())
+            i = max(0, min(len(codes) - 1, (codes.index(now) if now in codes else 0) + d))
+            if codes[i] != now:
+                ui[what].set(codes[i])
+                self._panel_look_choice(what, "keyboard")
+        elif kind == "look_slider":
+            # a hundredth a press, or a millisecond for the stabiliser's time, and further held
+            scale = ui[what][0]
+            if str(scale.cget("state")) == "disabled":
+                return                  # greyed while Adjust the look, or Stabilize, is off
+            step = LOOK_RANGES[what][3] / 0.01
+            self._panel_look_move(what, float(scale.get()) + self._panel_step(what, d) * step * d, "keyboard")
+        elif kind == "framegen":
+            # Off, Ahead and Between from left to right, as Settings lists
+            # them, and nothing while the row is greyed, see _framegen_live
+            if not self._framegen_live():
+                return
+            now = str(ui["framegen"].get())
+            i = FRAMEGEN_MODES.index(now) if now in FRAMEGEN_MODES else 0
+            i = max(0, min(len(FRAMEGEN_MODES) - 1, i + d))
+            if FRAMEGEN_MODES[i] != now:
+                ui["framegen"].set(FRAMEGEN_MODES[i])
+                self._panel_framegen("keyboard")
 
     def _panel_step(self, key, d):
         """How far Left or Right moves this slider of the pass shown, d the
@@ -10889,6 +12759,19 @@ class Lens:
         # measured is in README.md and docs/NOTES.md.
         pic = page("Picture")
 
+        # the model's network, the same setting as the NR settings panel's Model
+        # row, see MODEL_KEY. The small one is greyed, with its own explanation,
+        # where the stack's model holds the large network alone
+        two = _model_two()
+        model_why = MODEL_SETTINGS_WHY if two else MODEL_ONE_WHY
+        heading(pic, MODEL_LABEL, model_why)
+        model_opened = _model_code()
+        model_var = tk.StringVar(master=t, value=model_opened)
+        for code, name in MODEL_NAMES.items():
+            b = radio(pic, name, model_var, code, model_why)
+            if code != MODEL_LARGE and not two:
+                b.config(state="disabled")
+
         cs_what = ("The Cost Scaler runs the neural model on a smaller copy of the picture and blends the model's "
                    "change back onto the full-size picture, so the card has less work to do.")
         heading(pic, "The Cost Scaler",
@@ -10939,6 +12822,24 @@ class Lens:
             radio(pic, "Full, the sharpest on fast motion", md_var, "full", md_why)
             radio(pic, "Half", md_var, "half", md_why)
             radio(pic, "Quarter, the least power", md_var, "quarter", md_why)
+
+        # the Home menu add-on, which the ReShade engine runs, see HOME_ADDON.
+        # A stack whose add-on is neither build has the two greyed, and says why
+        addon_other = False
+        if STACK_DIR:
+            try:
+                import neural_stack
+                addon_other = neural_stack.addon_in_place(STACK_DIR) == "other"
+            except Exception:
+                addon_other = False
+        heading(pic, HOME_ADDON_LABEL, HOME_ADDON_WHY, beside=HOME_ADDON_BESIDE)
+        if addon_other:
+            line(pic, HOME_ADDON_OTHER, HOME_ADDON_OTHER_WHY, WARN)
+        addon_var = tk.StringVar(master=t, value=HOME_ADDON)
+        for build, label, why in HOME_ADDON_CHOICES:
+            b = radio(pic, label, addon_var, build, why)
+            if addon_other:
+                b.config(state="disabled")
 
         # the warning of check_hdr, in the warning colour, where it applies as
         # the dialog opens, since the page is built once
@@ -11030,6 +12931,11 @@ class Lens:
         # panel, see FREE_MOUSE
         free_on = tk.BooleanVar(value=FREE_MOUSE)
         switch(ful, FREE_MOUSE_LABEL, free_on, FREE_MOUSE_WHY)
+        # frame generation, the fast engine's own, see FRAMEGEN
+        heading(ful, FRAMEGEN_LABEL, FRAMEGEN_WHY)
+        fg_var = tk.StringVar(master=t, value=FRAMEGEN)
+        for mode, label, why in FRAMEGEN_CHOICES:
+            radio(ful, label, fg_var, mode, why)
 
         heading(ful, "Fullscreen engine",
                 "Which renderer draws a fullscreen lens. A windowed lens always runs on the ReShade engine.",
@@ -11253,15 +13159,25 @@ class Lens:
                     parts.append("%s %s" % (words[key], v))
                 if parts:
                     own_rows.append(("Pass %d" % n, ", ".join(parts)))
+            model = _profile_model(p)
             nr_rows = [("Neural Rendering", val("NeuralUplift", onoff)),
+                       (MODEL_LABEL, MODEL_NAMES[model] if model else "not saved in this profile"),
                        ("NR style", val("NRStyle", {"0": "Default", "1": "Natural", "2": "Cinematic"})),
                        ("Overall intensity", val("NRIntensity")),
                        ("NR passes", val("NRPasses")),
                        ("Chained temporal history", val("NRChainedHistory", onoff)),
-                       ("Codec", val("NRCodecMode", {"0": "Classic", "1": "Anchored"})),
+                       ("Codec", val("NRCodecMode", {"0": "Classic", "1": "Anchored", "2": "Auto", "3": "Display"})),
                        ("Local tone", val("NRLocalTone")),
                        ("Auto mask", val("NRAutoMask", onoff)),
-                       ("Upscaling", val("NREnableUpscaling", onoff))] + own_rows
+                       # the fast engine's Look stage, its Detail stability, Keep blacks and whether the
+                       # Look page's switch is on, with the values that differ from their defaults, see
+                       # LOOK_KEYS
+                       (LOOK_LABELS[LOOK_STABILITY_KEY], _look_word(a, LOOK_STABILITY_KEY)),
+                       (LOOK_LABELS[LOOK_KEEP_KEY], _look_word(a, LOOK_KEEP_KEY)),
+                       (LOOK_LABEL, _look_summary(a)),
+                       # the build of the Home menu add-on the profile was saved under, 5.2.1 for one
+                       # from before the choice, see _profile_addon
+                       (HOME_ADDON_LABEL, HOME_ADDON_BUILDS[_home_addon_named(p.get("addon_build"))])] + own_rows
             return lens_rows, nr_rows
 
         def show_facts(name):
@@ -11409,8 +13325,8 @@ class Lens:
             "quality_down": "Moves the fast engine's quality step one step down, toward Lowest power.",
             "split": "Puts a divider across the lens that can be dragged, with Neural Rendering on its left "
                      "and the untouched picture on its right.",
-            "minimize": "Puts the lens away on the taskbar, where it pauses and costs the card nothing, and "
-                        "brings it back.",
+            "minimize": "Puts the lens away on the taskbar or in the tray, where it pauses and costs the card "
+                        "nothing, and brings it back.",
             "fullscreen": "Fills the monitor the lens is on, and goes back to the window it was. The picture "
                           "restarts each way. A lens attached to a window stays as it is.",
             "hide_bar": "Folds the title bar and the frame away, leaving a small tab on the picture's top "
@@ -11558,6 +13474,11 @@ class Lens:
         # ================================================================ program
         prog = page("Program")
 
+        # where minimising puts the lens, which counts from the next minimise
+        heading(prog, "The tray", TRAY_WHY)
+        tray_on = tk.BooleanVar(value=TRAY_MINIMISE)
+        switch(prog, TRAY_LABEL, tray_on, TRAY_WHY)
+
         heading(prog, "Updates", "Whether the lens looks for a newer release than this, %s. With both "
                                  "switches off the lens never contacts anything." % __version__)
         upd = tk.BooleanVar(value=self.check_updates_on)
@@ -11596,6 +13517,12 @@ class Lens:
         folder(prog, "The lens's state and logs", data, "Where should the lens keep its state and logs?",
                "Where the lens keeps its window state and archived logs. Takes effect at the next launch, so "
                "a change restarts the lens.")
+
+        # the attribution NVIDIA's licence for its model asks for where a program
+        # names itself, on this page, which says what the program is and has its
+        # version at the foot, see NVIDIA_CREDIT
+        heading(prog, NVIDIA_CREDIT_HEADING, NVIDIA_CREDIT_WHY)
+        line(prog, NVIDIA_CREDIT, NVIDIA_CREDIT_WHY, FG)
 
         # every page ends a little above its bottom edge, the tallest one too
         for p in (pic, pwr, ful, bar, prof, hk, sh, look, prog):
@@ -11694,6 +13621,13 @@ class Lens:
                 self.motion_detail = md_var.get()
                 _save_ini("motion_detail", None if self.motion_detail == "full" else self.motion_detail)
                 said("motion_detail", self.motion_detail)
+            # the same rule for the model's network, which the NR settings panel
+            # and a profile change too. The fast engine takes it at once, and a
+            # picture on the ReShade engine restarts for it below, see set_model
+            model_changed = (model_var.get() != model_opened
+                             and self.set_model(model_var.get(), restart=False))
+            if model_changed:
+                said("model", MODEL_NAMES[model_var.get()])
             # the engine a fullscreen lens asks for. The picture restarts below only
             # when the lens is fullscreen and the new choice gives it another engine
             # than the one running, which a fast engine that has failed does not
@@ -11731,6 +13665,16 @@ class Lens:
                     else:
                         self._panel_front_back()
                     self._panel_line()
+            if fg_var.get() != FRAMEGEN:
+                _set_framegen(fg_var.get())
+                said("framegen", FRAMEGEN)
+                if self.engine == "fast":
+                    self.tell_presenter("framegen " + FRAMEGEN)     # the running engine takes it live
+            # the Home menu add-on, put to work once the dialog is gone, see the foot
+            addon_was, addon_changed = HOME_ADDON, addon_var.get() != HOME_ADDON
+            if addon_changed:
+                _set_home_addon(addon_var.get())
+                said("addon", HOME_ADDON)
             if bool(behind_on.get()) != FS_BEHIND_WARN:
                 _set_fs_behind_warn(behind_on.get())
                 said("fs_behind_warn", int(FS_BEHIND_WARN))
@@ -11770,6 +13714,10 @@ class Lens:
                 if AUTO_PROFILE:
                     self.auto_profile_on()      # this dialog is in front, so the program that comes next
                 self.sync_panel()
+            # from the next minimise on. A lens in the tray now comes back from it as it went
+            if bool(tray_on.get()) != TRAY_MINIMISE:
+                _set_tray_minimise(tray_on.get())
+                said("tray_minimise", int(TRAY_MINIMISE))
             if bool(upd.get()) != self.check_updates_on:
                 self.check_updates_on = bool(upd.get())
                 _save_ini("check_updates", "1" if self.check_updates_on else None)
@@ -11783,8 +13731,9 @@ class Lens:
             self.update_info()              # the profile's name on the bar follows the settings
             t.destroy()
             # the fast engine has no estimator, so under it a new detail waits for
-            # the next stack presenter, which reads it as it starts
-            if (engine_changed or detail_changed and self.engine != "fast") and not restart:
+            # the next stack presenter, which reads it as it starts. The fast
+            # engine took a new model's network with its reload, see set_model
+            if (engine_changed or (detail_changed or model_changed) and self.engine != "fast") and not restart:
                 # the estimator reads its detail when the presenter starts, and the engine is
                 # chosen then. A minimised lens comes back first, as it does for a profile, so
                 # the new picture has its chrome
@@ -11793,6 +13742,8 @@ class Lens:
                 if engine_changed:
                     self.restart_presenter("changing to the %s engine ..."
                                            % ("fast" if self.engine_wanted() == "fast" else "ReShade"))
+                elif model_changed:
+                    self.restart_presenter(_model_note(model_var.get()))
                 else:
                     self.restart_presenter("restarting with %s motion detail ..." % self.motion_detail)
             if restart:
@@ -11802,6 +13753,10 @@ class Lens:
                 if not self.fullscreen:
                     self.save_state()
                 self.quit(restart=True, how="Settings")
+            elif addon_changed:
+                # the Home menu add-on, which a restart above has put in place already
+                # where its zip was in the stack, and then this does nothing more
+                self.home_addon_go(addon_was)
 
         # the one line that says how an explanation comes up, on every page. The
         # version sits beside Save on every page too: a bug report is far more
@@ -11946,6 +13901,14 @@ class Lens:
         self.restart = restart
         self.closing = True
         self.popup.close()
+        # the icon in the tray goes with the lens, before anything else of it
+        # can fail, see Tray. The listener's thread takes it away as well as it
+        # ends, and so does main, for an end that does not come through here
+        try:
+            if self.commands is not None:
+                self.commands.tray.remove()
+        except Exception:
+            pass
         try:
             self.hotkeys.stop()
             if self.commands is not None:
@@ -12033,7 +13996,7 @@ def _offer_setup(reason):
         reason + "\n\nSet up the Neural Rendering stack now? About %d MB is downloaded from "
         "the projects that publish each part, into the lens's own folder, and registered for "
         "your user only, with no administrator prompt. It takes a few minutes."
-        % neural_stack.DOWNLOAD_MB)
+        % neural_stack.download_mb())       # the card's own, with NVIDIA's package on an RTX 50 card
     where = False
     if want:
         where = neural_stack.wizard(root, look=LOOK)
@@ -12211,6 +14174,7 @@ def _main():
     ch -= ch % 2
     passes = max(1, min(_pass_limit(), passes))
     archive_logs()
+    _trim_addon_journal()
     root = tk.Tk()
     _set_icon(root)
     root.withdraw()
@@ -12392,6 +14356,7 @@ def main():
     try:
         _main()
     finally:
+        _trays_gone()               # an icon in the tray never outlives the lens, see Tray
         if _ALIVE is not None:
             _k32.CloseHandle(_ALIVE)
             _ALIVE = None

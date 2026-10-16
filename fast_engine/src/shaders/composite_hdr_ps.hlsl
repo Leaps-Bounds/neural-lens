@@ -59,7 +59,7 @@ cbuffer Constants : register(b0) {
   float g_white;    // the SDR white level in units of 80 nits, 1 or more
   uint g_above;     // what the change does above SDR white, see above
   uint g_have_raw;  // 1: g_raw holds the 16-bit frame behind g_native
-  uint g_unused0;
+  uint g_keep_blacks;  // 1: keep blacks, as composite_ps.hlsl does it, on the 8-bit level
   uint g_unused1;
 };
 
@@ -116,6 +116,7 @@ float4 main(float4 pos : SV_Position) : SV_Target {
   precise float3 top = d00 + (d10 - d00) * fx;
   precise float3 bottom = d01 + (d11 - d01) * fx;
   precise float3 d = top + (bottom - top) * fy;
+  if (g_keep_blacks != 0) d *= smoothstep(0.0, 3.0, max(lvl.r, max(lvl.g, lvl.b)));
   precise float3 v = lvl + d;
 
   const float3 after = clamp(v, 0.0, 255.0) / 255.0;

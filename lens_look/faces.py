@@ -45,16 +45,21 @@ ROUTES = ("inside", "hidden")
 # a segment's height, least its least width, pad the space beside its words,
 # size the words' size, well the well's padding round the segments or the
 # strip's border, gap the space between two of them, and width a strip whose
-# segments share a fixed width
+# segments share a fixed width. page is the NR settings panel's Look page,
+# which no drawing has, the panel's segments each as wide as its words, see
+# lens_look.panel.Panel.look_choice
 SEGMENTS = {
     "console": {"settings": dict(h=30, least=52, pad=12, size=15, well=3, gap=2),
                 "panel": dict(h=28, least=46, pad=10, size=14, well=3, gap=2),
                 "small": dict(h=22, least=42, pad=9, size=13, well=3, gap=2),
                 "choice": dict(h=28, least=0, pad=12, size=14, well=3, gap=2),
-                "passes": dict(h=28, least=40, pad=10, size=14, well=3, gap=2)},
+                "passes": dict(h=28, least=40, pad=10, size=14, well=3, gap=2),
+                "page": dict(h=28, least=0, pad=12, size=14, well=3, gap=2)},
     "folio": {"settings": dict(h=30, least=0, pad=14, size=14, well=1, gap=1),
-              "panel": dict(h=26, least=0, pad=12, size=13.5, well=1, gap=1)},
-    "industrial": {"panel": dict(h=26, least=0, pad=8, size=11.5, well=1, gap=0, width=255)},
+              "panel": dict(h=26, least=0, pad=12, size=13.5, well=1, gap=1),
+              "page": dict(h=26, least=0, pad=12, size=13.5, well=1, gap=1)},
+    "industrial": {"panel": dict(h=26, least=0, pad=8, size=11.5, well=1, gap=0, width=255),
+                   "page": dict(h=26, least=0, pad=8, size=11.5, well=1, gap=0)},
 }
 # Folio's block switch, w by h with a knob, its word gap beside it, and
 # Industrial's ON and OFF plates, part wide each and h high

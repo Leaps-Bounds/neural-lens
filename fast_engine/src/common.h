@@ -45,7 +45,7 @@
 #include <vector>
 
 // Named in the ready line, so a log says which presenter ran.
-#define LENS_FAST_VERSION "0.8.1-fast"
+#define LENS_FAST_VERSION "0.9.0-fast"
 
 // What the process returns. The lens only looks at whether it is still running, the numbers
 // are for a person reading a log.
@@ -104,6 +104,8 @@ std::string ascii(const std::wstring& text);
 // value divided by 1e7 compares directly with now_s(), and the difference at the Present
 // call is the meter in the stats line.
 double now_s();
+
+#include "look_settings.h"
 
 // ---------------------------------------------------------------- Neural Rendering's settings
 
@@ -171,10 +173,12 @@ constexpr int kAddonPassIntensities = 4;
 //
 // Two more values belong to the passes as a whole, not to one of them:
 //   - preset, the add-on's NRPreset in [RenoDX.DLSS5]: which of the model's presets the
-//     features are created with, DLSSNR.Hint.Render.Preset, 0 Default and 1 to 3 for the
-//     three the add-on's menu offers as Preset #1 to #3. Any other value counts as 0, the
-//     default. It is a creation-time value: a change takes effect when the features are
-//     next made, see Nr::prepare and the loop's reload
+//     features are created with, DLSSNR.Hint.Render.Preset, 0 Default and 1 to 7 for the
+//     lettered presets A to G of NVIDIA's 310.9.16 model, which holds two networks: 1 runs
+//     the large network, and 0, 2 and 3 the small FP8 one. The lens's Model setting
+//     writes 1 or 2. Any other value counts as 0, the default. It is a creation-time
+//     value: a change takes effect when the features are next made, see Nr::prepare and
+//     the loop's reload
 //   - shared, the lens's SharedNetwork in [NeuralLens.Passes], 0 or 1: with 1 every pass
 //     evaluates the first pass's feature, each pass still with its own values, so one
 //     history serves them all and the network runs on its own output within one picture
@@ -198,6 +202,11 @@ struct NrPasses {
   bool shared = false;   // SharedNetwork, see above
   float strength = 1.0f; // Strength while ScaleChange is on, see above, held within
                          // kStrengthLeast and kStrengthMost; 1 otherwise, which is no scaling
+  NrLook look;           // the Look stage's values, the add-on's NRLook* keys and NRDetailStability in
+                         // [RenoDX.DLSS5], see look_settings.h and look.h. Read with the switch NRLookMode
+                         // on; off, the group is at its identity and detail stability alone is read, as
+                         // the add-on has it. A change of these alone restarts nothing: same_passes()
+                         // leaves them out, and the pipeline takes them live
   NrPasses() = default;
   // every pass at the same values, which is how one set of settings was used before
   explicit NrPasses(const NrSettings& all) {
@@ -217,6 +226,9 @@ bool read_nr_passes(const std::wstring& stack_dir, NrPasses& out, std::string& e
 // Whether the first count passes of two sets are the same, value for value, and the preset,
 // the shared state and the strength with them.
 bool same_passes(const NrPasses& a, const NrPasses& b, int count);
+// The look's values that are not identity, for a note: "look tone 0.50, halo 1.00", or "look
+// off" when the stage leaves the picture as the network drew it
+std::string look_text(const NrLook& k);
 
 // Which of a pass's values differ from the base, as words for a note: "intensity 0.94,
 // style 2", or an empty string where none does.
@@ -259,6 +271,7 @@ struct Options {
   int work_max_w = 2560;     // --work-max W H: the picture fitted into W x H
   int work_max_h = 1440;
   PresentPath present = PresentPath::Hwnd;  // --present hwnd|dcomp
+  int framegen = 0;          // --framegen off|ahead|between as 0, 1, 2, see framegen.h
   bool settle = true;        // false with --no-settle: a picture that has come to rest is
                              // not put through the network again, see main.cpp
   double lifetime_s = 0.0;   // --lifetime S: leave after S seconds whatever happens, 0 never

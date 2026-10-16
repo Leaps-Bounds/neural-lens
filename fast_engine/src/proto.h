@@ -33,6 +33,7 @@ struct Command {
     Reload,       // reload            read the settings in ReShade.ini again
     Settle,       // settle 1|0        on: a picture come to rest goes through the network again
     Quality,      // quality N         n: the quality step to switch to, 0 to 5
+    Framegen,     // framegen WORD     n: 0 for off, 1 for ahead, 2 for between, see framegen.h
   };
   Kind kind = Quit;
   int x = 0;

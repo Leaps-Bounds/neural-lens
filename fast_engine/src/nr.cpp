@@ -280,6 +280,9 @@ void eval_params(ngx::Params* p, ID3D12Resource* in, ID3D12Resource* out, ID3D12
   p->Set("DLSSNR.SkinStructureStrength", s.skin_structure);
   p->Set("DLSSNR.Style", s.style);
   p->Set("DLSSNR.UICorrection", s.ui_correction);
+  // The 310.9.16 model reads this as an int, and its own default is 0, None, so the value
+  // set is the one it took when the key was missing. The 310.8 builds do not read it.
+  p->Set("DLSSNR.MaskBlendMode", 0);
   p->Set("DLSS.Indicator.Invert.X.Axis", 0);
   p->Set("DLSS.Indicator.Invert.Y.Axis", 0);
 }

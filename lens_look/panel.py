@@ -24,6 +24,12 @@ also has the pass card scroll to keep the lit row in view. The explanation's
 part keeps its drawn height at every level, and a text that needs more grows
 it by a line or two, see Region.
 
+The Look page, a second page of the panel, and the row at the foot of the
+first page that opens it are made after, by page_row, look_switch,
+look_choice, look_slider and back_row, laid out by pages, and page shows one
+page or the other in the same window, with the head's title and line and the
+key footer for it.
+
 The explanation shows the row the arrow keys light, see lit, and the pointer
 picks the row it moves onto, as F1 picks the one under it, see picked. The
 panel is a window of the lens's own that never takes the keyboard, so
@@ -63,7 +69,8 @@ SLIDERS = walk.SLIDERS
 #               tab_chosen and tab_top, the plates and the lines along their tops
 #   picker      the profile picker's width and height, arrow Slate's arrows' width
 #   button_gap  the room between the picker and its buttons
-#   rows        each row's height, by its name, the value sliders' as slider
+#   rows        each row's height, by its name, the value sliders' as slider,
+#               and framegen's, a row no drawing has, the model's, see FOLLOWS
 #   explain     the explanation's height as drawn, at every level, and
 #               explain_pad the room round its words, see explain_room,
 #               explain_top the room above it, context_gap, text_gap and
@@ -77,8 +84,8 @@ PANEL = {
                     card_left=14, card_right=10, label=0, card_label=0, gap=12, tie=104, indent=30, number=44,
                     number_gap=10, reset_gap=4, tab_pad=12, tab_gap=2, tab_line=2, picker=(184, 34), arrow=30,
                     button_gap=10, own=(4, 6), own_w=380,
-                    rows=dict(profile=52, auto=38, free=38, nr=38, quality=44, passes=46, scale_change=38, strength=38, tabs=40,
-                              shared=38, style=38, slider=38, skin_auto=32, mask=38),
+                    rows=dict(profile=52, auto=38, free=38, nr=38, quality=44, model=38, passes=46, scale_change=38, strength=38,
+                              tabs=40, shared=38, style=38, slider=38, skin_auto=32, mask=38, framegen=38),
                     explain=112, explain_pad=(10, 16, 12), explain_top=0, context_gap=10, text_gap=4,
                     extra_gap=6, footer=42, footer_pad=(16, 16), group_gap=18, cap_gap=4, words_gap=5, hints=13),
     "folio": dict(width=664, head=42, title_in=20, head_gap=14, cross=(42, 41), info_gap=0, band_pad=0, card_pad=0,
@@ -86,8 +93,8 @@ PANEL = {
                   card_left=24, card_right=24, label=212, card_label=212, gap=12, tie=64, indent=16, number=40,
                   number_gap=8, reset_gap=4, tab_pad=2, tab_gap=20, tab_line=2, picker=(152, 30), arrow=0,
                   button_gap=8, intro=32, intro_pad=(10, 24, 4), own_pad=(6, 24),
-                  rows=dict(profile=62, auto=50, free=36, nr=36, passes=36, scale_change=36, strength=36, quality=52, tabs=40,
-                            shared=36, style=38, slider=36, skin_auto=28, mask=36, own=28),
+                  rows=dict(profile=62, auto=50, free=36, nr=36, passes=36, scale_change=36, strength=36, quality=52, model=38,
+                            tabs=40, shared=36, style=38, slider=36, skin_auto=28, mask=36, own=28, framegen=38),
                   explain=117, explain_pad=(12, 24, 10), explain_top=6, bar=2, bar_gap=12, text_gap=4,
                   extra_gap=2, footer=40, footer_pad=(24, 24), group_gap=24, cap_gap=4, words_gap=5, hints=13),
     "industrial": dict(width=680, head=40, title_in=18, head_gap=14, cross=(46, 39), info_gap=6, band_pad=20,
@@ -96,7 +103,8 @@ PANEL = {
                        indent=16, number=44, number_gap=12, reset_gap=12, tab=(100, 32), tab_chosen=(100, 37),
                        tab_top=(2, 3), tab_gap=3, picker=(196, 34), arrow=0, button_gap=8, own_pad=(6, 13),
                        rows=dict(profile=50, auto=44, free=44, nr=44, tabs=46, shared=48, tie_head=24, style=40, slider=40,
-                                 skin_auto=38, mask=38, own=28, passes=50, scale_change=44, strength=40, quality=56),
+                                 skin_auto=38, mask=38, own=28, passes=50, scale_change=44, strength=40, quality=56,
+                                 model=40, framegen=40),
                        explain=136, explain_pad=(16, 24, 23), explain_top=0, bar=3, context_gap=0,
                        text_gap=7, extra_gap=4, footer=40, footer_pad=(23, 18), group_gap=24, cap_gap=3,
                        words_gap=8, hints=13.5),
@@ -107,21 +115,53 @@ PANEL = {
 # lens_look.walk.ORDER. own is the line under the ties' column header that
 # says what a tie does, and tie_head Industrial's row of that header.
 LAYOUT = {
-    "console": (("top", ("profile", "auto", "free", "nr", "quality", "passes", "scale_change", "strength")),
+    "console": (("top", ("profile", "auto", "free", "nr", "quality", "model", "passes", "scale_change",
+                         "strength")),
                 ("tabs", ("tabs",)),
                 ("card", ("shared", "own", "style") + SLIDERS + ("skin_auto", "mask"))),
     "folio": (("top", ("profile", "auto", "free")),
-              ("mid", ("nr", "passes", "scale_change", "strength", "quality")),
+              ("mid", ("nr", "passes", "scale_change", "strength", "quality", "model")),
               ("tabs", ("tabs",)),
               ("card", ("shared", "style") + SLIDERS + ("skin_auto", "mask", "own"))),
     "industrial": (("top", ("profile", "auto", "free", "nr")),
                    ("tabs", ("tabs",)),
                    ("card", ("shared", "tie_head", "style") + SLIDERS + ("skin_auto", "mask", "own")),
-                   ("bottom", ("passes", "scale_change", "strength", "quality"))),
+                   ("bottom", ("passes", "scale_change", "strength", "quality", "model"))),
 }
+
+# The rows no drawing has, each laid out right under the row it follows, in
+# that row's part, in every look: Frame generation under the Model row, see
+# neural_lens.py's _panel_framegen. The arrow keys walk it in the same place,
+# see the lens's panel_show_pass, and LAYOUT and lens_look.walk.ORDER keep the
+# drawings' rows alone.
+FOLLOWS = {"framegen": "model"}
+
+
+def laid_out(names):
+    """A part's rows top to bottom, names each with the rows that follow it,
+    see FOLLOWS."""
+    out = []
+    for name in names:
+        out.append(name)
+        out.extend(extra for extra, after in FOLLOWS.items() if after == name)
+    return out
+
 
 # The rows whose controls set the pass shown, whose explanation names that pass
 PER_PASS = ("style", "shared", "skin_auto", "mask") + SLIDERS
+
+# The Look page, a second page of the panel, which no drawing has, see pages:
+# the height of each of its rows in CSS pixels at 100 percent, by kind, which
+# holds the first page's controls with room round them, the width of a
+# slider's number there, which shows its unit, such as 0.50 stops, and the
+# room above and under the page's part and the part of the row that opens it,
+# at the foot of the first page. The page is no taller than the first page at
+# any level, and at level 3, where the screen leaves the first page too little
+# room for all its rows, its rows scroll as the pass card's do, see page_scroll
+PAGE_ROW = {"console": 38, "folio": 34, "industrial": 38}
+PAGE_NUMBER = {"console": 84, "folio": 84, "industrial": 88}
+PAGE_PAD = {"console": {"look": (8, 2), "opener": (0, 6)}, "folio": {"look": (0, 0), "opener": (0, 0)},
+            "industrial": {"look": (4, 0), "opener": (0, 0)}}
 
 # The panel_ui key of each switch the lens makes, by its row's name
 SWITCHES = {"auto": "auto_box", "free": "free_box", "nr": "nr_box", "skin_auto": "skin_box", "mask": "mask_box",
@@ -494,6 +534,15 @@ class Panel(object):
         self.profile_parts = None
         self.heights = []
         self.card_pack = {}
+        # the Look page and the row at the foot of the first page that opens
+        # it, which pages adds once the look's own rows are laid out, the page
+        # shown, each page's title and line in the head, and the Look page's
+        # key footer
+        self.page_parts, self.main_parts = {}, []
+        self.page_shown, self.page_words = "main", {}
+        self.footer_look = self.title_label = self.drag = self.look_clip = None
+        self.head_words = ("", "")
+        self.look_offset = 0            # how far the Look page's rows are moved up in their clip, see keep_page
         window.configure(bg=self.c["frame"])
         self.box = tk.Frame(window, bg=self.c["surface"], bd=0, highlightthickness=0)
         self.box.pack(padx=1, pady=1)
@@ -527,6 +576,7 @@ class Panel(object):
         return (family, -self.px(face.size if size is None else size), weight)
 
     def part_of(self, name):
+        name = FOLLOWS.get(name, name)      # a row that follows another lies in its part
         for part, names in LAYOUT[self.kind]:
             if name in names:
                 return part
@@ -678,21 +728,15 @@ class Panel(object):
                         fg=c["strong"] if self.kind == "console" else c["text"], font=self.font("panel_title"), bd=0,
                         padx=0, pady=0)
         name.grid(row=0, column=0, sticky="w", padx=(self.px(m["title_in"]), 0))
+        # kept for the Look page's own title and line, see page
+        self.title_label, self.drag, self.head_words = name, drag, (title, line)
         if self.kind == "console":
             hint = tk.Label(head, text=line, bg=ground, fg=c["muted"], font=self.font("panel_words"), bd=0, padx=0,
                             pady=0)
             dragged = [hint]
         else:
             hint = self.frame(head, bg=ground)
-            dragged = [hint]
-            for i, (kind, part) in enumerate(key_words(line)):
-                if kind == "key":
-                    w = widgets.KeyCap(hint, self.look, part, "cap_menu", ground=ground)
-                else:
-                    w = tk.Label(hint, text=part, bg=ground, fg=c["muted"], font=self.font("panel_words"), bd=0,
-                                 padx=0, pady=0)
-                w.pack(side="left", padx=(self.px(5) if i else 0, 0))
-                dragged.append(w)
+            dragged = [hint] + self.line_parts(hint, line)
         hint.grid(row=0, column=1, sticky="w", padx=(self.px(m["head_gap"]), 0))
         self.hint = hint
         # the profile row's place at the compact level that folds it into the head
@@ -717,6 +761,36 @@ class Panel(object):
             w.bind("<B1-Motion>", move)
             w.bind("<ButtonRelease-1>", up)
         return head
+
+    def line_parts(self, hint, line):
+        """The line in Paper's and Industrial's head that says what closes the
+        panel, or on the Look page how to leave it, in hint, its keys drawn as
+        caps, see key_words. Returns its parts, which the panel is dragged by
+        as by the head."""
+        ground, parts = self.c["deep"], []
+        for i, (kind, part) in enumerate(key_words(line)):
+            if kind == "key":
+                w = widgets.KeyCap(hint, self.look, part, "cap_menu", ground=ground)
+            else:
+                w = tk.Label(hint, text=part, bg=ground, fg=self.c["muted"], font=self.font("panel_words"), bd=0,
+                             padx=0, pady=0)
+            w.pack(side="left", padx=(self.px(5) if i else 0, 0))
+            parts.append(w)
+        return parts
+
+    def set_line(self, line):
+        """The head's line made anew for a page, see page, dragged by as the
+        head is."""
+        if self.kind == "console":
+            self.hint.configure(text=line)
+            return
+        for w in self.hint.winfo_children():
+            w.destroy()
+        down, move, up = self.drag
+        for w in self.line_parts(self.hint, line):
+            w.bind("<ButtonPress-1>", down)
+            w.bind("<B1-Motion>", move)
+            w.bind("<ButtonRelease-1>", up)
 
     def profile(self, words, name_text, colour, open_list, step, update, save_as, why):
         """The profile row: its label with the program the profile in use is
@@ -977,10 +1051,14 @@ class Panel(object):
         return lbl
 
     def choice(self, name, words, var, names, command, why):
-        """A choice's row, the style's: its label, ui's style_word, and its
-        radio buttons, ui's style_btns, drawn as one strip, see
-        lens_look.faces.ChoiceStrip. names are the choices' codes and names."""
+        """A choice's row, the style's and the model's: its label, ui's
+        name_word, and its radio buttons, ui's name_btns, drawn as one strip,
+        ui's name_row, see lens_look.faces.ChoiceStrip. names are the choices'
+        codes and names. A row on the pass card has the tie column, as the
+        style's, and one outside it has not, as the model's, which no pass has
+        of its own."""
         row = self.row(name)
+        tie = self.card_row(row)
         band, lg = row.band, self.lg
         word = self.label(band, words)
         strip = faces.ChoiceStrip(band, self.look, "panel")
@@ -991,11 +1069,11 @@ class Panel(object):
                                disabledforeground=lg["dim"])
             strip.add(b)
             buttons.append(b)
-        self.ui[name + "_word"], self.ui[name + "_btns"] = word, buttons
+        self.ui[name + "_word"], self.ui[name + "_btns"], self.ui[name + "_row"] = word, buttons, strip
         if self.kind == "console":
-            self.lay(row, word, right=[(strip, self.m["gap"])], tie=True)
+            self.lay(row, word, right=[(strip, self.m["gap"])], tie=tie)
         else:
-            self.lay(row, word, [(strip, 0)], tie=True)
+            self.lay(row, word, [(strip, 0)], tie=tie)
         band.add(word, strip)
         self.explained(row, word, why, words, strip, *buttons)
         return row
@@ -1233,6 +1311,295 @@ class Panel(object):
         self.ui["foot"] = out
         return out
 
+    # the Look page, which the lens makes once finish has laid the look's own
+    # rows out: the row that opens it, the page's rows and the row that goes
+    # back, then pages lays them out and page shows a page
+
+    def page_part(self, name):
+        """A part the pages add, made once: opener, the part of the row that
+        opens the Look page, or look, the Look page's, which lies in a frame
+        of its own, look_clip, that clips it where it scrolls, as the pass card
+        does, see page_scroll."""
+        part = self.page_parts.get(name)
+        if part is None:
+            master = self.box
+            if name == "look":
+                master = self.look_clip = self.frame(self.box)
+            part = self.page_parts[name] = self.frame(master)
+            part.columnconfigure(0, weight=1)
+            if name == "look":
+                part.pack(fill="x")
+        return part
+
+    def page_band(self, name, part, height):
+        """A row's band in a part the pages add, its height kept to height at
+        the drawing's size and compacted with the others', see apply."""
+        band = widgets.RowBand(self.page_part(part), self.look)
+        band.grid_propagate(False)
+        row = Row(name, part, band, height)
+        self.rows[name] = row
+        return row
+
+    def page_arrow(self, master, name):
+        """The arrow of the row that opens the Look page or goes back from it,
+        the kit's glyph of that name in the muted colour."""
+        font, char = widgets.glyph(master, name, self.px(13))
+        return tk.Label(master, text=char, font=font, bg=self.c["surface"], fg=self.c["muted"], bd=0, padx=0, pady=0)
+
+    def page_row(self, words, command, why):
+        """The row at the foot of the first page that opens the Look page: its
+        label, ui's look_word, the words beside it that say what the page does
+        to the picture now, ui's look_state, which the lens sets, and an arrow
+        that says it opens a page. A click on any of them calls command."""
+        row = self.page_band("page_look", "opener", PAGE_ROW[self.kind])
+        band, m = row.band, self.m
+        word = self.label(band, words)
+        state = self.label(band, "", "panel_words", lit=False, roles=BESIDE, fg=self.lg["fg"])
+        arrow = self.page_arrow(band, "right")
+        if self.kind == "console":
+            self.lay(row, word, right=[(state, m["gap"]), (arrow, 10)])
+        else:
+            self.lay(row, word, [(state, 0)], right=[(arrow, 0)])
+        for w in (band, word, state, arrow):
+            w.bind("<Button-1>", lambda e: command(), add="+")
+        band.add(word, state, arrow)
+        self.ui["look_word"], self.ui["look_state"] = word, state
+        self.explained(row, word, why, words, state, arrow)
+        return row
+
+    def page_start(self, indent):
+        """Where a row of the Look page starts, standing in under Adjust the
+        look with indent, as the strength stands in under its switch."""
+        return self.m["left"] + (self.m["indent"] if indent else 0)
+
+    def look_switch(self, key, words, var, command, why, indent=False):
+        """A switch of the Look page, the check button the lens's code makes,
+        ui's key box, with its switch beside it, as switch makes the first
+        page's."""
+        row = self.page_band(key, "look", PAGE_ROW[self.kind])
+        band, m = row.band, self.m
+        b = self.check(band, words, var, command)
+        face = faces.SwitchFace(band, self.look, b, "panel")
+        if self.kind == "folio":
+            self.lay(row, b, [(face, 0)], start=self.page_start(indent))
+        else:
+            self.lay(row, b, right=[(face, m["gap"])], label=False, start=self.page_start(indent))
+        self.ui[key + " box"] = b
+        band.add(b, face)
+        self.explained(row, b, why, words, face)
+        return b
+
+    def look_choice(self, key, words, var, names, command, why, indent=False):
+        """A choice of the Look page, its label, ui's key word, and its radio
+        buttons, ui's key btns, drawn as one strip, ui's key row, whose
+        segments take their words' widths, as choice makes the first page's."""
+        row = self.page_band(key, "look", PAGE_ROW[self.kind])
+        band, lg, m = row.band, self.lg, self.m
+        word = self.label(band, words)
+        strip = faces.ChoiceStrip(band, self.look, "page")
+        buttons = []
+        for code, label_ in names.items():
+            b = tk.Radiobutton(strip, text=label_, variable=var, value=code, command=command, bg=lg["bg"], fg=lg["fg"],
+                               selectcolor=lg["field"], activebackground=lg["bg"], activeforeground=lg["fg"],
+                               disabledforeground=lg["dim"])
+            strip.add(b)
+            buttons.append(b)
+        if self.kind == "console":
+            self.lay(row, word, right=[(strip, m["gap"])], start=self.page_start(indent))
+        else:
+            self.lay(row, word, [(strip, 0)], start=self.page_start(indent))
+        self.ui[key + " word"], self.ui[key + " btns"], self.ui[key + " row"] = word, buttons, strip
+        band.add(word, strip)
+        self.explained(row, word, why, words, strip, *buttons)
+        return row
+
+    def look_slider(self, key, words, lo, hi, resolution, mark, command, why, indent=False):
+        """A slider of the Look page, its label, ui's key word, and its slider
+        and number, ui's key, the number wide enough for its unit, and the
+        long tick at mark, its default, where that lies inside the range. No
+        reset button, as the first page's sliders have, since its value is
+        not the same for every slider."""
+        row = self.page_band(key, "look", PAGE_ROW[self.kind])
+        band, m = row.band, self.m
+        word = self.label(band, words)
+        scale = faces.slider(band, self.look, mark=mark if lo < mark < hi else None, from_=lo, to=hi,
+                             resolution=resolution, orient="horizontal", command=command)
+        shown = self.label(band, "", "value", lit=False, roles=NUMBER, anchor="e")
+        widgets.exact(shown, self.px(PAGE_NUMBER[self.kind]), self.px(22))
+        if self.kind == "console":
+            self.lay(row, word, right=[(scale, m["gap"]), (shown, m["number_gap"])], start=self.page_start(indent))
+        else:
+            self.lay(row, word, [(scale, 0), (shown, m["number_gap"])], start=self.page_start(indent))
+        self.ui[key + " word"], self.ui[key] = word, (scale, shown)
+        band.add(word, scale.face, shown)
+        self.explained(row, word, why, words, scale, scale.face, shown)
+        return row
+
+    def back_row(self, words, command, why):
+        """The Look page's last row, which goes back to the first page: an
+        arrow and its label, ui's look_back, each of which a click calls
+        command for."""
+        row = self.page_band("page_back", "look", PAGE_ROW[self.kind])
+        band = row.band
+        arrow = self.page_arrow(band, "left")
+        word = self.label(band, words)
+        self.lay(row, arrow, [(word, 8)], label=False)
+        for w in (band, arrow, word):
+            w.bind("<Button-1>", lambda e: command(), add="+")
+        band.add(arrow, word)
+        self.ui["look_back"] = word
+        self.explained(row, word, why, words, arrow)
+        return row
+
+    def pages(self, title, line, keys):
+        """Lay out what the Look page adds, once finish has laid out the
+        look's own rows: the part of the row that opens it, under the first
+        page's parts and ahead of the explanation's part, and the Look page's
+        part in the first page's place, hidden until page shows it. title and
+        line are the page's own in the head, and keys its key footer's, as
+        finish takes them. The panel's heights at levels 0 to 2 grow by the
+        row that opens the page, the level is fitted again, and every row
+        takes the level's height, the page's rows too."""
+        try:
+            c, m, box = self.c, self.m, self.box
+            self.page_words = {"main": self.head_words, "look": (title, line)}
+            names = [name for name, _rows in LAYOUT[self.kind]]
+            first = int(self.parts[names[0]].grid_info()["row"])
+            at = int(self.region.grid_info()["row"])
+            # the explanation's part and the key footer a row down, the opener in their place
+            self.region.grid_configure(row=at + 1)
+            self.footer.grid_configure(row=at + 2)
+            pad = self.px(m["band_pad"])
+            for part in ("opener", "look"):
+                frame = self.page_part(part)
+                for r, row in enumerate([x for x in self.rows.values() if x.part == part]):
+                    row.band.grid(in_=frame, row=r, column=0, sticky="we", padx=(pad, pad))
+                    # a rule between two rows, and above the opener, under the first page's last row
+                    if (r or part == "opener") and self.kind != "console":
+                        self.rule(row.band, widgets.shade(self.look, "rule_faint") if self.kind == "folio"
+                                  else c["rule"])
+                above, below = (self.px(v) for v in PAGE_PAD[self.kind][part])
+                (frame if part == "opener" else self.look_clip).grid(row=at if part == "opener" else first, column=0,
+                                                                     sticky="we", pady=(above, below))
+            self.look_clip.grid_remove()
+            self.main_parts = [self.clip if name == "card" else self.parts[name] for name in names] + [
+                self.page_parts["opener"]]
+            self.footer_look = KeyFooter(box, self.look, self.inner, self.px(m["footer"]), keys)
+            self.footer_look.grid(row=at + 2, column=0, sticky="we")
+            self.footer_look.grid_remove()
+            # the heights at levels 0 to 2 with the opener's row, sized as
+            # apply sizes every row
+            opener = self.rows["page_look"]
+            above, below = (self.px(v) for v in PAGE_PAD[self.kind]["opener"])
+            self.t.update_idletasks()
+            asks = [self.asks(w) for w in opener.band.grid_slaves()]
+            for level in range(min(3, len(self.heights))):
+                h = self.px(opener.height * (tokens.COMPACT_RATIO if level >= 1 else 1.0))
+                if level >= 1:
+                    h = max([h] + asks)
+                self.heights[level] += h + above + below
+            # the level fitted again, with every row the first page can show
+            # shown, as finish fits it, and the rows that come and go hidden
+            # again after, so the pass card's clip is the one finish gives it
+            if self.heights:
+                self.extras(True)
+                self.apply(fit.panel_fit(self.look, self.s, self.monitor_h, heights=self.heights))
+                self.extras(False)
+            self.page_scroll()
+        except Exception as exc:
+            widgets.fault(self, exc)
+
+    def extras(self, on):
+        """The rows the lens shows only on some tabs or with a switch, shown
+        for the panel to be fitted at its tallest, or hidden again as the
+        lens's own code has them before it shows the first tab, as finish has
+        them."""
+        ui = self.ui
+        for w in ([ui["shared_row"], ui["own_words"], ui["strength_word"]] + list(ui["tie_box"].values())
+                  + list(ui["strength"])):
+            if on:
+                w.grid()
+            else:
+                w.grid_remove()
+        self.refresh()
+
+    def page_scroll(self):
+        """The Look page's rows at level 3, where the pass card scrolls, see
+        scroll: where the page with all its rows would be taller than the
+        first page, which the monitor leaves no more room than it has, they
+        are clipped to what is left, at least CARD_LEAST, and moved within the
+        clip to keep the lit row in view, see keep_page. Below level 3, or
+        where they fit, they show whole."""
+        clip, part = self.look_clip, self.page_parts.get("look")
+        if clip is None or part is None:
+            return
+        self.look_offset = 0
+        self.t.update_idletasks()
+        room = 0
+        if self.level >= 3:
+            # the room the first page leaves its parts, which the Look page's
+            # part takes in theirs: the window's height less the parts', in
+            # the first page's height or the monitor's room, the less of the two
+            shown = [p for p in self.main_parts if p.winfo_manager()]
+            whole = self.t.winfo_reqheight()
+            others = whole - sum(self.asks(p) for p in shown)
+            room = min(whole, self.room()) - others - sum(self.px(v) for v in PAGE_PAD[self.kind]["look"])
+        if room <= 0 or part.winfo_reqheight() <= room:
+            if part.winfo_manager() == "place":
+                part.place_forget()
+                clip.pack_propagate(True)
+                part.pack(fill="x")
+            return
+        clip.pack_propagate(False)
+        clip.configure(width=self.inner, height=max(self.px(CARD_LEAST), room))
+        if part.winfo_manager() == "pack":
+            part.pack_forget()
+        part.place(x=0, y=0, relwidth=1.0)
+
+    def keep_page(self, band):
+        """The Look page's rows moved within their clip so this band lies in
+        view, at level 3 where they scroll, see page_scroll."""
+        part = self.page_parts.get("look")
+        if part is None or band.master is not part or part.winfo_manager() != "place":
+            return
+        self.t.update_idletasks()
+        y, h = band.winfo_y(), band.winfo_height()
+        room = self.look_clip.winfo_height()
+        most = max(0, part.winfo_reqheight() - room)
+        if y < self.look_offset:
+            self.look_offset = y
+        elif y + h > self.look_offset + room:
+            self.look_offset = y + h - room
+        self.look_offset = max(0, min(most, self.look_offset))
+        part.place_configure(y=-self.look_offset)
+
+    def page(self, name):
+        """Show the first page, main, or the Look page, look: that page's
+        parts in the other's place, the head's title and line for it, and its
+        key footer, and at level 2, where the profile row lies in the head,
+        the Look page's line in the profile row's place, see fold. The
+        explanation's part shows the panel's own line until the lens lights
+        a row of the page, see Lens._panel_page_to."""
+        if name == self.page_shown or "look" not in self.page_parts:
+            return
+        look = name == "look"
+        try:
+            for part in self.main_parts:
+                self.shown(part, not look)
+            self.shown(self.look_clip, look)
+            title, line = self.page_words[name]
+            self.title_label.configure(text=text.display_case(title, self.look.fonts["panel_title"].case))
+            self.set_line(line)
+            if self.profile_parts is not None and self.profile_parts["folded"]:
+                self.shown(self.extra, not look)
+                self.shown(self.hint, look)
+            self.shown(self.footer, not look)
+            self.shown(self.footer_look, look)
+            self.page_shown = name
+            self.region.present(self.idle)
+        except Exception as exc:
+            widgets.fault(self, exc)
+
     # laid out, fitted and shown
 
     def finish(self, keys, idle, reset_line, context):
@@ -1266,7 +1633,7 @@ class Panel(object):
             if self.kind == "folio" and part in ("mid", "tabs"):
                 widgets.Rule(frame, self.look, role="rule").grid(row=r, column=0, sticky="we")
                 r += 1
-            made = [n for n in names if n in self.rows]
+            made = [n for n in laid_out(names) if n in self.rows]
             for i, name in enumerate(made):
                 row = self.rows[name]
                 # Slate's rows stand in from the panel's sides, Industrial's
@@ -1407,8 +1774,12 @@ class Panel(object):
 
     def keep(self, widget):
         """The pass card moved within its clip so the band of this row lies
-        in view, at level 3."""
+        in view, at level 3, and the Look page's rows in theirs, see
+        keep_page."""
         band = self.band_of.get(widget)
+        if band is not None and self.level >= 3 and band.master is self.page_parts.get("look"):
+            self.keep_page(band)
+            return
         if band is None or self.level < 3 or band.master is not self.card:
             return
         self.t.update_idletasks()

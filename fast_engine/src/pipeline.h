@@ -87,6 +87,23 @@ struct Target {
 // are for tests, see composite_hdr_ps.hlsl.
 enum class HdrAbove { Pass = 0, Fade = 1, Clip = 2 };
 
+// The card's motion estimate for the network, see set_model_motion() and model_motion.h: the
+// vectors as the estimator made them and the picture they were estimated on, which covers the
+// whole frame as the work picture does.
+struct ModelMotion {
+  ID3D12Resource* vectors = nullptr;  // R16G16_SINT, vec_w x vec_h, one a block of 8x8 of the
+                                      // estimator's picture, quarter texels of it, previous
+                                      // minus current. In COMMON, returned to COMMON
+  UINT vec_w = 0, vec_h = 0;
+  UINT me_w = 0, me_h = 0;            // the estimator's picture
+  // The sequence mode's research switches alone (--sequence-lab), see run_sequence(). The
+  // loop leaves them as they are.
+  float factor = 1.0f;                // every vector times this: -1 for mvneg, S for mvscale:S
+  bool constant = false;              // one vector everywhere, (cx, cy) in work texels, the
+  float cx = 0.0f, cy = 0.0f;         // grid unread: mvconst and mvzero
+  bool all_passes = false;            // every pass handed it in the shared mode: mvallpasses
+};
+
 struct PipelineDesc {
   UINT width = 0;    // the picture: the crop's size and the target's, --size
   UINT height = 0;
@@ -341,6 +358,25 @@ class Pipeline {
   // to COMMON), their grid, the work texels one cell covers and the work texels one unit of a
   // vector is, see look.h and framegen.h. The caller has had the queue wait for the estimate.
   void set_motion(ID3D12Resource* vectors, UINT vec_w, UINT vec_h, float cell_texels, float unit_texels);
+
+  // The card's motion estimate as the network's motion vectors, for the next render() or
+  // render_joined() alone: that call takes it and forgets it, whether or not it was used, so
+  // a settle, an again run and any render without a new estimate hand the network zero
+  // vectors as before. The caller has had the queue wait for the estimate and has checked
+  // that it runs from the frame the network last evaluated, see model_motion.h. The render
+  // uses it only when the network runs and does not reset: a reset has no history to read.
+  //
+  // Before the first pass the render resolves it into a field of its own of the work size,
+  // R16G16_FLOAT, one vector a work texel in work texels (shaders\mvec_cs.hlsl), made at the
+  // first such render at a work size, 14.7 MB at 2560x1440, and kept with that size's
+  // textures. Every pass is handed the field, except in the shared mode, where passes 2 and
+  // up get zeros, since their history is the same frame's pass before.
+  void set_model_motion(const ModelMotion& motion);
+  // Of the last render() or render_joined(), whether the given pass was handed the field,
+  // and the field itself with its size for a test to read back (NON_PIXEL_SHADER_RESOURCE,
+  // which a reader returns it to). Null before the first such render.
+  bool motion_fed(int pass) const;
+  ID3D12Resource* motion_field(UINT& w, UINT& h) const;
   // The same values for every pass. The preset, the shared state and the strength stay as
   // they are. A change of the strength alone keeps the history, since the network is given
   // nothing new.

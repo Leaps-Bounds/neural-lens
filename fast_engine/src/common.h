@@ -45,7 +45,7 @@
 #include <vector>
 
 // Named in the ready line, so a log says which presenter ran.
-#define LENS_FAST_VERSION "0.9.0-fast"
+#define LENS_FAST_VERSION "0.9.1-fast"
 
 // What the process returns. The lens only looks at whether it is still running, the numbers
 // are for a person reading a log.
@@ -205,7 +205,8 @@ struct NrPasses {
   NrLook look;           // the Look stage's values, the add-on's NRLook* keys and NRDetailStability in
                          // [RenoDX.DLSS5], see look_settings.h and look.h. Read with the switch NRLookMode
                          // on; off, the group is at its identity and detail stability alone is read, as
-                         // the add-on has it. A change of these alone restarts nothing: same_passes()
+                         // the add-on has it, with the engine's own NRKeepBlacks and NRMotionSource,
+                         // which are read always. A change of these alone restarts nothing: same_passes()
                          // leaves them out, and the pipeline takes them live
   NrPasses() = default;
   // every pass at the same values, which is how one set of settings was used before
@@ -272,6 +273,11 @@ struct Options {
   int work_max_h = 1440;
   PresentPath present = PresentPath::Hwnd;  // --present hwnd|dcomp
   int framegen = 0;          // --framegen off|ahead|between as 0, 1, 2, see framegen.h
+  bool framegen_given = false;  // --framegen was given, so off means off in the sequence mode,
+                             // where no --framegen has always run between
+  int motion = -1;           // --motion card|none as kMotionCard, kMotionNone: the model's motion
+                             // source in place of NRMotionSource, in every mode, for tests. -1,
+                             // not given: the file's. The lens never passes it
   bool settle = true;        // false with --no-settle: a picture that has come to rest is
                              // not put through the network again, see main.cpp
   double lifetime_s = 0.0;   // --lifetime S: leave after S seconds whatever happens, 0 never
@@ -280,6 +286,30 @@ struct Options {
   bool help = false;         // --help
   bool selftest = false;     // --selftest IMAGE OUTDIR
   std::wstring selftest_image, selftest_outdir;  // absolute
+  std::string sequence_lab;  // --sequence-lab LIST: research switches of the sequence mode, a
+                             // comma list: nocoarse (no coarser estimates), levels1, levels2 (one
+                             // or two of the three), fixedgate (the warp's gate at six levels
+                             // whatever the frame's noise)
+  bool sequence = false;     // --sequence DIR OUTDIR: frame generation offline, see selftest.h.
+                             // The output folder is selftest_outdir
+  std::wstring sequence_dir; // absolute, the frames f0000.png, f0001.png and so on
+  int sequence_stride = 2;   // --sequence-stride N: every Nth frame is a source, the ones
+                             // between are the truth the made pictures are scored against
+  double sequence_white = 0.0;  // --sequence-white W: the frames are f0000.npy and so on, float16
+                                // RGBA in linear scRGB (1.0 is 80 nits), and the run goes through
+                                // the HDR path at that SDR white level, W in units of 80 nits; the
+                                // made pictures are made-N.npy. 0: 8-bit PNG frames as ever
+  bool sequence_nr = false;  // --sequence-nr: the network runs on the sources; else off, so
+                             // the made pictures show the motion's work alone
+  bool sequence_save_nr = false;  // --sequence-save nr: each source's composite after its render,
+                             // before any made picture, as nr-N.png (nr-N.npy in 16 bits)
+  int sequence_settle = 0;   // --sequence-settle K: in place of the run, each source alone from
+                             // a reset, rendered K times, then 8 more, see run_sequence()
+  bool sequence_dump_vectors = false;  // --sequence-dump vectors: each source's estimate as
+                             // vectors-src-N.bin, with or without frame generation
+  bool sequence_dump_fed = false;      // --sequence-dump fed: the field the model was handed as
+                             // fed-N.bin, and a line for each source and pass
+  bool motion_cases = false; // --motion-cases: print model_motion.h's cases and leave
   std::vector<int> switches; // --switches LIST, with --selftest. The quality steps the test
                              // switches through at its end, in order, as in 5,4,3,2,1,0,4
   int switch_frames = 0;     // --switch-frames N, the frames drawn at each of them. 0 when
@@ -297,6 +327,12 @@ struct Options {
   double heartbeat_s = 0.0;  // LENS_PRESENTER_HEARTBEAT: seconds between presents at rest.
                              // 0 when not given, and the loop keeps its own rate, see main.cpp
 };
+
+// --motion in place of what the file said, where it was given: called after every read of the
+// settings, at the start, at every reload, in the self test and in the sequence mode.
+inline void take_motion_option(const Options& o, NrPasses& settings) {
+  if (o.motion >= 0) settings.look.motion_source = o.motion;
+}
 
 // Parses the whole command line. Any thread, once. argv[0] is skipped.
 //   - An option it does not know is skipped with its values, with a note on stderr: the

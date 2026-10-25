@@ -249,8 +249,9 @@ network again and it could not, see Each pass's values, and, as its last line wh
 `engine failed REASON`. Its stats line carries the presenter's pairs and then `shared=on|off`
 and `network=MS`, the network's GPU time a picture as the mean over the second's runs, `nan`
 where it did not run, see The quality steps for what the lens does with it, then `generated=N`,
-see Frame generation, and `preset=N`, see NVIDIA's model package. The lens finds its
-window by its process id and its class, `NeuralLensFast`.
+see Frame generation, `preset=N`, see NVIDIA's model package, `look=L`, see The Look stage, and
+`motion=N`, see Motion vectors for the network. The lens finds its window by its process id and
+its class, `NeuralLensFast`.
 
 No ReShade and no add-on run in it. It loads the stack's `nvngx_dlssnr.dll`, which is the Cost
 Scaler's proxy, by its full path, and through it NVIDIA's model, and creates and evaluates NGX
@@ -259,9 +260,10 @@ parameter names follow openNR's native adapter, whose MIT notice `nr.cpp` carrie
 header is included, and the runtime's functions are found with `GetProcAddress`. The six settings it
 gives the model, the style, the intensity, local tone, local structure, skin structure and the auto
 mask, are read from `ReShade.ini` at the start and again on `reload`, for each pass, with the
-add-on's UI correction and preset beside them, see Each pass's values. The model's motion vector
-and depth inputs are 1x1 textures of zeros. With full-size textures of zeros the output was the
-same byte for byte, on 21 MiB more video memory.
+add-on's UI correction and preset beside them, see Each pass's values. The model's depth input
+is a 1x1 texture of zeros, and so is its motion vector input where `NRMotionSource` is 0, see
+Motion vectors for the network. With full-size textures of zeros the output was the same byte for
+byte, on 21 MiB more video memory.
 
 One frame goes through five stages:
 
@@ -1341,16 +1343,27 @@ with the time its seconds began:
 For a source slower than the display the engine can make a picture between each two frames, see
 `fast_engine\src\framegen.h`. The motion comes from the card's own motion estimator, which D3D12
 offers as `ID3D12VideoMotionEstimator` on the video encode queue, with NV12 pictures, blocks of 8x8
-texels and quarter texel vectors, and no SDK of NVIDIA's. The engine makes the estimator at the first
-switch on, and a card without one leaves the option off, with `framegen unavailable REASON` on its
-stdout for the lens. The choice is on the NR settings panel of a fullscreen lens as well as on the
-Fullscreen page of Settings, and the lens greys the panel's row once the engine it runs has said
-`framegen unavailable`, its explanation saying that the card has no motion estimator the engine can use.
+texels and quarter texel vectors, and no SDK of NVIDIA's. The engine makes the estimator at its first
+need, frame generation switched on or the Look stage following the motion, and at its start where
+`NRMotionSource` hands the network the estimate, see Motion vectors for the network. A card without
+one leaves all three without it, with `framegen unavailable REASON` on its stdout for the lens, and so
+does a card that cannot make frame generation's two copies of the finished picture at the first copy,
+from then on. The choice is on the NR settings panel of a fullscreen lens as well as on the Fullscreen
+page of Settings, and the lens greys the panel's row once the engine it runs has said `framegen
+unavailable`, its explanation saying that the card has no motion estimator the engine can use, and the
+Look page's Motion vectors row with it.
 
-How it sits in the loop. After the composite of a new frame is submitted and before its present, the
-engine copies the finished picture into one of two textures of its own, converts the frame to NV12 at the
+How it sits in the loop. Before the render of a new frame the engine converts the frame to NV12 at the
 estimator's size with a compute pass, through a buffer into the two planes, and has the encode queue
-estimate the motion from the frame before, behind a fence, with nothing waited for on the CPU. The
+estimate the motion from the frame before, behind a fence, with nothing waited for on the CPU. Where the
+Look stage or the network takes the estimate, they read it in that render, which waits for it on the
+card. With frame generation on, the same list converts the frame again at half, a quarter and an eighth
+of the estimator's size, each while it is 32 texels or more each way and within the estimator's sizes,
+and the encode queue estimates the motion at each of those sizes after the fine estimate, see the made
+picture below. Where the frame is four or more times the planes' size, the conversion takes several taps
+a side two frame texels apart, so the coarser planes do not alias on fine texture. After the composite
+is submitted and before its present, the engine copies the finished picture into one of two textures of
+its own, made at the first such copy, and the made pictures are drawn from those two. The
 estimator takes pictures up to 4096x4096, so a capture of 6144x2560 is estimated at half size and the
 vectors scaled up. For ahead, the loop presents the made picture half a source frame after the frame's
 own, from a list that waits on the GPU for the estimate. For between, the made picture is drawn into the
@@ -1363,11 +1376,24 @@ same turn as the one overtaking it, which the switch test over a window moving a
 showed as `generated=0` with `gendrop=60`. The made picture is drawn by a pixel shader into the back
 buffer as the composite is, since a back buffer cannot be an unordered access view.
 
-What the stats line says: `generated=N` at its end, the made pictures presented in the second, and the
+What the stats line says: `generated=N`, the made pictures presented in the second, and the
 lens's readout shows the rate shown with them. The engine's `--framegen off|ahead|between` sets the mode
 at the start and `framegen WORD` on stdin changes it live. `LENS_FAST_FRAMEGEN_SHOT=DIR` is a test aid
 that writes the first three made pictures with the two they were made from and the luma plane, and notes
 the vectors' statistics.
+
+Ahead on a busy card. The made picture of ahead is due half the source's frame gap after the frame's own
+present, and a frame that is waiting in a turn before then is taken, once the last draw is done, and the
+made picture is dropped. So when the network takes longer than a frame of the program, the engine draws
+only some of the program's frames, the gap it goes by spans about two of them, and the program's next
+frame is nearly always waiting before the made picture is due. Between draws its made picture in place of
+each new frame's own and presents it at once, so it shows one for each new picture, and what a waiting
+frame drops there is the frame's own picture, due half a gap later. Measured on a test computer with an
+RTX 4070 SUPER, fullscreen on a 120 Hz monitor at 3840x2160 with 3 passes at Balanced over a program at
+60 frames a second, the network took 29.3 to 30.6 ms a picture with ahead or between and the lens drew
+31.1 to 32.6 new pictures a second. With ahead the readout showed a made count for about 3 s in 25, by
+its width read every half second, and in 5 of 72 such readings over 144 s in another session, `1 made`
+where it was read by eye. With between it showed one throughout.
 
 Measured on a test computer with an RTX 5090. The probe (`_harnesses\wip-060\research\flow`, 2026-10-15):
 the estimate takes 5.3 ms at 4096x2506 in blocks of 8 and 3.3 ms in blocks of 16, 2.0 ms and 1.3 ms at
@@ -1377,9 +1403,101 @@ averaged are 25 dB. In the engine over a window of 2560x1440 moving at 60 frames
 monitor (2026-10-16): new=60 and generated=60 a second in both modes, none dropped, the network's time a
 picture 4.1 ms where it was 3.9 without, since the conversion shares the card. Over textured blocks moving
 8 texels a frame the made picture of ahead carried them exactly 4 texels on. Over blocks moving 16 and 32
-texels a frame the block vectors showed at the edges, a strip up to half the move wide holding the
-background or the block twice, and a flat colour gave no vectors at all, since every block of it matches at
-no motion. A game's textured picture is the estimator's case, a flat colour its worst.
+texels a frame the plain warp, which took each texel through its own block's vector alone, showed the
+block vectors at the edges, a strip up to half the move wide holding the background or the block twice,
+and a flat colour gave no vectors at all, since every block of it matches at no motion. A game's textured
+picture is the estimator's case, a flat colour its worst.
+
+The made picture. It is drawn from the two pictures last presented and the vectors, see
+`fast_engine\src\shaders\gen_ps.hlsl`. One vector a block is wrong wherever a block holds two motions, at
+the edge of a thing that moves against its background, now and then for a whole block of fine texture
+that matched elsewhere, and over most of the picture once the motion outruns the estimator, whose vectors
+begin to fail at about 50 texels a frame at 2560x1440. So the warp tests the block's own vector at every
+texel, by how far the two pictures disagree under it, the luma-weighted difference over the 3x3 texels
+round the texel. Where that is over the gate's threshold, the texel tries the vectors of the eight
+neighbouring blocks, no motion, and the nine vectors at and round it of each of up to three coarser
+estimates, whose blocks are twice as large on the picture at each level and whose reach is twice as far,
+and takes the one with the least difference over a 5x5 extent taken at nine texels two apart, if that is
+under 0.6 of the block's own vector's over the same extent. Where the block's own vector holds, which is
+nearly everywhere, the picture is the plain warp's. At the picture's edge, between takes the one picture
+that has the content where the other's sample lies outside. A coarser level that cannot be made leaves
+the finer ones to go on alone, with a note, and the coarser estimates run only with frame generation on,
+since the Look stage's filter and the network read only the fine vectors. The 16-bit pipeline state has
+a build of its own of the warp, and of its noise pass, whose test and histogram put the samples on an
+encoded scale first, scaled by the SDR white level so standard range content fills 0 to 1 as in 8-bit
+and what is brighter is compressed above that, see the HDR paragraph below.
+
+The gate's threshold is the larger of six levels of 255 and twice the 25th percentile of the frame's own
+disagreement, which a compute pass before the warp measures, `gen_noise_cs.hlsl`. One thread for every
+16x16 block of the made picture takes the block's own vector's 3x3 disagreement at the block's middle
+into a histogram of sixteen bins a level wide, the last holding everything from 15 levels up, and the
+warp takes the bin in which a quarter of the count is reached. On a clean picture with right vectors that
+is a level or two, the resampling's residue, and the threshold stays at six levels, which a wrong vector
+passes by tens. On grain the percentile lies just under the grain's own level and the threshold rises
+above it, where six levels alone opened the search at every texel from grain of sigma 5 up. Where the
+estimator fails over much of the picture its failures fill the top bin, and the percentile stays low. A
+mean in place of the percentile rose with such failures and made a pan of 128 texels a frame 4 and 8
+percent worse, and at 1.8 times the percentile a tenth of the texels still opened on grain of sigma 6,
+where 2.0 closes most of them. The sequence mode's lab words `nocoarse`, `levels1`, `levels2` and
+`fixedgate` make none, one or two of the coarser estimates, or hold the gate at six levels whatever the
+noise, so each part can be measured on its own, see Switches for tests.
+
+Measured on a test computer with an RTX 5090 through the sequence mode, see Switches for tests, on
+sequences of 16 sources made from the README's Blender still at 2560x1440 with known motion: pans of 4 to
+128 texels a frame, a zoom, a nearly flat square moving 16 or 32 texels a frame over a pan, a textured
+square moving 32 texels a frame across a background panning 8 the other way, a flick from 0 to 128 texels
+a frame and back, a pan under a still overlay of panels and text-like blocks, and the pan of 16 and the
+overlay with Gaussian grain. A made picture is held against the frame it stands for by its mean absolute
+error in levels of 255. Against the plain warp, the search with the first coarser estimate took 58 and 42
+percent off the error at a pan of 128, between and ahead, 41 and 18 at 64, 34 and 22 at 32 and 10 and 7
+at 16, 41 and 21 off the textured square's and 72 and 49 in the box round it, 18 and 9 off the flick's,
+19 and 8 off the overlay's and 3 to 7 percent off the grainy ones', and the 99th percentile of the error
+came down in every one. Pans of 4 and 8, the zoom and the flat squares stayed within 5 percent, where the
+resampling sets the error. The final form against that first one, with three coarser estimates and the
+gate following the noise, took a further 48 and 37 percent off the pan of 128, 56 and 41 over its moving
+parts, 20 and 14 off the pan of 64, 14 and 7 off the flick, 5 and 4 off the pan of 32 and 9 and 3 off the
+textured square, 61 and 21 in its box. The other pans, the zoom, the grain and the overlay stayed within
+1 percent, the overlay's ahead 2 percent worse, and the flat squares within 1 percent, their boxes 2
+percent better between and 5 percent worse ahead, where a coarse vector now and then wins wrongly.
+
+At 2560x1440, by the sequence mode's cost line, the warp with its noise pass takes 0.23 to 0.30 ms a
+frame on clean pictures, 0.59 to 0.63 ms at the pan of 128 and 0.40 to 0.42 ms on grain of sigma 6, where
+the plain warp took 0.105 ms and the first form 0.11 to 0.15, 0.36 and 0.35 ms. With the three estimates
+and the gate held at six levels the grain took 0.57 ms. The fine estimate with its resolve takes 1.94 to
+2.10 ms on the encode queue, 2.33 to 2.36 ms on grain of sigma 6, and the coarser estimates 0.83 ms after
+it, where the one of the first form took 0.51 ms. That is time on the video engine, asynchronous to the
+shaders, before the made picture can be drawn.
+
+Over a monitor with Windows HDR on, the conversion scales the 16-bit frame by the SDR white level first,
+so standard range content fills 0 to 0.8 of the planes, and compresses what is brighter above that, as
+`1 - 0.2 / c` for c in units of SDR white, never flat, see `nv12_cs.hlsl`. The engine's loop hands frame
+generation the same level as the pipeline, every frame. Held inside 0 to 1 unscaled, as in 0.9.0, the
+frame was flat white to the estimator from 80 nits up, a third of an SDR white of 240 nits, and it found
+no motion there. Measured on a test computer with an RTX 5090 with HDR on for a 3840x1200 monitor at 144
+Hz alone, at an SDR white of 240 nits, over a 240 px square moving 8 px a frame, with the made pictures
+read off the screen through Desktop Duplication's 16-bit frames, a made picture of between that has the
+motion shows the square's edges at a half step with a few hundred intermediate pixels, and one without it
+is a blend of two places, with 7,680 intermediate pixels and the square 224 px wide. Under 80 nits, at
+0.8 over a field at 0.3 in scRGB, where 1.0 is 80 nits, the square was carried right before the change,
+at 218 to 852 intermediate pixels. In bright standard range content, 2.5 over 1.5, the made pictures were
+blends before and those of ahead the last frame unmoved. Now they show 134 to 1,568 intermediate pixels
+with the square 240 px wide, and above SDR white, 6.0 over 4.0, 120 to 809, the compressed highlights
+being enough for the estimator, and ahead carries the square on. Neural Rendering on changes nothing of
+that. Through the sequence mode in 16 bits, over the pan of 16 with a region three times brighter than
+SDR white moving with the content, 16.5 percent of the textured blocks' vectors were off by more than a
+pixel, against 7.2 percent on the 8-bit pan of 16, since that highlight has a seventh of the estimator's
+range above the knee. A knee at 0.6, which gives the highlights more of the range, made that 17.5 percent
+and the pictures 1 to 3 percent worse, since standard range lost more than the highlights gained, so the
+knee stays at 0.8. The made picture's own test and its noise pass read the 16-bit frame on a scale of
+their own, since the gate's levels are an 8-bit picture's: the sample scaled by the SDR white level,
+standard range content filling 0 to 1 as in 8-bit, what is brighter compressed above that as 2 - 1 / c,
+continuous at 1 and rising towards 2, then the gamma. With 80 nits at 1 instead, as at first, a 240 nit
+white sat at 1.2 and a threefold highlight in a tenth of the range above it, and the noise pass counted
+linear differences where the warp compared encoded ones. Measured through the sequence mode with both
+forms scored on this scale, the consistent one made the two HDR sequences 1 to 3 percent worse, the
+sprite's box 0.36 to 0.56 levels with between and 1.85 to 2.07 with ahead, and the warp 0.1 ms cheaper a
+frame, since on that dark to mid content the mismatch had searched more. On bright content it would have
+searched less, so the consistent scale stays.
 
 ### The Look stage
 
@@ -1416,6 +1534,148 @@ and the settings note says keep blacks while it is on. The stats line's `look=` 
 pixels at level 0 by 0.5 to 1.0 levels on average, its 95th percentile at 1.0, at the test stack's values, and
 by 1.0 to 1.6, its 95th percentile at 1.7 to 2.0, at an intensity of 1.58, on both networks, while the pixels
 from level 1 up were darkened on average. The Blender still has no such pixels.
+
+### Motion vectors for the network
+
+The model is temporal. At each evaluate it takes the picture it made last as its history and reads it
+where the motion vectors say each texel's content was, so zero vectors tell it that nothing moved, see
+`fast_engine\src\model_motion.h`. `NRMotionSource` in the add-on's section chooses what it is handed,
+the engine's own key like `NRKeepBlacks`, which neither build of the add-on reads. At 0 every evaluate
+hands it the 1x1 zero texture with the motion scale at the work size, the call of every version before,
+byte for byte. At 1, the default, it gets the card's motion estimate, the one frame generation and the
+Look stage take, see Frame generation. The estimator gives one vector a block of 8x8 texels of its
+picture, in quarter texels, from where the block's content is now to where it was in the frame before,
+x to the right and y down, which is the runtime's own convention. Before the first pass
+`shaders\mvec_cs.hlsl` resolves the vectors into a texture of the work size, R16G16_FLOAT, each work
+texel taking the vector of the block its centre falls in, found in whole numbers, and turning it into
+work texels, 0.25 times the work size over the estimator's on each axis by itself. The texture is bound
+with its subrect the whole work size and a motion scale of 1, and depth stays the zero texel. It takes
+8.8 MiB at 2560x896 and 14.1 MiB at 2560x1440, made at the first such render at a work size and kept
+with that size's textures. The key is read always and taken live at a reload, from the next new frame.
+A value with a fraction is cut to a whole number, and anything but 0 or 1 is the default. The Look
+page's Motion vectors row writes it as Card or None, the Profiles page of Settings names it, and a
+profile and a switch of the Home menu add-on's build carry it with the rest of the section, so a
+profile saved before it loads with Card.
+
+The estimate is handed over only where it runs from the frame the network last evaluated to the frame
+it evaluates now. Every other render gets the zero texel: a render that resets the network, a settle or
+an again run on the same frame, the first new frame after the estimator forgets its frames, a failed
+estimate and the frame after it, a frame drawn while the network did not run, a joined draw under
+`LENS_FAST_JOIN`, the passes after the first in the shared mode, whose history is the same frame's pass
+before, and a card without a motion estimator the engine can use. The estimator forgets its frames at a
+pause, a new capture, a reload, a move of the crop, Neural Rendering switched on or off and a change of
+frame generation. With each pass at its own feature every pass gets the texture. The render waits on
+the card for the estimate. The estimator is made at the start where the network takes the estimate, so
+the first picture that moves does not wait for it, and one estimate a new frame serves frame
+generation, the Look stage and the network. The stats line ends in `motion=N`, the network's runs in
+the second that were handed the estimate, and the note at the start and at a reload that changes the
+key says what the network gets.
+
+Measured on a test computer with an RTX 5090 through the sequence mode, see Switches for tests, on a
+window onto the README's Blender still moving 12 and 4 whole pixels a frame, with the network at
+2560x1440, 2560x1152 and 1066x504 of the 2560x1440 picture and at 2560x896 of the still enlarged to
+6144x2560, on the 310.8 build of the model and on 310.9.16 with each of its two networks. On every
+frame the median vector handed over across textured blocks was the true motion in work texels, 12 and
+4, 12 and 3.2, and 5.0 and 1.4 at the two smallest sizes, and the texture equalled a replay of the
+card's estimate through the same lookup, bit for bit at 2560x1440 and within a step of a half float at
+the other sizes, as it did through the HDR path in 16 bits. A still picture and a stopped one handed the
+network textures of exact zeros and gave the pictures of zero vectors byte for byte. On the 310.8 build
+at 2560x1440 the pictures of the pan lay 0.33 of 255 on average from each frame's settled picture, see
+below, where zero vectors left them 1.43 away and one vector of the true motion everywhere 0.30, and
+the card's vectors turned round, doubled and halved left them 1.35, 1.52 and 1.43 away.
+
+How the pictures were judged. Each frame of a sequence was also run alone from a reset, 16 times at
+rest with zero vectors, which gives the network's settled picture of that frame, the one it shows once
+that frame has stood still, and 8 times more for the floor, the network's own unrest at rest. A picture
+in motion is held against its frame's settled picture by its mean absolute difference in levels of
+255, the error, and by its boil, how much that error changes from one frame to the next once the known
+motion is taken out, whose floor is 0.25 to 0.37 levels. The flicker is the picture's own change from
+frame to frame once the motion is taken out, fine detail the variance of the Laplacian of the grey
+picture over the settled picture's, and kept the share of the network's change that a picture in
+motion keeps. The first 8 frames of each sequence are left out, and so are 8 px round the edge and the
+strip the motion brings in. The sequences are made from the README's Blender still at 2560x1440, with
+pans of 4 to 128 texels a frame, a zoom, a nearly flat square and a textured one moving across a pan,
+a still overlay over a pan, a pan with new grain on every frame, a flick from 0 to 128 texels a frame
+and back, a pan by whole pixels, text scrolling up 3 and 8 px a frame, a still, a still with grain, a
+pan and a square in 16 bits, and at 6144x2560 a pan by whole and by fractional pixels and a scroll of
+noise. The model was 310.9.16 with its large network at one pass, and the two arms ran on the same
+frames.
+
+The card's estimate against zero vectors, in percent, the median and the range over the pans, the
+zoom, the squares, the overlay, the flick and the pan by whole pixels, and at 6144x2560 the pan by
+whole pixels and the one by fractional pixels. A work size of 1066x504 is to a 2560x1440 picture what
+Balanced, 2560x896, is to a 6144x2560 one.
+
+```
+                                       error              boil              fine detail
+Quality, 2560x1440 at its own size     -70 (-42 to -77)   +1 (-24 to +8)    -10 (-3 to -17)
+Balanced, 2560x1152 of 2560x1440       -63 (-41 to -70)   -1 (-5 to +3)     -3 (0 to -11)
+1066x504 of 2560x1440                  -25 (+21 to -48)   +17 (-1 to +32)   -4 (-2 to -5)
+Balanced, 2560x896 of 6144x2560        -56, -53           +4, +4            -3, -5
+Full, 6144x2560                        -82, -65           -32, +8           -3, -5
+```
+
+At the picture's own size and at Balanced the pictures kept 96 to 100 percent of the network's change
+while things moved, where with zero vectors they kept 86 to 96 percent, and their flicker fell 12 to 60
+percent. On the copy at 1066x504 the boil rose on 13 of the 16 moving sequences and the 99th percentile
+of the error 33 to 85 percent on the fastest pans and the flick, while the error itself fell on 14 of
+them. In the 8 px along each edge of the squares the error rose by up to 153 percent at Quality, 130 at
+Balanced and 255 at 1066x504, which the error maps show as an outline round the square, since one vector
+a block holds the square's motion or its background's and not both. Scrolling text came nearer at every
+size, the error 13 to 47 percent lower and the boil from 34 percent lower to 1 percent higher, with no
+fine detail lost. With new grain on every frame the card's estimate averaged part of the grain away, the
+flicker 28 percent and the fine detail 21 percent lower at Quality, which against each frame's own
+settled picture, grain and all, is an error 39 percent and a boil 119 percent higher. The two 16-bit
+sequences went as the 8-bit ones, the error 53 to 67 percent lower at Quality and Balanced. A still
+picture gave the same pictures with the card's estimate as with zero vectors, byte for byte, and a still
+with grain and the overlay's still panels stayed within the floor, though the estimator gave 80 and 50
+percent of their blocks a vector other than zero. With the small FP8 network at Balanced, on a pan of
+16, the zoom, the textured square and the 16-bit pan, the error fell 32 to 51 percent and the boil 12 to
+23 percent, with the fine detail within 1.4 percent. With two passes at Balanced, each at its own
+feature, the error fell 74 and 62 percent on the pan of 16 and the textured square. In the shared
+mode, with the second pass handed zeros, it fell 79 and 70 percent, and handing the second pass the
+vectors as well left the pan 0.69 of 255 off where zeros left it 0.57.
+
+Live, on the same computer with one monitor at 6144x2560 and 120 Hz, fullscreen at Balanced, 2560x896,
+with one pass of the large network, over a white 120 px square bouncing 8 px a step across noise and over
+noise scrolling 8 px a step, at 120 steps a second unless the row says 60, in rows of a minute with the
+two arms taking turns. The medians, of two rows each where two figures are given, the card's power in
+W, its video memory in MiB and the times in ms:
+
+```
+                             new a second    power          memory       network      estimate    delay
+square, None                 118, 119        216.1, 220.1   4630, 4630   3.13, 3.14               0
+square, Card                 117, 117        221.5, 224.1   4779, 4719   3.22, 3.23   1.96, 1.95  0
+scroll, None                 120, 120        227.4, 227.5   4630, 4698   3.56, 3.52               8.3
+scroll, Card                 120, 120        233.0, 232.4   4779, 4786   3.69, 3.56   2.05, 2.07  8.3
+square at 60, None           58              126.4          4563         3.65                     0
+square at 60, Card           58              135.4          4645         3.37         2.52        0
+square at 60, Between, None  58, 58 made     154.3          4816         3.27         2.41        0
+square at 60, Between, Card  58, 58 made     154.5          4825         3.18         2.48        8.3
+square at Full, None         60              554.6          5714         15.11                    16.7
+square at Full, Card         49              474.6          5914         15.03        2.00        25.0
+```
+
+The estimate, at 3072x1280 for this picture, took 1.95 to 2.52 ms on the video engine, and the card drew
+4.0 to 5.6 W more at 120 new pictures a second, 9.0 W more at 58 and 0.2 W more beside frame generation,
+which makes the estimate already. The engine held 82 to 149 MiB more
+video memory at Balanced, 9 MiB more beside frame generation, which has the estimator already, and 200
+MiB more at Full. Over the square 25 to 28 percent of the pictures were shown a refresh later with the
+card's estimate, where 2.6 to 4.0 percent were with zero vectors, since the render waits for the
+estimate, and with Between every one of them. At Full, where the network sets the rate, the wait cost a
+refresh, 49 new pictures a second against 60. At Balanced, round the square and inside it no pixel lay
+more than 24 levels from both the noise and the white in either arm, and the still in a window beside
+the square kept its fine detail to the digit, a variance of the Laplacian of 287.8 in both. The inside of
+the white square changed by 1.28 and 1.35 levels of 255 on average with the card's estimate, against
+0.17 and 0.28 with zero vectors.
+
+Card is the default, so that the fast engine's network gets motion vectors as the ReShade engine's gets
+them from the Feed in a window. The card's estimate brought the moving pictures nearer their settled
+pictures in the median at every size, grain aside, but with the large network the fine detail came out
+softer in motion at every size, the edges of moving squares worse at every size of the 2560x1440
+picture, and the boil higher on the much smaller copy and on grain. None keeps the network's picture of
+0.9.0 for material where that shows. Games, the look by eye, other cards, 3840x2160 and
+HDR on screen were not measured, see What is not measured.
 
 ### How the lens chooses the engine and falls back
 
@@ -1473,8 +1733,10 @@ draws:
   engine does under `LENS_FAST_JOIN` below, and `same` those of them that were found the same as the
   frame before once the list was done, each a run of the network for nothing. For a joined picture
   `wake` runs to the start of its list's recording and `iwall` is that recording and its submission,
-  with no wait in it. `meter`, `delay`, `flip`, `ahead`, `grid` and `lead` are medians over the
-  second, and the other times means.
+  with no wait in it. `est`, the last of them, is the fine motion estimate's time on the card's video
+  engine with its resolve, 0 where none was made or the encode queue takes no timestamps, see
+  Motion vectors for the network. `meter`, `delay`, `flip`, `ahead`, `grid` and `lead` are medians
+  over the second, and the other times means.
 - `LENS_FAST_JOIN=N` has the ingest and the render of a new frame go to the card as one list,
   presented at once, once N frames in a row were found changed, where otherwise every frame's ingest
   is waited for before its render is submitted. The comparison's answer then comes back a turn
@@ -1541,6 +1803,9 @@ draws:
   two passes or more, whatever `SharedNetwork` in `ReShade.ini` says, see Passes through pass 1's
   network under Each pass's values. The engine reads it again on each `reload`. Without it the
   pictures are those of the engine without the switch, byte for byte.
+- `LENS_FAST_NO_ESTIMATOR=1` refuses the motion estimator as a card without one does, with the
+  same `framegen unavailable` line, so the network gets zero vectors and frame generation stays
+  off, see Motion vectors for the network.
 - `LENS_FAST_QUEUE_PRIORITY=high` asks for the engine's D3D12 queue at high priority, and
   `realtime` for one at global realtime priority. A refusal falls back to a normal queue, and a
   note says which the engine has.
@@ -1580,6 +1845,42 @@ network's input, byte for byte, at any pass count, and writes the changes and th
 `timings.json` as `strength_above_1`. `--quality 5` is a size argument like the others, so such a
 run is held against no baseline.
 
+**The sequence mode.** `lens-fast.exe --stack DIR --sequence DIR OUTDIR --framegen between` or `ahead`
+runs frame generation offline, with no window and nothing on the screen. The frames in DIR, `f0000.png`,
+`f0002.png` and so on, every second one unless `--sequence-stride` gives another step, go through the
+pipeline in order as a capture's would, and the picture made between each two, or carried on from the
+last with `ahead`, is written into OUTDIR as `made-N.png`, N the frame it stands for, beside the
+estimator's vectors as `vectors-N.bin`, so the frames left out are the truth the made pictures can be
+held against. The network is off unless `--sequence-nr` is given, so the pictures show the motion's work.
+`--sequence-white W` takes the frames as `f0000.npy` and so on, float16 RGBA in linear scRGB with 1.0 at
+80 nits, through the HDR path at an SDR white level of W in units of 80 nits, from 1 to 20 and 3 at
+240 nits, and writes the made pictures as `made-N.npy`. `--sequence-lab` takes a comma list of research
+switches: `nocoarse` makes none of the coarser estimates, `levels1` and `levels2` make one or two of the
+three, and `fixedgate` holds the warp's gate at six levels whatever the frame's noise. A line at the end
+gives the cost a frame of the conversion, of the estimate by the clock and, where the encode queue takes
+timestamp queries, of the fine and the coarser estimates on the card, and of the warp, which is drawn
+sixteen times over so that the card's clock is up and the last draw is timed, since one cold draw with
+the CPU waiting between frames measured two to three times its busy cost.
+
+With `--framegen off` the sequence mode makes no picture between frames and estimates the motion only
+for the network or the Look stage, and with no `--framegen` it runs between. `--sequence-save nr` writes
+each source's picture after its render, before any made picture, as `nr-N.png`, or `nr-N.npy` in 16
+bits. `--sequence-settle K` runs each source alone from a reset in place of the run, K times at rest
+with zero vectors, written as `settled-N`, and 8 times more, written as `settled2-N`, which are the
+references of Motion vectors for the network. `--sequence-dump vectors,fed` writes each source's
+estimate as `vectors-src-N.bin`, int16 pairs a block, and the vectors the network was handed as
+`fed-N.bin`, float16 pairs a work texel, with a line for each source and pass saying what it got. The
+research switches for the network's vectors are `mvneg`, each vector turned round, `mvscale:S`, each one
+times S, `mvconst:DX:DY`, one vector everywhere in work texels, `mvzero`, zeros handed the way the
+estimate is, `mvallpasses`, every pass handed the vectors in the shared mode, and `noestimator`, no
+motion estimator.
+
+**The network's motion vectors in tests.** `--motion card` or `--motion none` takes the place of
+`NRMotionSource` in the loop, the self test and the sequence mode, and the lens never passes it. The
+self test makes no motion estimator, so with either it held its baselines byte for byte. `--motion-cases`
+prints, for a few scripted runs of frames, which renders hand the network the card's estimate and which
+zeros, and leaves.
+
 ### What is not measured
 
 - **Displays at 60 Hz and at 240 Hz.** The repeats and the burst count refreshes there by rule,
@@ -1589,10 +1890,11 @@ run is held against no baseline.
   10 of 12 summaries and 8.3 and 12.5 ms in the other two, see the on-screen readout under
   Fullscreen in Gotchas.
 - **HDR beyond one monitor and test pictures.** HDR ran on a second monitor at 3840x1200 and 144 Hz
-  alone, over test patterns, a still scene and the scrolling picture. It was not run on the main
-  monitor or at 6144x2560, nor under an HDR game or video, with the A/B split or with a change of
-  the quality step. HDR switched off while the engine captured, a change of the SDR white level
-  while it ran and the way of reading HDR for Windows before 24H2 were not run at all.
+  alone, over test patterns, a still scene and the scrolling picture. It was not run on the main monitor
+  or at 6144x2560, nor under an HDR game or with a change of the quality step. Under a video and with the
+  A/B split it was looked at by eye with 0.9.0 on a test computer with an RTX 4070 SUPER, and held. HDR
+  switched off while the engine captured, a change of the SDR white level while it ran and the way of
+  reading HDR for Windows before 24H2 were not run at all.
 - **A game under the lens, beyond its delay.** One demanding game was measured for the delay and for
   where a picture's time goes, on 2026-10-03 and 2026-10-04, see A game in front that keeps the card
   busy. The power, the steps and the picture were measured over a moving square, a scrolling picture
@@ -1630,6 +1932,13 @@ run is held against no baseline.
   lens's handling of them was proven with stand-ins.
 - **The screen itself.** The engine's window is out of every capture, so its picture was read
   back from the engine's own swapchain, and from a window that was not excluded.
+- **The network's motion vectors beyond the test sequences and backdrops.** The card's estimate
+  against zero vectors was measured on sequences made from one still and on screen over a moving
+  square, scrolling noise and a still, not over a game or by eye. Not measured are its cost and its
+  vectors on other cards, at 3840x2160, where the estimator works at the full size, with Windows HDR
+  on screen, under a game that keeps the card busy, where the conversion for the estimator is one
+  more job on the card, with more than two passes, over a cut on screen, and the video engine's own
+  power apart from the card's.
 
 ## Global hotkeys
 
@@ -1739,6 +2048,40 @@ another program. F10 shows or hides the on-screen readout, see Fullscreen under 
 are held only while the lens is fullscreen. Two more actions, with no key set to begin with,
 raise and lower the fast engine's quality step by one.
 
+## The Tk thread's wait for a message
+
+Tcl's notifier waits for the next event in `Tcl_WaitForEvent`. When `PeekMessageW` finds a
+message there, it calls `GetMessageW` to take it, and `GetMessageW` has no timeout. A message
+another thread sends in between is answered inside `GetMessageW` first, and it can take away the
+message `PeekMessageW` found. `PrintWindow` from another program does that. While it runs the
+window has a WM_PAINT waiting, which `PeekMessageW` can find, and it sends the window WM_PAINT
+itself, which paints the window there and then, so `GetMessageW` finds nothing and waits for the
+next posted message or input for the Tk thread. It answers every sent message meanwhile, so the
+program sending them sees nothing wrong, but none of the lens's timers runs, and the queue of the
+hotkeys, the summary in the log and everything else on the Tk thread wait. Tcl ends such a wait
+with a timer on a window of its own, the notifier's, which it makes only as the thread first
+enters a modal loop of Windows, a native menu or a message box say. Without that window a call
+into Tk from another thread sets an event, which `GetMessageW` does not wait for, so it ends
+nothing either. The lens has Tcl make the window at its start, through `Tcl_SetServiceMode`. Tcl
+then keeps a timer on it for its own next timer, which the 50 ms timer of the hotkeys keeps
+short, and posts to it when another thread calls into Tk, and either message ends such a wait.
+
+On a test computer with an RTX 5090, with the lens from source fullscreen on the fast engine and
+its note up, and before the lens made the window at its start, one second of `PrintWindow` with
+flags 0 and 2 and of WM_GETTEXT on the note's window and the hidden root's, 30 calls, left the Tk
+thread in `GetMessageW`, called from `Tcl_WaitForEvent`, after the first to the fifth such second
+in each of four runs, in one of them with `GetWindowTextW`, which sends nothing, in place of
+WM_GETTEXT. The thread stayed there until the test posted a message to the note 23.6 s later, and
+for the two minutes left of the one run where none was posted. Enter, Escape and F10 pressed
+meanwhile reached the hotkey thread within 1 ms, and the lens acted on them only after that
+message, the note closed at once and the readout shown 15 to 23 ms later. With the window made,
+2 s after each of ten such seconds the Tk thread's 50 ms timer had run within the last 39 ms, and
+Enter and F10 were acted on 12 and 57 ms after their presses. In a Tk program made like the note,
+WM_GETTEXT alone, 1200 calls, never left its thread waiting. With hooks on its own thread's
+messages, each of 7 waits in 12 such seconds began the same way. Two `PeekMessageW` calls found a
+WM_PAINT for one of the note's own windows, and the next message the thread answered was the
+WM_PAINT another thread sent to that window.
+
 ## Nothing of the lens goes into another program
 
 The lens is made so that nothing of it reaches the program under it, a game included. It reads the
@@ -1772,14 +2115,16 @@ though a hook that runs in the presenter's own message loop could.
   writes that it waits, and a restart that comes meanwhile, such as one for a new pass count,
   takes the switch with it. F6 pressed by a person still switches at once, and the lens follows
   it.
-- **The keyboard for tweak mode.** Tweak mode gives the presenter the keyboard so that the
-  ReShade overlay can be used, and attaches the lens's thread to the presenter's input for the
-  moment that takes. Afterwards the keyboard goes back to the window that had it, by attaching to
-  the presenter's input again, and only while the window in front is the presenter or another
-  window of the lens's own. The lens judges that on the very window whose input it joins, and
-  checks that the process behind that input is its own or its presenter's before it joins. With
-  another program in front by then, the person has moved on, and nothing is done. Up to 0.5.1 the
-  lens attached to the input of the window that got the keyboard back.
+- **The keyboard for tweak mode.** Tweak mode gives the presenter the keyboard so that the ReShade
+  overlay can be used, and attaches the lens's thread to the presenter's input for the moment that takes.
+  Afterwards the keyboard goes back to the window that had it, by attaching to the presenter's input
+  again, and only while the window in front is the presenter or another window of the lens's own. Where a
+  window of the lens's own, or none, was in front as tweak mode began, the keyboard goes back to the
+  program the lens last saw in front, which it reads in any case, see The program in front. The lens
+  judges that on the very window whose input it joins, and checks that the process behind that input is
+  its own or its presenter's before it joins. With another program in front by then, the person has moved
+  on, and nothing is done. Up to 0.5.1 the lens attached to the input of the window that got the keyboard
+  back.
 - **Windows that never take the foreground.** The menu, the NR settings panel, the note, the
   notice and the readout are Tk toplevels made withdrawn, without a frame, topmost and fully
   transparent before Tk first maps them. Tk makes the window that carries the styles at its next
@@ -1891,6 +2236,8 @@ action profile "Game" tied to "Window title" (panel)
 action profile "Game" loaded for the program in front, "Window title" (auto)
 action auto profile on (keyboard)
 action check for a new version (Settings)
+action reset everything, the profiles kept (Settings)
+action reset everything cancelled (Settings)
 action quit (close button)
 ```
 
@@ -1911,7 +2258,10 @@ Settings writes one line that names each setting it changed, by its key in the i
 value, or says that nothing changed. On the Profiles page, Rename, Delete, Save the current
 settings, the tie to the program last in front and Untie each write a line that names the profile,
 and so does Save in the dialog for a new profile. Check now on the Program page writes
-`check for a new version`. The plus and minus on the title bar only choose a number, and Set has the
+`check for a new version`. Reset everything there writes `reset everything` with the profiles kept
+or removed, `reset everything cancelled`, or `reset everything refused` while another lens runs, and
+the closing lens writes a line for each file the reset changed or could not change. The plus and
+minus on the title bar only choose a number, and Set has the
 line. Moving the lens by its title bar or its tab, sliding the tab along the edge, resizing the lens
 by its edges and dragging the divider write no action line, and neither do Browse, Cancel and the
 choices made in Settings before Save. A value changed on the panel gets one line once it has held
@@ -2019,6 +2369,8 @@ while the engine reads the file, it is tried again up to ten times, 30 ms apart.
 still does not take it, nothing of the profile is loaded, the log says
 `ReShade.ini could not be written, so profile 'Game' was not loaded`, and the notice or the bar says
 that the profile was not loaded. Neural Rendering goes on or off as the profile's section has it.
+Reset everything keeps the profiles and their ties unless its box is ticked, and the lens after it
+starts with none in use, see Reset everything under The installer and the stack setup.
 
 A profile saved before 0.6.1 holds neither `per_pass` nor `quality`. Applying one empties the lens's
 section, so each pass from the second on runs at the first pass's values, apart from the intensity
@@ -2341,9 +2693,9 @@ read with one meaning, from the section as it was, with a key the section lacks 
 `NRDetailStability`, `NRLookMode`, `NRLookTone`, `NRLookDetail`, `NRLookDetailRadius`, `NRLookHalo`,
 `NRLookHaloBrightSide`, `NRLookStabilize`, `NRLookStabilizeMs`, `NRLookStabilizeDetail`,
 `NRLookMaxBrighten`, `NRLookMaxDarken` and `NRLookMaxColour`, which 8.5.0-rc10 and the fast engine
-read and 5.2.1 leaves as they are, and with them `NRKeepBlacks`, Keep blacks, which the fast engine
-alone reads, so a fullscreen lens keeps its look whichever build the window runs, see The Look
-stage. Three go across changed:
+read and 5.2.1 leaves as they are, and with them `NRKeepBlacks`, Keep blacks, and `NRMotionSource`,
+Motion vectors, which the fast engine alone reads, so a fullscreen lens keeps its look whichever build
+the window runs, see The Look stage and Motion vectors for the network. Three go across changed:
 
 - Denoise before upscaling, `NRPreUpscale` 0 or 1 under 5.2.1, is the hook point `NRHookPoint` 0
   Upscaled or 1 Render under 8.5.0-rc10. Render is the same path and gives the same picture, 0.119
@@ -2673,8 +3025,9 @@ ReShade reads the preset when its process starts. At Full with no section in the
 nothing, Full being the estimator's default, and with VORT as the provider Settings leaves the
 choice out. The ReShade overlay offers the same setting and writes the preset back, so a value
 there that differs from the one the lens last wrote is kept, in the lens and its ini, at the next
-start of the presenter. At the lens's own start its setting wins. The fast engine gives the model
-no motion vectors, so the setting does nothing for it.
+start of the presenter. At the lens's own start its setting wins. The fast engine takes its motion
+from the card's own motion estimator, see Frame generation and Motion vectors for the network, so the
+setting does nothing for it.
 
 Power was measured over the moving square, two runs each, with the frame rates within two frames
 a second of each other at each size:
@@ -2725,6 +3078,9 @@ With HDR on for its monitor the engine captures, works and draws like this:
   white. It goes into one of two `R8G8B8A8` textures, and the downscale and the network work on it
   as on an 8-bit capture. Whether a frame is new is decided on the two 16-bit frames, compared bit
   for bit, so a change that lies only above SDR white counts too.
+- **Frame generation's estimator works from a copy of its own**, NV12 at the estimator's size, made
+  from the 16-bit frame scaled by the SDR white level, standard content filling 0 to 0.8 of the
+  planes and what is brighter compressed above that, never flat, see Frame generation.
 - **The swapchain is in 16-bit floats in scRGB**, `R16G16B16A16_FLOAT` with the colour space
   `RGB_FULL_G10_NONE_P709`, on both ways of making it. The ready line then gives the format as 10,
   where it is 87 in 8 bits.
@@ -3095,10 +3451,13 @@ toggle is unambiguous instead, measuring 12.7/255 on plain text.
   walks the z-order above the presenter every 200 ms and raises itself when a visible window that
   is neither its own nor itself topmost overlaps it.
 - `tk_popup` is a native `TrackPopupMenu`. It blocks Tk's main loop until the menu closes, and it
-  dismisses on an outside click or Escape only while its owner is the foreground window, which a
-  title bar that never activates is not. The menu is a Tk window of the lens's own instead, closed
-  by a 30 ms poll of the mouse buttons and Escape through `GetAsyncKeyState`. While a fullscreen
-  lens holds Escape as a hotkey for the menu, the poll leaves Escape to the hotkey.
+  dismisses on an outside click or Escape only while its owner is the foreground window, which a title
+  bar that never activates is not. The menu is a Tk window of the lens's own instead, closed by a 30 ms
+  poll of the mouse buttons and Escape through `GetAsyncKeyState`. While a fullscreen lens holds Escape
+  as a hotkey for the menu, the poll leaves Escape to the hotkey. An entry is chosen as the button comes
+  up on it, after it went down on that same entry. Tk gives the release to the widget that took the
+  press, but a window destroyed while the button is down loses it, and the release then goes to the
+  window under the pointer, another program's included.
 - `RegisterHotKey` posts `WM_HOTKEY` to the registering thread's message queue. It must be
   registered on the same thread that pumps messages, not on a thread whose queue belongs to
   something else such as a tkinter mainloop.
@@ -3460,6 +3819,33 @@ where the user expects instead of to ReShade:
   the presenter was click-through, and the window that had the keyboard before had it back. Done
   gave the same.
 
+The window the keyboard goes back to is the one in front as tweak mode begins. Where that is a
+window of the lens's own, or no window, it is the program the lens last saw in front, which it
+reads five times a second, see The program in front under Nothing of the lens goes into another
+program. A window of the lens's own is in front after a click on the lens's taskbar button, for
+one, since the lens minimises the window of that button again at once, and Windows leaves it in
+front. Measured on a test computer with an RTX 5090, with that window restored and brought in front
+as such a click does, it was still in front once the lens had minimised it, and tweak mode begun
+from the menu then gave the keyboard back to the program last in front. Up to 0.9.0 a window of
+the lens's own was left be, and the presenter kept the keyboard. A window that has gone by the time
+tweak mode ends is still left be, and the presenter keeps the keyboard.
+
+**Home outside tweak mode.** A Home that reaches the presenter while tweak mode is off opens the
+overlay all the same, over a picture that lets every click through. A Home reaches the presenter
+only while the presenter is the foreground window, which it stays where the keyboard had no window
+to go back to. So while the ReShade engine runs out of tweak mode and the presenter is the
+foreground window, the lens reads Home every 30 ms as it does in tweak mode, and at no other time.
+Its look at the window in front five times a second starts that reading, which stops once the
+presenter is no longer in front. A press from before the reading started is forgotten, and so is
+the Home of the NR settings hotkey, for which the lens posts a Home itself. As the key goes down
+the presenter presents at the display's rate for a second, since ReShade sees a press only on a
+present and an idle presenter presents four times a second. Once the key is up, tweak mode starts
+without a Home posted, and the next Home ends it as above. Should a second Home start tweak mode
+again before the first has handed the keyboard back, 200 ms after it, nothing is handed back.
+Measured three times on a test computer with an RTX 5090, with either build of the Home menu
+add-on, the log said tweak mode on (Home) within 0.02 s of the key coming up, the picture then took
+clicks, and the next Home ended tweak mode within 0.02 s as well.
+
 Neural Rendering switched on or off in tweak mode, from the menu or by F9, ends it the same way as
 Done before the presenter is replaced, see Nothing of the lens goes into another program.
 
@@ -3469,8 +3855,9 @@ that had it. Both results on the keyboard were measured with the earlier hand-ba
 to the input of the window that got the keyboard back. Since 0.6.0 the lens hands the keyboard back
 by attaching to the presenter's input, never to that of the window that gets it, see Nothing of
 the lens goes into another program. Measured again with that hand-back, tweak mode ended from the
-taskbar list as Done ends it left the keyboard with the window that had it before. After Home and
-after Set it has not been measured again.
+taskbar list as Done ends it left the keyboard with the window that had it before. After Home it
+was measured again on a test computer with an RTX 5090, and the window that had the keyboard before
+had it back. After Set it has not been measured again.
 
 **The fast engine has no overlay to open**, since no ReShade runs in it. The lens's own NR settings
 panel takes its place there. From the top it holds the profile picker, the switch that loads a
@@ -3798,6 +4185,65 @@ driving the offer end to end against the built exe:
   arguments it was started with, so a folder named on the command line or in the ini that led to
   the offer was found first and the offer came back. The wizard returns the folder it installed
   into and the relaunch names it first.
+
+### Reset everything
+
+Reset everything, a button on the Program page of Settings under a heading of its own, puts the lens back as
+a new install has it. The button only asks. The question is the lens's own dialog,
+`lens_look.dialogs.Dialog` with a box, Remove the profiles too, off to begin with, and the buttons Reset
+everything and Cancel, Cancel the default and the answer to Escape and to the close button, with Slate's Esc
+cap on Cancel and Windows' warning sign and sound. Down and Up move between the box and the buttons in the
+order the screen shows them, Tab moves in Tk's own order, Space ticks the box, and Enter presses the button
+that has the keyboard, or Cancel where the box has it. While another lens runs, the button says so and does
+nothing, since the two share the files. No key, menu entry, tray entry or word of the taskbar list reaches
+it. Where the lens's own dialog cannot be shown, Windows' own OK and Cancel box asks, Cancel its default,
+with no box, so the profiles stay.
+
+Confirmed, Settings closes without saving and the lens quits as for a restart from Settings, which writes
+what the NR settings panel left unwritten, ends the presenter or the fast engine, and takes the tray icon
+and the taskbar list away. The files are reset after the main loop, with no presenter left, in the process
+that is closing, before it hands `lens.log` on and starts the new lens. A named mutex,
+`NeuralLens.reset.` with the lens's id, is held meanwhile, and a lens started then ends at once.
+
+`neural_stack.reset_stack` works in the stack folder the next start uses, the program's own folder or
+`NEURAL_LENS_STACK`'s, and runs no step of the setup. It writes `ReShade.ini`, `ReShadePreset.ini` and
+`dlss5-feed.cfg` through `config_texts`, which `step_config` writes with too, with the motion vector provider
+`install-record.json` names, DRME where it names none, each into a file beside it first and then into its
+place. The add-on's section is the template's two lines, and the lens's own section goes. It puts the 5.2.1
+add-on in place from its zip in the `addons` folder, checked by hash, and removes the copies of the add-on's
+section the two builds keep there, the copies of `ReShade.ini` the 8.5 build makes and `ReShadeGUI.ini`.
+Where the 5.2.1 zip is missing or fails its hash, the 8.5 build stays with a section at its own config
+version, as a new install of that build has it, and the lens fetches the zip when it next starts, as for
+any change of the build. `nvngx_dlssnr.ini` is written from the Cost Scaler's release, which the stack setup
+keeps in the `addons` folder from 0.9.1 on, checked by hash, with the four switches the setup sets. Where
+the release is not there, those four switches are set in the file as it is and every other byte stays. The
+fast engine's own copy of that file, beside `lens-fast.exe`, goes, and the engine makes it again from the
+stack's. NVIDIA's runtime and model and the Cost Scaler's DLL are checked against their hashes, and the
+rest of the parts for being there. Nothing is downloaded or registered, and the parts, ReShade's layer and
+its registration, `install-record.json`, the logs, the 8.5 build's journal, ReShade's screenshots and a
+`downloads` folder a failed setup left stay as they are. A file that Windows will not let go of is tried
+again for two seconds and then named in `lens.log`, and the rest is reset all the same.
+
+In the data folder the next start uses, the program's own `data` or `NEURAL_LENS_DATA`'s, `lens-state.txt`,
+`lens-state-fullscreen.txt` and `update-check.txt` go, and with the box ticked `profiles.json` with the
+`.tmp` and `.bad` files beside it. `neural-lens.ini`, or the file `NEURAL_LENS_INI` names, goes whole, and
+`stack_dir`, `data_dir` and `screenshot_dir` with it. A data folder that `data_dir` moved loses its three
+state files as well and keeps its screenshots, logs and `themes.json`, and its `profiles.json` unless the
+box is ticked. The lens's own data folder gets a copy of that `profiles.json` and that `themes.json`, and a
+different file of the same name already there is kept as `profiles.json.before-reset` or
+`themes.json.before-reset`. A stack folder that `stack_dir` or `--stack-dir` named is left as it is, and
+the new lens starts without `--stack-dir`. Screenshots, logs and `themes.json` are never removed, nothing
+outside the program's folder and the data folders is written, and nothing is written to the registry.
+
+Then the stack's logs are copied into the archive in the next start's `logs`, and the self test runs as the
+setup runs it, the presenter on its pattern in a window of 960x540 at the top left of the primary monitor
+for nine seconds, where the stack's files were all written and its parts passed. The new lens gets the
+outcome as JSON in `NEURAL_LENS_RESET`, which it takes out of its environment as it imports, as it does
+`NEURAL_LENS_LOG_APPEND`. It starts windowed in the middle of the main monitor in Slate at one pass, with
+Neural Rendering on, and holds a line on its bar for 20 seconds that says what the reset did. With the
+profiles kept it starts with none in use while `profiles.json` stays as it was, and as it quits writes the
+file with none in use, only where the file still names the profile it dropped. A part that failed its
+check, or a self test that did not pass, has it offer the stack setup first, as for a part that is missing.
 
 ### VORT's includes, and the measure that agrees with the eye
 

@@ -192,16 +192,17 @@ class Menu(object):
     """A menu or a list in a drawn look, built in t, the window of the lens's
     own PopupMenu.open made for it, from the name and the items open was
     given. labels are the entries' Labels in PopupMenu's order, the head's
-    lines first. enter(n), leave(n) and click(n) are called as the pointer
-    comes onto entry n, leaves it and clicks it, for each entry that does
+    lines first. enter(n) and leave(n) are called as the pointer comes onto
+    entry n and leaves it, press(n) and release(n, event) as the left button
+    goes down on it and comes up after that, for each entry that does
     something, on the entry and on each of its parts alike."""
 
-    def __init__(self, t, look, name, items, enter=None, leave=None, click=None):
+    def __init__(self, t, look, name, items, enter=None, leave=None, press=None, release=None):
         self.look, self.name = look, name
         self.kind = widgets.kind_of(look)
         self.k, self.c = MENU[self.kind], look.c
         self.s = look.scale_for(t)
-        self.enter, self.leave, self.click = enter, leave, click
+        self.enter, self.leave, self.press, self.release = enter, leave, press, release
         self.labels, self.rows = [], []
         k, c = self.k, self.c
         t.configure(bg=c["frame"])
@@ -444,7 +445,8 @@ class Menu(object):
         """The pointer and the click of an entry that does something, on the
         entry and on each of its parts. The entry does not take the pointer's
         move onto one of its parts as leaving it, which Tk tells by the detail
-        NotifyInferior."""
+        NotifyInferior. The click is handed on as its press and its release,
+        and PopupMenu.release chooses the entry."""
         n, label = row.n, row.label
 
         def leave(detail):
@@ -455,13 +457,19 @@ class Menu(object):
             if self.enter is not None:
                 self.enter(n)
 
-        def click(event):
-            if self.click is not None:
-                self.click(n)
+        def press(event):
+            if self.press is not None:
+                self.press(n)
+
+        def release(event):
+            if self.release is not None:
+                self.release(n, event)
 
         label.bind("<Enter>", enter)
         label.bind("<Leave>", "%s %%d" % label.register(leave))
-        label.bind("<Button-1>", click)
+        label.bind("<ButtonPress-1>", press)
+        label.bind("<ButtonRelease-1>", release)
         for part in _inside(label):
             part.bind("<Enter>", enter)
-            part.bind("<Button-1>", click)
+            part.bind("<ButtonPress-1>", press)
+            part.bind("<ButtonRelease-1>", release)

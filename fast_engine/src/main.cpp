@@ -128,11 +128,16 @@
 //                                 feature and so one history, each pass with its own
 //                                 values, as SharedNetwork=1 in [NeuralLens.Passes] does.
 //                                 See NrPasses in common.h and read_nr_passes
+//   LENS_FAST_NO_ESTIMATOR=1      the motion estimator is refused as on a card without one,
+//                                 with the same "framegen unavailable" line, so the network
+//                                 gets zero vectors and frame generation stays off, see
+//                                 ensure_estimator()
 #include "capture.h"
 #include "capturetest.h"
 #include "common.h"
 #include "framegen.h"
 #include "gpu.h"
+#include "model_motion.h"
 #include "pipeline.h"
 #include "proto.h"
 #include "selftest.h"
@@ -475,6 +480,8 @@ struct Profile {
   double conv_ms = 0.0;       // GPU time of the conversion of 16-bit frames, over the ingests
   int joined = 0;             // new pictures drawn by one list, see kJoinAfter
   int same = 0;               // of the frames drawn so, the ones found the same as the last
+  double est_ms = 0.0;        // the fine motion estimates' time on the video engine, see
+  int ests = 0;               // read_estimate_time()
 };
 
 // Every present is followed to the screen. DXGI's frame statistics say which refresh showed
@@ -747,6 +754,11 @@ struct State {
   int gaps_have = 0;
   int generated = 0;             // this second: made pictures presented
   int gen_dropped = 0;           // this second: made pictures a new frame overtook
+
+  // ---- the network's motion vectors, see model_motion.h
+  MotionPair pair;               // which frames the last estimate lies between, and the network's last
+  int motion_fed = 0;            // this second: runs of the network handed the card's estimate
+  bool est_unread = false;       // an estimate was submitted whose time the profile has not read
 
   // ---- the screenshot's writer
   HANDLE shot_thread = nullptr;  // the last one started, kept so the way out can wait for it
@@ -1300,6 +1312,21 @@ void switch_settle(State& s, bool on) {
   note("loop: the settle is %s", on ? "on" : "off");
 }
 
+// The note that says what the network is told of the motion, at the start and whenever a
+// reload changes the source, see model_motion.h.
+void note_motion(const State& s) {
+  const char* why = s.o.motion >= 0 ? "--motion" : "NRMotionSource";
+  if (s.settings.look.motion_source != kMotionCard) {
+    note("loop: the network gets no motion vectors, as %s says", why);
+  } else if (!s.network) {
+    note("loop: there is no network to hand the card's motion estimate to");
+  } else if (s.gen_refused) {
+    note("loop: the network gets no motion vectors, since the card has no motion estimator the engine can use");
+  } else {
+    note("loop: the network gets the card's motion estimate as its motion vectors, as %s says", why);
+  }
+}
+
 // "reload": the lens has written new settings into ReShade.ini, the base in the add-on's
 // section and each pass's own values, see NrPasses. Only the passes in use are read. The note
 // names the base and, for each pass that has values of its own, those values. A new preset
@@ -1315,10 +1342,13 @@ void reload_settings(State& s) {
     note("loop: reload: %s, the settings stay as they are", err.c_str());
     return;
   }
+  take_motion_option(s.o, fresh);
   // the look's values are not part of same_passes(), since a change of them alone remakes
   // nothing: the pipeline takes them live, see Pipeline::set_settings, and the picture is
-  // drawn afresh with them
+  // drawn afresh with them. The motion's source is one of them: the estimator is made at the
+  // next new frame that wants it, see estimate_motion()
   const bool look_changed = !same_look(fresh.look, s.settings.look);
+  const bool motion_changed = fresh.look.motion_source != s.settings.look.motion_source;
   if (same_passes(fresh, s.settings, s.o.passes) && !look_changed) return;
   const bool remake = s.network && (fresh.preset != s.settings.preset || fresh.shared != s.settings.shared);
   s.settings = fresh;
@@ -1344,6 +1374,7 @@ void reload_settings(State& s) {
        look_text(fresh.look).c_str(),
        s.network && all_zero ? ". At an intensity of 0 the network does not run" : "",
        remake ? ". The features are made again for the preset or the shared state" : "");
+  if (motion_changed) note_motion(s);
 }
 
 // "quality N": the network works at another size, and the loop does not stand still for it.
@@ -1596,14 +1627,23 @@ void trace_present(State& s, bool fresh, double called);
 
 const char* framegen_name(int mode) { return mode == 1 ? "ahead" : mode == 2 ? "between" : "off"; }
 
-// The motion estimator, made at the first need: frame generation switched on, or the Look
-// stage's filter following the motion. A card without one leaves both without it, with a
-// line for the lens, said once.
+// The motion estimator, made at the first need: frame generation switched on, the Look
+// stage's filter following the motion, or the network to be handed the estimate, which
+// start() makes it for before the first picture. A card without one leaves all three
+// without it, with a line for the lens, said once. LENS_FAST_NO_ESTIMATOR=1 refuses it the
+// same way, for a test.
 bool ensure_estimator(State& s) {
   if (s.gen_ready) return true;
   if (s.gen_refused) return false;
   std::string err;
-  if (!s.gen.init(s.gpu, (UINT)s.o.width, (UINT)s.o.height, s.window.format(), err)) {
+  const double t0 = now_s();
+  bool made = false;
+  if (env_text(L"LENS_FAST_NO_ESTIMATOR") == L"1") {
+    err = "the motion estimator is switched off for a test";
+  } else {
+    made = s.gen.init(s.gpu, (UINT)s.o.width, (UINT)s.o.height, s.window.format(), err);
+  }
+  if (!made) {
     note("loop: framegen: %s, so no motion estimate", err.c_str());
     say("framegen unavailable %s", err.c_str());
     s.gen.shutdown();
@@ -1611,17 +1651,49 @@ bool ensure_estimator(State& s) {
     return false;
   }
   s.gen_ready = true;
-  note("loop: framegen: the motion estimator works at %ux%u in blocks of 8, %ux%u vectors",
-       s.gen.me_width(), s.gen.me_height(), s.gen.vec_width(), s.gen.vec_height());
+  note("loop: framegen: the motion estimator works at %ux%u in blocks of 8, %ux%u vectors, made in %.1f ms",
+       s.gen.me_width(), s.gen.me_height(), s.gen.vec_width(), s.gen.vec_height(), (now_s() - t0) * 1000.0);
   return true;
 }
 
+// The last estimate's time on the encode queue, into the second's profile, once the encode
+// queue has passed it and before the next estimate takes its timestamps: est= on the stats
+// line. Nothing where none was made since the last read, or the queue takes no timestamps.
+void read_estimate_time(State& s) {
+  if (!s.est_unread || !s.gen_ready || !s.gen.encode_fence) return;
+  if (s.gen.encode_fence->GetCompletedValue() < s.gen.encode_value) return;
+  s.est_unread = false;
+  const double ms = s.gen.last_estimate_ms();
+  if (ms > 0.0) {
+    s.profile.est_ms += ms;
+    ++s.profile.ests;
+  }
+}
+
+// The card's last estimate as the network's motion vectors, see Pipeline::set_model_motion.
+ModelMotion estimate_for_network(const FrameGen& gen) {
+  ModelMotion m;
+  m.vectors = gen.vectors.Get();
+  m.vec_w = gen.vec_width();
+  m.vec_h = gen.vec_height();
+  m.me_w = gen.me_width();
+  m.me_h = gen.me_height();
+  return m;
+}
+
 // The motion of the frame about to be drawn from the frame before, estimated before its
-// render, for frame generation and for the Look stage's filter (look.h), which the queue
-// waits for before the render list runs. Nothing when neither wants it.
-void estimate_motion(State& s) {
+// render, for frame generation, for the Look stage's filter (look.h) and for the network,
+// which takes it as its motion vectors where NRMotionSource says so (model_motion.h). The
+// queue waits for the estimate before the render list runs, when the Look stage or the
+// network reads it in that list. Nothing when none of the three wants it. joined: the frame
+// goes as a joined draw, whose network gets zero vectors and so wants no estimate, see
+// model_motion.h. A new frame of either kind, so the frames are counted here.
+void estimate_motion(State& s, bool joined) {
   s.gen_estimated = false;
-  const bool wanted = s.framegen > 0 || s.settings.look.wants_motion();
+  s.pair.new_frame();
+  const bool model_wants =
+      !joined && s.settings.look.motion_source == kMotionCard && s.pipeline.network_runs();
+  const bool wanted = motion_wanted(s.framegen, s.settings.look.wants_motion(), model_wants);
   if (!wanted || !ensure_estimator(s)) {
     s.pipeline.set_motion(nullptr, 0, 0, 1.0f, 0.0f);
     return;
@@ -1629,21 +1701,30 @@ void estimate_motion(State& s) {
   std::string err;
   bool ready = false;
   UINT64 read_value = 0;
+  s.gen.coarse_on = s.framegen > 0;  // the Look stage's filter and the network take the fine estimate alone
+  s.gen.sdr_white = (float)sdr_white_units(s);
+  read_estimate_time(s);  // the last one's, before this one takes the timestamps
   step("estimate");
   if (!s.gen.estimate(s.cur.texture, ready, read_value, err)) {
     note("loop: framegen: %s, no motion estimate for this frame", err.c_str());
+    s.pair.estimated(false, false);
     s.pipeline.set_motion(nullptr, 0, 0, 1.0f, 0.0f);
     return;
   }
+  s.pair.estimated(true, ready);
   s.capture.note_read(s.cur, read_value);  // the conversion reads the frame
   s.gen_estimated = ready;
-  if (ready && s.settings.look.wants_motion()) {
-    if (!s.gen.wait_estimate_on_queue(err)) die(s, "framegen: " + err);
+  if (ready) s.est_unread = true;
+  const bool look = ready && s.settings.look.wants_motion();
+  const bool feed = feed_model(s.pair, model_wants, joined, ready);
+  if ((look || feed) && !s.gen.wait_estimate_on_queue(err)) die(s, "framegen: " + err);
+  if (look) {
     s.pipeline.set_motion(s.gen.vectors_texture(), s.gen.vec_width(), s.gen.vec_height(),
                           s.gen.cell_texels((UINT)s.work_w), s.gen.unit_texels((UINT)s.work_w));
   } else {
     s.pipeline.set_motion(nullptr, 0, 0, 1.0f, 0.0f);
   }
+  if (feed) s.pipeline.set_model_motion(estimate_for_network(s.gen));
 }
 
 // "framegen off|ahead|between" and --framegen, see framegen.h. The estimator is made at the
@@ -2265,10 +2346,16 @@ void draw(State& s, Draw how) {
     ran_network = s.pipeline.network_runs();
     if (ran_network && s.runs_since_switch < kSwitchRuns) ++s.runs_since_switch;
   }
+  // the network's history is now this frame's when it ran, and the stats line counts the runs
+  // that were handed the card's estimate, see model_motion.h
+  if (how != Draw::Repaint) {
+    s.pair.drew(ran_network);
+    if (s.pipeline.motion_fed(0)) ++s.motion_fed;
+  }
 
-  // Frame generation, see framegen.h: the finished picture is copied and the motion from the
-  // frame before estimated, before the present. For "between" the made picture takes this
-  // present, and the frame's own follows half a frame later, see turn().
+  // Frame generation, see framegen.h: the finished picture is copied before the present, the
+  // motion having been estimated before the render, see estimate_motion(). For "between" the
+  // made picture takes this present, and the frame's own follows half a frame later, see turn().
   const bool fresh_now = how == Draw::New || how == Draw::Joined;
   bool can_make = false;
   double gap = 0.0;
@@ -2281,7 +2368,19 @@ void draw(State& s, Draw how) {
     gap = source_gap(s);
     step("framegen");
     if (!s.gen.keep(target, err)) {
-      note("loop: framegen: %s, the option goes off", err.c_str());
+      if (s.gen.outs_failed) {
+        // The card could not make frame generation's copies of the picture. The estimator is
+        // given up as after a failed init(), see ensure_estimator(), with the same line, so the
+        // lens greys Frame generation and Motion vectors, and the network and the Look stage
+        // get no motion from the next new frame on. Its parts stay until the engine leaves,
+        // since the render just submitted reads its vectors.
+        note("loop: framegen: %s, so no motion estimate", err.c_str());
+        say("framegen unavailable %s", err.c_str());
+        s.gen_ready = false;
+        s.gen_refused = true;
+      } else {
+        note("loop: framegen: %s, the option goes off", err.c_str());
+      }
       s.framegen = 0;
     } else {
       can_make = s.gen_estimated && gap > 0.0;
@@ -2499,7 +2598,7 @@ bool take_frame(State& s) {
       Sleep((DWORD)s.stall_ms);
       s.t_stall = now_s() + s.stall_every;
     }
-    estimate_motion(s);
+    estimate_motion(s, true);
     draw(s, Draw::Joined);
     return true;
   }
@@ -2556,7 +2655,7 @@ bool take_frame(State& s) {
     Sleep((DWORD)s.stall_ms);
     s.t_stall = now_s() + s.stall_every;
   }
-  estimate_motion(s);
+  estimate_motion(s, false);
   draw(s, Draw::New);
   return true;
 }
@@ -2629,6 +2728,11 @@ void report(State& s, double now) {
     extra += strf(" joined=%d same=%d", p.joined, p.same);
     // gendrop: made pictures a new frame overtook before they were due, see framegen.h
     extra += strf(" gendrop=%d", s.gen_dropped);
+    // est: the fine motion estimate's time on the card's video engine with its resolve, the
+    // mean over the second's estimates, 0 where none was made or the encode queue takes no
+    // timestamps, see read_estimate_time()
+    read_estimate_time(s);
+    extra += strf(" est=%.2f", p.ests > 0 ? p.est_ms / p.ests : 0.0);
   } else {
     extra = delay;
   }
@@ -2646,6 +2750,10 @@ void report(State& s, double now) {
   // look.h, 0 when the picture is the network's own, so the lens learns a reload took the
   // look's values
   extra += strf(" look=%d", s.settings.look.active() ? 1 : 0);
+  // motion: the network's runs in the second that were handed the card's motion estimate as
+  // their motion vectors, see model_motion.h. 0 with NRMotionSource at 0, on a card without a
+  // motion estimator, and when nothing moved
+  extra += strf(" motion=%d", s.motion_fed);
   const std::string line = strf("stats new=%d arrived=%u repeated=%d dropped=%u skipped=%d meter=%s%s", s.fresh,
                                 c.arrived, s.repeated, c.dropped, s.skipped, meter.c_str(), extra.c_str());
   say("%s", line.c_str());
@@ -2654,6 +2762,7 @@ void report(State& s, double now) {
   trace_reset(s.trace);
   s.fresh = s.repeated = s.skipped = s.late = s.settled = s.left = 0;
   s.generated = s.gen_dropped = 0;
+  s.motion_fed = 0;
   s.t_report = now;
   // It follows a change of the display's mode, and under a limit the capture's interval
   // and the limit's allowances follow with it.
@@ -2720,6 +2829,7 @@ void report_paused(State& s, double now) {
   trace_reset(s.trace);
   s.fresh = s.repeated = s.skipped = s.late = s.settled = s.left = 0;
   s.generated = s.gen_dropped = 0;
+  s.motion_fed = 0;
   s.t_report = now;
 }
 
@@ -3072,6 +3182,7 @@ void start(State& s) {
   if (!read_nr_passes(o.stack_dir, s.settings, err, o.passes)) {
     note("loop: %s, the network runs on its own defaults", err.c_str());
   }
+  take_motion_option(o, s.settings);
   s.network = env_text(L"LENS_FAST_NO_NETWORK") != L"1";
   if (!s.network) note("loop: LENS_FAST_NO_NETWORK=1, every picture is the plain copy");
   PipelineDesc pd;
@@ -3121,6 +3232,10 @@ void start(State& s) {
   }
   if (!start_capture(s, err)) die(s, "capture: " + err);
   if (o.framegen > 0) set_framegen(s, o.framegen);
+  // The estimator is made now when the network is to be handed its estimate, so the first
+  // picture that moves does not stand still while it is made, see estimate_motion()
+  if (s.network && s.settings.look.motion_source == kMotionCard) ensure_estimator(s);
+  note_motion(s);
 
   const int passes = s.network ? o.passes : 0;
   // the strength, see NrPasses, named where it is above 1
@@ -3163,11 +3278,12 @@ int wmain(int argc, wchar_t** argv) {
     }
     return exit_code::ok;
   }
+  if (o.motion_cases) return run_motion_cases();
   // The two tests may have had the runtime or the capture loaded, so they leave the way the
   // engine does, see leave_now(). The streams are flushed first for whatever they wrote
   // through the C runtime.
-  if (o.selftest || o.capturetest) {
-    const int code = o.selftest ? run_selftest(o) : run_capturetest(o);
+  if (o.selftest || o.sequence || o.capturetest) {
+    const int code = o.sequence ? run_sequence(o) : o.selftest ? run_selftest(o) : run_capturetest(o);
     fflush(nullptr);
     leave_now(code);
   }

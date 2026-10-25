@@ -1,10 +1,13 @@
 // pipeline.cpp: the GPU work for one captured frame. See pipeline.h for the contract.
 //
-// Six shaders do it all (src\shaders):
+// Seven shaders do it all (src\shaders):
 //   convert_cs     a frame in 16-bit floats to 8 bits, scaled by the SDR white level, before
 //                  anything else, see pipeline.h. Never for an 8-bit frame
 //   ingest_cs      the area downscale into the network's input and the exact comparison
 //                  with the frame before, in one pass over the frame
+//   mvec_cs        before the first pass, the card's motion estimate as the network's motion
+//                  vectors, one a work texel, see set_model_motion(). Only for a render that
+//                  hands the network the estimate
 //   scale_cs       after the last pass, with the strength above 1, the change the passes
 //                  made together scaled in place on that pass's output, see NrPasses in
 //                  common.h. Never at a strength of 1
@@ -27,14 +30,16 @@
 // Resource states between calls, which every function here restores:
 //   the network's input    NON_PIXEL_SHADER_RESOURCE, as Nr::evaluate wants it
 //   the network's outputs  UNORDERED_ACCESS, the same
+//   its motion vectors     NON_PIXEL_SHADER_RESOURCE, as Nr::evaluate wants them
 //   the flag buffer        UNORDERED_ACCESS
 //   frames and targets     COMMON (PRESENT), they are someone else's
 //   the converted frames   COMMON, as the frames they stand in for
+//   the estimator's vectors  COMMON, they are frame generation's
 //
 // The work size. Everything that depends on it is one WorkSet: the network's input and
-// output textures and the downscale's weights. A new work size gets a second set, made
-// while the first is in use, and the two change places between two pictures, when the GPU
-// has finished every list that named the old one (commit_work).
+// output textures, its motion vectors and the downscale's weights. A new work size gets a
+// second set, made while the first is in use, and the two change places between two
+// pictures, when the GPU has finished every list that named the old one (commit_work).
 #include "pipeline.h"
 
 #include "look.h"
@@ -46,6 +51,7 @@
 #include "convert_cs.h"
 #include "fullscreen_vs.h"
 #include "ingest_cs.h"
+#include "mvec_cs.h"
 #include "scale_cs.h"
 
 #include <algorithm>
@@ -113,7 +119,14 @@ constexpr UINT kSlotDraw0 = kSlotConv0 + kSlotsPerConv * kIngestTables;
 constexpr UINT kSlotsPerScale = 2;
 constexpr UINT kScalePairs = 2;
 constexpr UINT kSlotScale0 = kSlotDraw0 + kSlotsPerDraw * kDrawContexts;
-constexpr UINT kSlotCount = kSlotScale0 + kSlotsPerScale * kScalePairs;
+// The motion vectors' resolve, a table of two for each draw context, since two draws can be on
+// the card at once: SRV the estimator's vectors, UAV the work set's field, see record_field().
+constexpr UINT kSlotsPerMvec = 2;
+constexpr UINT kSlotMvec0 = kSlotScale0 + kSlotsPerScale * kScalePairs;
+constexpr UINT kSlotCount = kSlotMvec0 + kSlotsPerMvec * kDrawContexts;
+
+// The format of the network's motion vectors, see WorkSet::mvec.
+constexpr DXGI_FORMAT kFieldFormat = DXGI_FORMAT_R16G16_FLOAT;
 
 // The scale shader's table for the last of this many passes, see kSlotScale0.
 constexpr UINT scale_pair(int passes) { return (UINT)((passes - 1) % 2); }
@@ -140,6 +153,15 @@ struct ConvertConstants {
 struct ScaleConstants {
   UINT w, h;    // the work size
   float scale;  // the strength, the factor the change is scaled by, above 1
+  UINT unused;
+};
+struct MvecConstants {
+  UINT w, h;          // the work size
+  UINT me_w, me_h;    // the estimator's picture
+  UINT vec_w, vec_h;  // its grid
+  float ux, uy;       // work texels per unit of a vector, across and down
+  UINT constant;      // 1: (cx, cy) everywhere, a research switch
+  float cx, cy;
   UINT unused;
 };
 struct DrawConstants {
@@ -180,6 +202,9 @@ struct WorkSet {
   UINT w = 0, h = 0;
   ComPtr<ID3D12Resource> in;       // the network's input, the downscaled frame
   ComPtr<ID3D12Resource> out[2];   // pass n writes [n % 2] and reads what pass n - 1 wrote
+  ComPtr<ID3D12Resource> mvec;     // the network's motion vectors, kFieldFormat at the work size,
+                                   // made at the first render that hands them over, see
+                                   // Pipeline::set_model_motion. None while none is handed over
   ComPtr<ID3D12Resource> weights;  // the downscale's weights, see area_weights()
   UINT taps_x = 1, taps_y = 1;
   UINT weight_count = 1;
@@ -334,8 +359,14 @@ struct Pipeline::Impl {
   bool settings_pending = false;  // nr has not been given them yet, see set_settings()
 
   Look look;                 // the Look stage, see look.h, on the last pass's output after the strength
-  ComPtr<ID3D12RootSignature> ingest_root, draw_root, draw_hdr_root, convert_root, scale_root;
-  ComPtr<ID3D12PipelineState> ingest_pso, draw_pso, draw_hdr_pso, convert_pso, scale_pso;
+  ComPtr<ID3D12RootSignature> ingest_root, draw_root, draw_hdr_root, convert_root, scale_root, mvec_root;
+  ComPtr<ID3D12PipelineState> ingest_pso, draw_pso, draw_hdr_pso, convert_pso, scale_pso, mvec_pso;
+  // The card's motion estimate for the next render alone, see set_model_motion(), and what the
+  // last render handed each pass
+  ModelMotion model_motion;
+  bool model_motion_set = false;
+  bool fed[kNrMaxPasses] = {};
+  bool field_refused_said = false;  // the field could not be made, said once
   ComPtr<ID3D12DescriptorHeap> heap;
   UINT heap_step = 0;
   HdrAbove hdr_above = HdrAbove::Fade;  // see set_hdr_above()
@@ -735,19 +766,113 @@ struct Pipeline::Impl {
     l->Dispatch((work.w + 7) / 8, (work.h + 7) / 8, 1);
   }
 
+  // The model's motion for the render being recorded, taken once: set_model_motion() holds it
+  // for one render alone. false when none was set or it names nothing to resolve.
+  bool take_model_motion(ModelMotion& out) {
+    const bool set = model_motion_set;
+    out = model_motion;
+    model_motion = ModelMotion();
+    model_motion_set = false;
+    for (bool& f : fed) f = false;
+    if (!set) return false;
+    return out.constant || (out.vectors && out.vec_w > 0 && out.vec_h > 0 && out.me_w > 0 && out.me_h > 0);
+  }
+
+  // The work set's field, made at the first render that hands the network motion vectors at
+  // this size. false when it cannot be made, said once, and the network then gets zeros.
+  bool make_field() {
+    if (work.mvec) return true;
+    std::string err;
+    if (!gpu->make_texture(kFieldFormat, work.w, work.h, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                           D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, L"network motion vectors", work.mvec,
+                           err)) {
+      if (!field_refused_said) {
+        note("pipeline: the network's motion vectors cannot be made, %s, so it gets zero vectors", err.c_str());
+        field_refused_said = true;
+      }
+      return false;
+    }
+    note("pipeline: the network's motion vectors are a field of %ux%u in R16G16_FLOAT, %.1f MiB", work.w, work.h,
+         (double)work.w * work.h * 4.0 / 1048576.0);
+    return true;
+  }
+
+  // Records the field's resolve from the estimator's vectors, see mvec_cs.hlsl, on the draw
+  // context's own table. The vectors go from COMMON to readable and back, the field from
+  // readable to UNORDERED_ACCESS and back, which also makes its stores visible to the
+  // network's reads that follow.
+  void record_field(ID3D12GraphicsCommandList* l, int index, const ModelMotion& mm) {
+    const D3D12_RESOURCE_STATES kCommon = D3D12_RESOURCE_STATE_COMMON;
+    const D3D12_RESOURCE_STATES kRead = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    const D3D12_RESOURCE_STATES kWrite = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    const UINT table = kSlotMvec0 + kSlotsPerMvec * (UINT)index;
+    ID3D12Resource* vectors = mm.constant ? nullptr : mm.vectors;
+    srv(vectors, DXGI_FORMAT_R16G16_SINT, table);
+    D3D12_UNORDERED_ACCESS_VIEW_DESC uav = {};
+    uav.Format = kFieldFormat;
+    uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+    gpu->device->CreateUnorderedAccessView(work.mvec.Get(), nullptr, &uav, cpu_slot(table + 1));
+    if (vectors) transition(l, vectors, kCommon, kRead);
+    transition(l, work.mvec.Get(), kRead, kWrite);
+    ID3D12DescriptorHeap* heaps[] = {heap.Get()};
+    l->SetDescriptorHeaps(1, heaps);
+    l->SetComputeRootSignature(mvec_root.Get());
+    l->SetPipelineState(mvec_pso.Get());
+    MvecConstants k = {};
+    k.w = work.w;
+    k.h = work.h;
+    k.me_w = mm.me_w;
+    k.me_h = mm.me_h;
+    k.vec_w = mm.vec_w;
+    k.vec_h = mm.vec_h;
+    // a quarter texel of the estimator's picture in work texels, each axis by itself, in double
+    if (!mm.constant) {
+      k.ux = (float)(0.25 * (double)work.w / (double)mm.me_w * (double)mm.factor);
+      k.uy = (float)(0.25 * (double)work.h / (double)mm.me_h * (double)mm.factor);
+    }
+    k.constant = mm.constant ? 1u : 0u;
+    k.cx = mm.cx;
+    k.cy = mm.cy;
+    l->SetComputeRoot32BitConstants(0, sizeof(k) / 4, &k, 0);
+    l->SetComputeRootDescriptorTable(1, gpu_slot(table));
+    l->Dispatch((work.w + 7) / 8, (work.h + 7) / 8, 1);
+    transition(l, work.mvec.Get(), kWrite, kRead);
+    if (vectors) transition(l, vectors, kRead, kCommon);
+  }
+
   // Records the network's passes on the list, chained: a pass reads what the pass before it
   // wrote. With the strength above 1 the last pass is followed by the scale shader on its
   // output, so the composite sees the change the passes made together scaled. drop tells the
-  // network to forget its history. false with err from the runtime: the list may then hold
+  // network to forget its history. motion, when not null, is the card's estimate for this
+  // render, see set_model_motion(): resolved into the field before the first pass, once, and
+  // handed to the passes, unless drop, which reads no history. index is the draw context
+  // whose table the resolve takes. false with err from the runtime: the list may then hold
   // part of its commands, so the caller closes it and never runs it.
-  bool record_passes(ID3D12GraphicsCommandList* l, bool drop, std::string& err) {
+  bool record_passes(ID3D12GraphicsCommandList* l, int index, bool drop, const ModelMotion* motion,
+                     std::string& err) {
     const D3D12_RESOURCE_STATES kRead = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     const D3D12_RESOURCE_STATES kWrite = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    // Before the first evaluate, since the runtime leaves the list's heaps and state as it
+    // pleases. In the shared mode the passes after the first get zeros: their history is the
+    // same frame's pass before, which did not move
+    NrMotion field;
+    const NrMotion* first = nullptr;
+    const NrMotion* later = nullptr;
+    if (motion && !drop && make_field()) {
+      record_field(l, index, *motion);
+      field.field = work.mvec.Get();
+      field.w = work.w;
+      field.h = work.h;
+      first = &field;
+      later = nr.shared() && !motion->all_passes ? nullptr : &field;
+    }
     ID3D12Resource* in = work.in.Get();
     for (int pass = 0; pass < desc.passes; ++pass) {
       ID3D12Resource* out = work.out[pass % 2].Get();
       if (pass > 0) transition(l, in, kWrite, kRead);
-      if (!nr.evaluate(l, pass, in, out, drop, err)) return false;
+      const NrMotion* given = pass == 0 ? first : later;
+      if (!nr.evaluate(l, pass, in, out, drop, given, err)) return false;
+      fed[pass] = given != nullptr;
       if (pass > 0) transition(l, in, kRead, kWrite);
       in = out;
     }
@@ -1312,6 +1437,37 @@ bool Pipeline::init(Gpu& gpu, const PipelineDesc& desc, std::string& err) {
     }
   }
 
+  // ---- the network's motion vectors: constants, and a table of the estimator's vectors and
+  // the field the shader writes, see mvec_cs.hlsl
+  {
+    D3D12_DESCRIPTOR_RANGE ranges[2] = {};
+    ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    ranges[0].NumDescriptors = 1;
+    ranges[0].OffsetInDescriptorsFromTableStart = 0;
+    ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+    ranges[1].NumDescriptors = 1;
+    ranges[1].OffsetInDescriptorsFromTableStart = 1;
+    D3D12_ROOT_PARAMETER params[2] = {};
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[0].Constants.Num32BitValues = sizeof(MvecConstants) / 4;
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[1].DescriptorTable.NumDescriptorRanges = 2;
+    params[1].DescriptorTable.pDescriptorRanges = ranges;
+    if (!make_root(device, params, 2, "motion vectors", m.mvec_root, err)) {
+      shutdown();
+      return false;
+    }
+    D3D12_COMPUTE_PIPELINE_STATE_DESC d = {};
+    d.pRootSignature = m.mvec_root.Get();
+    d.CS = {g_mvec_cs, sizeof(g_mvec_cs)};
+    hr = device->CreateComputePipelineState(&d, IID_PPV_ARGS(&m.mvec_pso));
+    if (FAILED(hr)) {
+      err = "the motion vectors' pipeline state failed " + hr_text(hr);
+      shutdown();
+      return false;
+    }
+  }
+
   // ---- the Look stage's shaders and heap, see look.h
   if (!m.look.init(gpu, err)) {
     shutdown();
@@ -1465,9 +1621,15 @@ bool Pipeline::init(Gpu& gpu, const PipelineDesc& desc, std::string& err) {
       m.srv(nullptr, kRawFormat, conv_base);
       device->CreateUnorderedAccessView(nullptr, nullptr, &conv, m.cpu_slot(conv_base + 1));
     }
+    D3D12_UNORDERED_ACCESS_VIEW_DESC field = {};
+    field.Format = kFieldFormat;
+    field.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
     for (UINT i = 0; i < (UINT)kDrawContexts; ++i) {
       m.srv(nullptr, kFrameFormat, kSlotDraw0 + kSlotsPerDraw * i);
       m.srv(nullptr, kRawFormat, kSlotDraw0 + kSlotsPerDraw * i + 3);
+      // the motion vectors' table, written at each render that resolves them
+      m.srv(nullptr, DXGI_FORMAT_R16G16_SINT, kSlotMvec0 + kSlotsPerMvec * i);
+      device->CreateUnorderedAccessView(nullptr, nullptr, &field, m.cpu_slot(kSlotMvec0 + kSlotsPerMvec * i + 1));
     }
     m.write_work_descriptors();
   }
@@ -1586,9 +1748,11 @@ bool Pipeline::render_joined(ID3D12Resource* cur, ID3D12Resource* prev, ID3D12Fe
   m.record_ingest(l, (UINT)(1 + index), t0, cur, raw, cur8, prev8, prev16, compare, token);
 
   // ---- the render, as render() records it. The ingest's last mark is the draw's start.
+  ModelMotion motion;
+  const bool moved = m.take_model_motion(motion);
   const bool evaluate = m.runs() && !m.hold;
   const bool residual = m.hold ? (m.runs() && m.pair) : evaluate;
-  if (evaluate && !m.record_passes(l, reset || m.reset_next, err)) {
+  if (evaluate && !m.record_passes(l, index, reset || m.reset_next, moved ? &motion : nullptr, err)) {
     l->Close();
     return false;
   }
@@ -1689,6 +1853,8 @@ bool Pipeline::render(ID3D12Resource* cur, const Target& target, bool reset, boo
   // While another work size is being made no call goes to the runtime. The picture is then
   // the new native frame with the network's change as the last render before that left it,
   // if that render had one.
+  ModelMotion motion;
+  const bool moved = m.take_model_motion(motion);
   const bool evaluate = m.runs() && !m.hold;
   const bool residual = m.hold ? (m.runs() && m.pair) : evaluate;
   // the three marks of an ingest a joined list would hold, together: no ingest here
@@ -1696,7 +1862,7 @@ bool Pipeline::render(ID3D12Resource* cur, const Target& target, bool reset, boo
   m.timer.mark(l, t0 + 1);
   m.timer.mark(l, t0 + 2);
   if (evaluate) {
-    if (!m.record_passes(l, reset || m.reset_next, err)) {
+    if (!m.record_passes(l, index, reset || m.reset_next, moved ? &motion : nullptr, err)) {
       l->Close();  // it may hold part of the runtime's commands, and is never run
       return false;
     }
@@ -1980,6 +2146,24 @@ void Pipeline::set_settings(const NrSettings& settings) {
 
 void Pipeline::set_motion(ID3D12Resource* vectors, UINT vec_w, UINT vec_h, float cell_texels, float unit_texels) {
   if (impl_) impl_->look.set_motion(vectors, vec_w, vec_h, cell_texels, unit_texels);
+}
+
+void Pipeline::set_model_motion(const ModelMotion& motion) {
+  if (!impl_) return;
+  impl_->model_motion = motion;
+  impl_->model_motion_set = true;
+}
+
+bool Pipeline::motion_fed(int pass) const {
+  return impl_ && pass >= 0 && pass < kNrMaxPasses && impl_->fed[pass];
+}
+
+ID3D12Resource* Pipeline::motion_field(UINT& w, UINT& h) const {
+  w = h = 0;
+  if (!impl_ || !impl_->work.mvec) return nullptr;
+  w = impl_->work.w;
+  h = impl_->work.h;
+  return impl_->work.mvec.Get();
 }
 
 bool Pipeline::network_needs_remake() const { return impl_ && impl_->network && impl_->nr.needs_remake(); }

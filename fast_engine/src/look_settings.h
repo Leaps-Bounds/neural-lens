@@ -5,6 +5,20 @@
 // look.h can both hold it.
 #pragma once
 
+// Where the motion vectors the model is handed come from, NRMotionSource in the same section:
+// the fast engine's own key, like NRKeepBlacks, which neither build of the add-on reads. A
+// number, as the section's other choices are: a value with a fraction is cut to a whole number
+// (0.9 is 0), and anything but these two, or no number at all, is the default.
+constexpr int kMotionNone = 0;  // zero vectors, which is what the engine handed the model before
+constexpr int kMotionCard = 1;  // the card's own motion estimate, see framegen.h and model_motion.h
+// Card is the default. It gives the fast engine's network motion vectors, as the Feed gives the
+// ReShade engine's in a window, and brings a moving picture nearer the network's own picture at
+// rest. None hands it zero vectors, as every version before 0.9.1 did, for a picture where the
+// card's estimate softens fine detail in motion, marks the edges of things that move against
+// their background or, where the work size is much smaller than the picture, boils more. See
+// docs/NOTES.md, Motion vectors for the network. The lens's LOOK_DEFAULTS says the same.
+constexpr int kMotionSourceDefault = kMotionCard;
+
 struct NrLook {
   float tone = 1.0f;             // NRLookTone, 0 to 2: the broad band's gain
   float detail = 1.0f;           // NRLookDetail, 0 to 2: the fine band's gain
@@ -25,6 +39,11 @@ struct NrLook {
                                  // (composite_ps.hlsl), since the model lifts such pixels by a
                                  // level or two and nothing else there. Read always, like
                                  // detail stability
+  int motion_source = kMotionSourceDefault;  // NRMotionSource: kMotionNone or kMotionCard, see above.
+                                 // Not the stage's own work either: it is what the network
+                                 // itself is told of the motion, so none of the four tests
+                                 // below looks at it and look= on the stats line does not change with
+                                 // it. Read always, like detail stability
   float max_brighten = 0.0f;     // NRLookMaxBrighten, 0 to 4 stops, 0 for no ceiling
   float max_darken = 0.0f;       // NRLookMaxDarken, 0 to 4 stops, 0 for no floor
   float max_colour = 0.0f;       // NRLookMaxColour, 0 to 2 stops, 0 for no limit
@@ -47,5 +66,5 @@ inline bool same_look(const NrLook& a, const NrLook& b) {
          a.halo_bright == b.halo_bright && a.stabilize == b.stabilize && a.stabilize_ms == b.stabilize_ms &&
          a.stabilize_detail == b.stabilize_detail && a.detail_stability == b.detail_stability &&
          a.max_brighten == b.max_brighten && a.max_darken == b.max_darken && a.max_colour == b.max_colour &&
-         a.keep_blacks == b.keep_blacks;
+         a.keep_blacks == b.keep_blacks && a.motion_source == b.motion_source;
 }

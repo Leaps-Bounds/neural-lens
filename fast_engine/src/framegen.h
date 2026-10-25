@@ -24,15 +24,16 @@
 // Either way one picture is made for each frame, so the rate shown is twice the source's,
 // up to the display's. The stats line counts them as generated=N.
 //
-// How it sits in the loop (main.cpp): after the composite of a new frame is submitted and
-// before its present, after_fresh() copies the finished picture into one of two textures of
-// its own, converts the frame to NV12 and has the encode queue estimate the motion from the
-// frame before, all on the GPU and without waiting. For "between" draw_made() then draws the
-// made picture into the back buffer in place of the frame's own, and the frame's own is
-// presented half a frame later by a repaint. For "ahead" the loop presents draw_made()'s
-// picture half a frame after the frame's own, from a list that waits on the GPU for the
-// estimate. A frame that arrives before the made picture is due takes its place, and the
-// made one is dropped.
+// How it sits in the loop (main.cpp): before the render of a new frame, estimate() converts
+// the frame to NV12 and has the encode queue estimate the motion from the frame before, on
+// the GPU and without waiting, since the Look stage's filter and the network's motion vectors
+// read the estimate in that render. After the composite is submitted and before its present,
+// keep() copies the finished picture into one of two textures of its own. For "between"
+// draw_made() then draws the made picture into the back buffer in place of the frame's own,
+// and the frame's own is presented half a frame later by a repaint. For "ahead" the loop
+// presents draw_made()'s picture half a frame after the frame's own, from a list that waits
+// on the GPU for the estimate. A frame that arrives before the made picture is due takes its
+// place, and the made one is dropped.
 //
 // Threads: the main thread only. The estimate runs on the encode queue, held to gpu.queue
 // by fences, never waited for on the CPU.
@@ -51,15 +52,16 @@ struct FrameGen {
   FrameGen& operator=(const FrameGen&) = delete;
 
   // Makes the estimator for width x height pictures, its queue, the shaders and the
-  // textures, the copies of the pictures in format (the target's: Window::kFormat or
-  // kHdrFormat). false with err when the card has no motion estimator for NV12 or the
-  // picture is outside its sizes, and the loop then keeps the option off. gpu outlives the
-  // object.
+  // textures. The two copies of the pictures, in format (the target's: Window::kFormat or
+  // kHdrFormat), are made at the first keep(), since the estimate alone serves the Look
+  // stage's filter and the network's motion vectors as well. false with err when the card
+  // has no motion estimator for NV12 or the picture is outside its sizes, and the loop then
+  // keeps the option off. gpu outlives the object.
   bool init(Gpu& gpu, UINT width, UINT height, DXGI_FORMAT format, std::string& err);
 
-  // The pictures are drawn in another format from now on (Window::set_hdr): the copies are
-  // made again in it and the frames seen are forgotten. after_fresh() calls it by itself
-  // when the target's format differs from the copies'.
+  // The pictures are drawn in another format from now on (Window::set_hdr): the copies go,
+  // to be made again in it at the next keep(), and the frames seen are forgotten. keep()
+  // calls it by itself when the target's format differs from the copies'.
   bool retarget(DXGI_FORMAT format, std::string& err);
 
   // Forgets the frames seen: the next after_fresh() has nothing to estimate from, so no
@@ -81,7 +83,10 @@ struct FrameGen {
   // after_fresh() in two halves, for a loop that wants the estimate before the frame's render,
   // as the Look stage's filter does (look.h): estimate() converts the frame and has the encode
   // queue estimate the motion from the frame before, with ready and read_value as above;
-  // keep() copies the finished picture after the render, before the present.
+  // keep() copies the finished picture after the render, before the present. The first keep
+  // since init() or a new format makes the two copies, both or neither. Where the card cannot
+  // make them it returns false with outs_failed set, and the loop gives the estimator up as
+  // after a failed init().
   bool estimate(ID3D12Resource* frame, bool& ready, UINT64& read_value, std::string& err);
   bool keep(const Target& target, std::string& err);
 
@@ -106,12 +111,31 @@ struct FrameGen {
   UINT me_height() const { return me_h; }
   UINT vec_width() const { return vec_w; }
   UINT vec_height() const { return vec_h; }
+  bool has_coarse() const { return level_count > 0; }
+  int levels() const { return level_count; }
+  // The coarser estimates' sizes for the log, as "1280x720, 640x360, 320x180"
+  std::string level_text() const;
+
+  // The GPU's own time of the last conversion (estimate()'s part on the engine's queue, the
+  // NV12 pictures, the coarse ones too) and of the last draw_made(), once those lists have
+  // finished on the GPU. The estimate itself runs on the encode queue, which takes no
+  // timestamps: the sequence mode times it by the clock.
+  double last_prep_ms() const { return gpu ? timer.ms(*gpu, 0, 1) : 0.0; }
+  double last_draw_ms() const { return gpu ? timer.ms(*gpu, 2, 3) : 0.0; }
+  // The estimates' own time on the encode queue, from timestamp queries there where the
+  // queue takes them (probed at init), once the estimate has finished: the fine estimate
+  // with its resolve, and the coarse one. 0 where it does not
+  double last_estimate_ms() const;
+  double last_coarse_estimate_ms() const;
+  UINT coarse_width() const { return level_count > 0 ? levels_[0].me_w : 0; }
+  UINT coarse_height() const { return level_count > 0 ? levels_[0].me_h : 0; }
 
   // Waits for the queues and releases everything. Safe without init and twice.
   void shutdown();
 
   // ---- the parts, open for the self test
   Gpu* gpu = nullptr;
+  GpuTimer timer;                 // slots 0 and 1 round the conversion, 2 and 3 round the draw
   UINT w = 0, h = 0;              // the picture
   UINT me_w = 0, me_h = 0;        // the estimator's picture
   UINT vec_w = 0, vec_h = 0;      // the vectors, one a block
@@ -138,7 +162,47 @@ struct FrameGen {
   Microsoft::WRL::ComPtr<ID3D12Resource> planes;        // the buffer they go through into nv
   D3D12_PLACED_SUBRESOURCE_FOOTPRINT plane_fp[2] = {};
   Microsoft::WRL::ComPtr<ID3D12Resource> vectors;       // R16G16_SINT, vec_w x vec_h
+  // The coarser estimates: the same again at half the estimator's size, then a quarter, then
+  // an eighth, each one's vectors reaching twice as far as the one before and seeing past
+  // finer texture, all candidates for the warp where the fine vector fails a texel
+  // (gen_ps.hlsl). A level is made while it is 32 texels or more each way and within the
+  // estimator's size range; where one cannot be made the finer ones go on alone. Measured
+  // offline, see gen_ps.hlsl
+  static constexpr int kLevels = 3;
+  struct Level {
+    UINT me_w = 0, me_h = 0, vec_w = 0, vec_h = 0;
+    Microsoft::WRL::ComPtr<ID3D12VideoMotionEstimator> estimator;
+    Microsoft::WRL::ComPtr<ID3D12VideoMotionVectorHeap> mv_heap;
+    Microsoft::WRL::ComPtr<ID3D12Resource> nv[2], luma, chroma, planes, vectors;
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT plane_fp[2] = {};
+  };
+  Level levels_[kLevels];
+  int level_count = 0;
+  // A research switch, set before init() by the sequence mode (--sequence-lab): the most
+  // coarser levels made, kLevels unless nocoarse (0), levels1 or levels2 say less, for the
+  // cost and the gain of each. The plain warp and the search's dense window were research
+  // forms of the shader, measured and gone (the figures are in the research), as a hint
+  // from the estimate before (D3D12's pHintMotionVectorHeap), which changed nothing
+  int lab_levels = kLevels;
+  bool lab_fixed_gate = false;  // fixedgate: the gate at its six levels whatever the noise
+  float sdr_white = 1.0f;     // set by the lens: the SDR white level in units of 80 nits, by which
+                              // a 16-bit frame is scaled for the estimator (nv12_cs.hlsl)
+  bool coarse_on = true;      // set by the lens each frame: frame generation is on, so the coarse
+                              // estimate is wanted; the Look stage's filter alone takes the fine one
+  bool have_coarse = false;   // the last estimate made the coarser levels' vectors
+  void drop_levels(int from); // releases the coarser levels from that one on
+  // the estimates' timestamps on the encode queue, 3 slots, see last_estimate_ms()
+  Microsoft::WRL::ComPtr<ID3D12QueryHeap> encode_query_heap;
+  Microsoft::WRL::ComPtr<ID3D12Resource> encode_stamps;   // readback, mapped for life
+  const UINT64* encode_ticks = nullptr;
+  UINT64 encode_hz = 0;
   Microsoft::WRL::ComPtr<ID3D12Resource> out[2];        // the last two pictures, in format
+  bool outs_failed = false;       // the last keep() could not make the two, see make_outs()
+  // the noise pass before the warp, gen_noise_cs.hlsl: its sum and count, and the zeros it
+  // starts from each time
+  Microsoft::WRL::ComPtr<ID3D12RootSignature> noise_root;
+  Microsoft::WRL::ComPtr<ID3D12PipelineState> noise_pso_8, noise_pso_16;   // 8-bit and 16-bit pictures
+  Microsoft::WRL::ComPtr<ID3D12Resource> noise_acc, noise_zero;
   int cur = 0;                    // which of nv and out holds the last frame
   int have = 0;                   // frames seen since forget(), 2 at most: 2 means an estimate exists
 

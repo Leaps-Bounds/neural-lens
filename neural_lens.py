@@ -247,6 +247,7 @@ DO_MESSAGE = _u32.RegisterWindowMessageW(DO_CLASS)
 _k32 = ctypes.WinDLL("kernel32", use_last_error=True)
 for _name, _res, _args in (
         ("CreateMutexW", w.HANDLE, [ctypes.c_void_p, w.BOOL, w.LPCWSTR]),
+        ("OpenMutexW", w.HANDLE, [w.DWORD, w.BOOL, w.LPCWSTR]),
         ("CloseHandle", w.BOOL, [w.HANDLE])):
     getattr(_k32, _name).restype, getattr(_k32, _name).argtypes = _res, _args
 
@@ -386,7 +387,7 @@ def _read_ini():
 _INI = _read_ini()
 
 
-def _find_stack_dir():
+def _find_stack_dir(args=None, ini=None):
     """The folder holding the Neural Rendering stack and the presenter.
 
     Checked in order: --stack-dir on the command line, the NEURAL_LENS_STACK
@@ -396,14 +397,17 @@ def _find_stack_dir():
     used, --mpv-dir, NEURAL_LENS_MPV_DIR and mpv_dir, are read too, in the same
     places. A folder counts when lens-presenter.exe is in it; the stack's other
     parts are checked separately, see _missing_stack, so an incomplete stack is
-    named rather than silently passed over.
+    named rather than silently passed over. args is the command line and ini
+    the ini's keys, this run's where they are not given, see _stack_after_reset.
     """
+    args = sys.argv if args is None else args
+    ini = _INI if ini is None else ini
     cands = []
-    for i, a in enumerate(sys.argv):
-        if a in ("--stack-dir", "--mpv-dir") and i + 1 < len(sys.argv):
-            cands.append(sys.argv[i + 1])
+    for i, a in enumerate(args):
+        if a in ("--stack-dir", "--mpv-dir") and i + 1 < len(args):
+            cands.append(args[i + 1])
     cands += [os.environ.get("NEURAL_LENS_STACK"), os.environ.get("NEURAL_LENS_MPV_DIR"),
-              _INI.get("stack_dir"), _INI.get("mpv_dir")]
+              ini.get("stack_dir"), ini.get("mpv_dir")]
     if getattr(sys, "frozen", False):
         cands.append(_script_dir())
     cands.append(os.path.join(_script_dir(), "stack"))
@@ -411,6 +415,13 @@ def _find_stack_dir():
         if c and os.path.isfile(os.path.join(c, "lens-presenter.exe")):
             return os.path.abspath(c)
     return None
+
+
+def _stack_after_reset():
+    """The stack folder the start after Reset everything uses, with the ini
+    gone and no --stack-dir on its command line: the environment's, else the
+    program's own, or None where neither holds a stack. See _reset_all."""
+    return _find_stack_dir(args=[], ini={})
 
 
 STACK_DIR = _find_stack_dir()
@@ -1636,13 +1647,24 @@ def _write_proxy(enabled, scale):
 # process's id, so two lenses at once, one per monitor say, never pick up each
 # other's presenter.
 TITLE = "LensNR %d" % os.getpid()
-__version__ = "0.9.0"        # beta; see CHANGELOG.md
+__version__ = "0.9.1"        # beta; see CHANGELOG.md
 
 DATA_DIR = (os.environ.get("NEURAL_LENS_DATA") or _INI.get("data_dir")
             or os.path.join(_script_dir(), "data"))
 STATE = os.path.join(DATA_DIR, "lens-state.txt")
 LOGDIR = os.path.join(DATA_DIR, "logs")
 PROFILES = os.path.join(DATA_DIR, "profiles.json")     # named settings, see Lens.capture_profile
+
+
+def _data_after_reset():
+    """The data folder the start after Reset everything uses, with the ini
+    and its data_dir gone: the environment's, else the program's own."""
+    return os.environ.get("NEURAL_LENS_DATA") or os.path.join(_script_dir(), "data")
+
+
+def _same_folder(a, b):
+    """Whether a and b name one folder, both given."""
+    return bool(a) and bool(b) and os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
 
 # Started without a console, as the installed program and the launcher are,
 # everything the lens prints goes to lens.log in the log folder instead, and
@@ -1733,6 +1755,34 @@ _LOG_APPEND = bool(_LOG_HANDED) and (os.path.normcase(os.path.abspath(_LOG_HANDE
                                      == os.path.normcase(os.path.abspath(os.path.join(LOGDIR, "lens.log"))))
 if sys.stdout is None or _LOG_HANDED:
     _redirect_output(append=_LOG_APPEND)
+
+
+def _reset_all_marker():
+    """What Reset everything did, which the closing lens hands the lens it
+    starts as JSON in NEURAL_LENS_RESET, see _reset_all: profiles, kept or
+    removed, stayed, the files that could not be reset, parts, the stack's
+    parts that failed their check, selftest, passed, failed or skipped,
+    stack_left, a stack folder the lens left as it is, and repair, whether
+    the start offers the stack setup. None where this start is no such
+    start, and the defaults for what cannot be read."""
+    said = os.environ.pop("NEURAL_LENS_RESET", None)
+    if said is None:
+        return None
+    marker = {"profiles": "kept", "stayed": [], "parts": [], "selftest": "skipped", "stack_left": None,
+              "repair": False}
+    try:
+        got = json.loads(said)
+    except ValueError:
+        got = None
+    if isinstance(got, dict):
+        marker.update((k, v) for k, v in got.items() if k in marker)
+    return marker
+
+
+# A lens that Reset everything restarted is told what the reset did. The
+# marker is taken out of the environment, as the log's is, so nothing this
+# lens starts in turn inherits it, see _reset_all_env.
+_RESET_ALL = _reset_all_marker()
 SHOT_DIR = (os.environ.get("NEURAL_LENS_SHOTS") or _INI.get("screenshot_dir")
             or os.path.join(DATA_DIR, "screenshots"))
 
@@ -2187,7 +2237,7 @@ FRAMEGEN = str(_INI.get("framegen", "off")).strip().lower()
 if FRAMEGEN not in FRAMEGEN_MODES:
     FRAMEGEN = "off"
 FRAMEGEN_LABEL = "Frame generation"
-FRAMEGEN_WHY = "Pictures made between a program's frames, doubling its rate."
+FRAMEGEN_WHY = "Pictures made between a program's frames, up to twice its rate."
 FRAMEGEN_CHOICES = (
     ("off", "Off", "None made."),
     ("ahead", "Ahead", "The last frame carried half a frame on. No delay."),
@@ -2397,30 +2447,37 @@ def _profile_model(p):
 # it stays over time, and how far it may brighten, darken or move a colour.
 # Beside it, Keep blacks has the composite leave pixels that are pure black as
 # they are, since the network lifts them by about a level, see docs/NOTES.md,
-# The Look stage. The values are LOOK_KEYS, keys in the add-on's section of
-# ReShade.ini: the add-on's own, which the 8.5.0-rc10 build of the Home menu
-# add-on edits in a window and 5.2.1 leaves alone, and Keep blacks,
-# NRKeepBlacks, the fast engine's own, which neither build reads. So a profile
-# carries them with the rest of the section, and a switch of the build carries
-# them over, see ADDON_SHARED in neural_stack.py. The engine reads them at a
-# reload, so a change shows while the picture goes on. It reads
-# NRDetailStability and NRKeepBlacks always, a missing key being Off, and the
-# others only while NRLookMode is on, each held to its range and a choice
-# outside its range taken as its default, see _look_values. The NR settings
-# panel has them on a page of its own, the Look page, which the row LOOK_LABEL
-# at the foot of its first page opens, see _panel_page_to, and the Profiles
-# page of Settings names them, see _look_summary and _look_word.
-LOOK_KEYS = ("NRDetailStability", "NRKeepBlacks", "NRLookMode", "NRLookTone", "NRLookDetail", "NRLookDetailRadius",
-             "NRLookHalo", "NRLookHaloBrightSide", "NRLookStabilize", "NRLookStabilizeMs", "NRLookStabilizeDetail",
-             "NRLookMaxBrighten", "NRLookMaxDarken", "NRLookMaxColour")
+# The Look stage. Above them, Motion vectors says what the network is told of
+# the picture's motion: Card hands it the card's own motion estimate, the one
+# frame generation uses, and None tells it that nothing moved, see
+# fast_engine\src\model_motion.h. The values are LOOK_KEYS, keys in the add-on's
+# section of ReShade.ini: the add-on's own, which the 8.5.0-rc10 build of the
+# Home menu add-on edits in a window and 5.2.1 leaves alone, and Keep blacks,
+# NRKeepBlacks, and Motion vectors, NRMotionSource, the fast engine's own,
+# which neither build reads. So a profile carries them with the rest of the
+# section, and a switch of the build carries them over, see ADDON_SHARED in
+# neural_stack.py. The engine reads them at a reload, so a change shows while
+# the picture goes on. It reads NRMotionSource, NRDetailStability and
+# NRKeepBlacks always, a missing key being the default, and the others only
+# while NRLookMode is on, each held to its range and a choice outside its range
+# taken as its default, see _look_values. The NR settings panel has them on a
+# page of its own, the Look page, which the row LOOK_LABEL at the foot of its
+# first page opens, see _panel_page_to, and the Profiles page of Settings names
+# them, see _look_summary and _look_word.
+LOOK_KEYS = ("NRMotionSource", "NRDetailStability", "NRKeepBlacks", "NRLookMode", "NRLookTone", "NRLookDetail",
+             "NRLookDetailRadius", "NRLookHalo", "NRLookHaloBrightSide", "NRLookStabilize", "NRLookStabilizeMs",
+             "NRLookStabilizeDetail", "NRLookMaxBrighten", "NRLookMaxDarken", "NRLookMaxColour")
 LOOK_STABILITY_KEY, LOOK_MODE_KEY, LOOK_STABILIZE_KEY = "NRDetailStability", "NRLookMode", "NRLookStabilize"
 LOOK_KEEP_KEY = "NRKeepBlacks"
-# the two choices, each value as the engine reads it and its name on the panel.
-# Auto and Always run the same filter in the fast engine, where nothing is
-# upscaled, and only the 8.5.0-rc10 build in a window tells them apart
+LOOK_MOTION_KEY = "NRMotionSource"
+# the three choices, each value as the engine reads it and its name on the
+# panel. Auto and Always run the same filter in the fast engine, where nothing
+# is upscaled, and only the 8.5.0-rc10 build in a window tells them apart
+LOOK_MOTION_NAMES = {"1": "Card", "0": "None"}
 LOOK_STABILITY_NAMES = {"0": "Auto", "1": "Off", "2": "Always"}
 LOOK_STABILIZE_NAMES = {"0": "Off", "1": "In place", "2": "Along the motion"}
-LOOK_CHOICES = {LOOK_STABILITY_KEY: LOOK_STABILITY_NAMES, LOOK_STABILIZE_KEY: LOOK_STABILIZE_NAMES}
+LOOK_CHOICES = {LOOK_MOTION_KEY: LOOK_MOTION_NAMES, LOOK_STABILITY_KEY: LOOK_STABILITY_NAMES,
+                LOOK_STABILIZE_KEY: LOOK_STABILIZE_NAMES}
 LOOK_SWITCHES = (LOOK_KEEP_KEY, LOOK_MODE_KEY, "NRLookStabilizeDetail")
 # each slider by its key, its label, its lowest and highest value, its default
 # and the step a press of Left or Right moves it by, see _look_number for the
@@ -2437,12 +2494,14 @@ LOOK_SLIDERS = (
     ("NRLookMaxColour", "Max colour", 0.0, 2.0, 0.0, 0.01),
 )
 LOOK_RANGES = {s[0]: s[2:] for s in LOOK_SLIDERS}      # by key, (lowest, highest, default, step)
-LOOK_LABELS = dict([(LOOK_STABILITY_KEY, "Detail stability"), (LOOK_KEEP_KEY, "Keep blacks"),
-                    (LOOK_MODE_KEY, "Adjust the look"), (LOOK_STABILIZE_KEY, "Stabilize"),
-                    ("NRLookStabilizeDetail", "Stabilize detail")] + [(s[0], s[1]) for s in LOOK_SLIDERS])
-# what the engine runs with a key missing, which the page shows then
-LOOK_DEFAULTS = dict([(LOOK_STABILITY_KEY, "1"), (LOOK_KEEP_KEY, False), (LOOK_MODE_KEY, False),
-                      (LOOK_STABILIZE_KEY, "0"), ("NRLookStabilizeDetail", False)]
+LOOK_LABELS = dict([(LOOK_MOTION_KEY, "Motion vectors"), (LOOK_STABILITY_KEY, "Detail stability"),
+                    (LOOK_KEEP_KEY, "Keep blacks"), (LOOK_MODE_KEY, "Adjust the look"),
+                    (LOOK_STABILIZE_KEY, "Stabilize"), ("NRLookStabilizeDetail", "Stabilize detail")]
+                   + [(s[0], s[1]) for s in LOOK_SLIDERS])
+# what the engine runs with a key missing, which the page shows then. Motion
+# vectors' is the engine's kMotionSourceDefault, see look_settings.h
+LOOK_DEFAULTS = dict([(LOOK_MOTION_KEY, "1"), (LOOK_STABILITY_KEY, "1"), (LOOK_KEEP_KEY, False),
+                      (LOOK_MODE_KEY, False), (LOOK_STABILIZE_KEY, "0"), ("NRLookStabilizeDetail", False)]
                      + [(s[0], s[4]) for s in LOOK_SLIDERS])
 # the rows Adjust the look greys while it is off, every one after it, and of
 # them the two Stabilize alone uses, greyed while it is Off as well
@@ -2464,10 +2523,21 @@ LOOK_LINE = "%s closes it, Escape goes back"
 LOOK_LINE_ESC = "Escape goes back"
 # What each row of the page does, as the panel's other rows have it, see
 # PANEL_WHY, what the setting does and no more. The engine's cost and what was
-# measured are in docs/NOTES.md, The Look stage.
-LOOK_ROW_WHY = ("Enter or a click opens the Look page, which can steady the network's change over frames, keep "
-                "pure blacks black, or reshape the change. The words beside it say what it does to the picture now.")
+# measured are in docs/NOTES.md, The Look stage, and for Motion vectors, Motion
+# vectors for the network.
+LOOK_ROW_WHY = ("Enter or a click opens the Look page, which can tell the network how the picture moves, steady "
+                "its change over frames, keep pure blacks black, or reshape the change. The words beside it say "
+                "what it does to the picture now.")
+# Motion vectors' explanation where the engine that runs has said it cannot use
+# the card's motion estimator, see framegen_refused: the row is greyed then,
+# since the network is told that nothing moved whatever the row says, see
+# _panel_motion_look
+MOTION_NONE_WHY = ("This card has no motion estimator the fast engine can use, so the network is told that nothing "
+                   "moved.")
 LOOK_WHY = {
+    "NRMotionSource": "Tells the network how the picture moved since the last frame, so what it built up moves with "
+                      "the picture. Card takes the motion from the card's own motion estimator and can soften fine "
+                      "detail in motion. None tells it that nothing moved.",
     "NRDetailStability": "Blends the network's change with that of the last few frames, following what moves, so "
                          "fine detail holds still instead of shimmering. Auto and Always both turn it on, and "
                          "Stabilize takes its place while on.",
@@ -2613,10 +2683,11 @@ def _look_summary(addon):
 
 
 def _look_word(addon, key):
-    """A row of the Profiles page for one of the two values the Look page has
-    outside Adjust the look's switch, Detail stability and Keep blacks, for a
-    profile's section: the choice's name, or on or off, or default where the
-    section has no key for it, as the page's other rows say."""
+    """A row of the Profiles page for one of the three values the Look page
+    has outside Adjust the look's switch, Motion vectors, Detail stability and
+    Keep blacks, for a profile's section: the choice's name, or on or off, or
+    default where the section has no key for it, as the page's other rows
+    say."""
     if key.lower() not in {str(k).strip().lower() for k in (addon or {})}:
         return "default"
     v = _look_values(addon)[key]
@@ -2751,6 +2822,78 @@ def _set_tray_minimise(on):
     global TRAY_MINIMISE
     TRAY_MINIMISE = bool(on)
     _save_ini("tray_minimise", "1" if on else None)
+
+
+# Reset everything, a button on the Program page of Settings under a heading
+# of its own, which asks first, see Lens.reset_everything, and on a yes puts
+# every setting of the lens and of Neural Rendering back as a new install has
+# them once the lens has closed, see _reset_all, and starts the lens again.
+# RESET_GLYPH and RESET_FONT name the NR panel's buttons beside its sliders,
+# hence RESET_ALL. The heading, its few words, the button and their
+# explanation, the question's title, its button and its paragraphs, see
+# _reset_all_words, its box and the box's explanation, the message while
+# another lens runs, the last paragraph of Windows' own box where the lens's
+# dialog cannot be shown, the reason the stack setup is offered when the stack
+# fails its check after a reset, and the four notes the next start holds on
+# its bar, the first that applies, see Lens.reset_all_said
+RESET_ALL_HEADING = "Reset"
+RESET_ALL_BESIDE = "asks first and restarts the lens"
+RESET_ALL_LABEL = "Reset everything"
+RESET_ALL_WHY = ("Asks first, then puts all the settings of the lens and of Neural Rendering back as a new install has "
+                 "them and restarts the lens. Screenshots, logs and the parts of the stack stay, and so do the "
+                 "profiles unless you choose to remove them.")
+RESET_ALL_TITLE = "Reset everything"
+RESET_ALL_GO = "Reset everything"
+RESET_ALL_HEAD = "Put all the settings back as a new install has them?"
+RESET_ALL_GOES = ("Every setting of the lens and of Neural Rendering goes back to its default, the window's place and "
+                  "size, the theme, the hotkeys and the folders you chose included.")
+RESET_ALL_STAYS = "Your screenshots, logs and the parts of the stack stay, and nothing is downloaded."
+RESET_ALL_KEEPS = "Your profiles stay as well, unless you tick the box below."
+RESET_ALL_MOVED_DATA = ("The lens keeps its files in its own folder again. Your screenshots and logs stay in the "
+                        "folder below, and your profiles come with the lens unless you remove them.")
+RESET_ALL_MOVED_STACK = "The lens goes back to the stack in its own folder and leaves the stack below as it is."
+RESET_ALL_NO_STACK = "The lens's own folder has no stack yet, so the lens offers to fetch one when it opens."
+RESET_ALL_RESTART = ("The lens closes, checks the stack in a small window for a few seconds and opens again. This "
+                     "cannot be undone.")
+RESET_ALL_BOX = "Remove the profiles too"
+RESET_ALL_BOX_WHY = ("Ticked, the profiles and their ties to programs go as well. Unticked, they stay as they are, "
+                     "and none is in use when the lens opens again.")
+RESET_ALL_FALLBACK_END = "Your profiles stay as they are. OK puts everything back, and Cancel leaves it as it is."
+RESET_ALL_OTHER = ("Another Neural Lens is running and shares these settings and the stack. Close it, then press "
+                   "Reset everything again.")
+RESET_ALL_REPAIR = ("Every setting is back as a new install has it, but the Neural Rendering stack did not pass its "
+                    "check after the reset, and lens.log says why.")
+RESET_ALL_NOTE_REPAIR = ("Everything is reset, but the stack failed its check. The Start Menu's stack setup fetches it "
+                         "again.")
+RESET_ALL_NOTE_STAYED = "Some files could not be reset, and lens.log names them. The rest is as a new install has it."
+RESET_ALL_NOTE_REMOVED = "Everything is back as a new install has it, and the profiles are gone."
+RESET_ALL_NOTE_KEPT = "Everything is back as a new install has it. The profiles are kept, with none in use."
+# What lens.log says of it: the person's steps, each after "action ", see
+# Lens.act, then the closing lens's lines, the next start's, and the line of
+# a lens started while a reset is under way. The stack's own lines are
+# neural_stack.reset_stack's
+RESET_ALL_LOG = {
+    "cancelled": "reset everything cancelled (Settings)",
+    "go": "reset everything, the profiles %s (Settings)",
+    "refused": "reset everything refused, another lens is running (Settings)",
+    "start": "resetting everything as a new install has it, the profiles %s",
+    "stack left": "the stack in %s is left as it is, and the lens goes back to its own",
+    "stack failed": "the stack's settings in %s could not be reset (%s), so they stay as they were",
+    "removed": "%s removed",
+    "stayed": "%s could not be changed (%s), so it stays as it was",
+    "copied": "%s copied to %s",
+    "kept as": "%s kept as %s",
+    "logs": "the stack's logs are copied into %s before the self test",
+    "passed": "the self test after the reset passed",
+    "failed": "the self test after the reset did not pass",
+    "self test fault": "the self test after the reset could not run (%s)",
+    "no self test": "no self test after the reset, since the stack did not pass its check or kept a file",
+    "no stack": "no self test after the reset, since the lens's own folder has no stack",
+    "done": "everything is reset, and the lens starts again",
+    "started": "the lens starts after a reset, the profiles %s",
+    "unnamed": "profiles.json names no profile in use now, as the reset left the lens",
+    "under way": "a reset of the lens is under way and starts the lens again itself, so this one does not start",
+}
 
 
 def _short_title(text, most=40):
@@ -3883,35 +4026,38 @@ def _save_ini(key, value):
         fh.writelines(lines)
 
 
-def archive_logs():
+def archive_logs(stack=None, logdir=None):
     """Keep the PREVIOUS session's logs before the presenter overwrites them.
     Without this, launching again destroys the only evidence of a failure.
 
     ReShade rotates to ReShade.log1, ReShade.log2 and so on when the first file
     is already locked, so every one of them is kept, along with the Feed's and
-    the Cost Scaler's logs.
+    the Cost Scaler's logs. stack and logdir are this run's stack folder and
+    log folder where they are not given, see _reset_all.
     """
+    stack = STACK_DIR if stack is None else stack
+    logdir = LOGDIR if logdir is None else logdir
     try:
-        os.makedirs(LOGDIR, exist_ok=True)
+        os.makedirs(logdir, exist_ok=True)
         stamp = time.strftime("%Y%m%d-%H%M%S")
-        names = [n for n in os.listdir(STACK_DIR)
+        names = [n for n in os.listdir(stack)
                  if n.startswith("ReShade.log") or n in ("dlss5-feed.log", "nvngx_dlssnr_proxy.log")]
         for name in sorted(names):
-            src = os.path.join(STACK_DIR, name)
+            src = os.path.join(stack, name)
             if os.path.isfile(src) and os.path.getsize(src) > 0:
-                shutil.copy2(src, os.path.join(LOGDIR, "%s-%s" % (stamp, name)))
+                shutil.copy2(src, os.path.join(logdir, "%s-%s" % (stamp, name)))
         # the presenter's stderr is appended to for the life of a session, and
         # the pruning below sorts by name, so a file not carrying a stamp is
         # never reached and would grow without bound. Roll it into the archive.
-        prev = os.path.join(LOGDIR, "presenter-stderr.log")
+        prev = os.path.join(logdir, "presenter-stderr.log")
         if os.path.isfile(prev):
             if os.path.getsize(prev) > 0:
-                os.replace(prev, os.path.join(LOGDIR, "%s-presenter-stderr.log" % stamp))
+                os.replace(prev, os.path.join(logdir, "%s-presenter-stderr.log" % stamp))
             else:
                 os.remove(prev)
-        files = sorted(os.listdir(LOGDIR))
+        files = sorted(os.listdir(logdir))
         while len(files) > 80:
-            os.remove(os.path.join(LOGDIR, files.pop(0)))
+            os.remove(os.path.join(logdir, files.pop(0)))
     except Exception:
         pass
 
@@ -4231,6 +4377,13 @@ class PopupMenu:
     focus stays where it was. It is made so it never takes the foreground,
     see Lens._own_window.
 
+    An entry is chosen as the left button comes up on it, after it went
+    down on that same entry, see press and release, so the whole click
+    stays with the menu. Chosen as the button goes down, the menu would
+    close under the pointer and the button would come up in the window
+    under it. A button that comes up off the entry it went down on chooses
+    nothing, and the menu stays open.
+
     Over a fullscreen lens the arrow keys, Enter and Escape work it as well,
     see Lens.nav_key: Up and Down light an entry, the way the pointer does,
     and Enter chooses the one that is lit.
@@ -4248,6 +4401,7 @@ class PopupMenu:
         self.labels = []            # the entries of the menu that is open, in order
         self.cmds = []              # what each of them does, None for one that does nothing
         self.lit = None             # the entry the pointer or the arrow keys lit, by its place in labels
+        self.down = None            # the entry the left button went down on, see press
         self.live = None            # the one that shows the readout, see Lens.menu
         self.clicked_off = 0.0      # when a click elsewhere last closed it, see Lens._popup_click
 
@@ -4264,7 +4418,7 @@ class PopupMenu:
         lens = self.lens
         t = lens._own_window()
         self.win, self.name = t, name
-        self.labels, self.cmds, self.lit, self.live = [], [], None, None
+        self.labels, self.cmds, self.lit, self.live, self.down = [], [], None, None, None
         # a drawn look's entries, drawn as its design draws them, see
         # _open_drawn. Where they cannot be drawn they are made as below
         if not LOOK.classic and lens_look is not None and "menu" not in _DRAWN_FAULT:
@@ -4288,7 +4442,8 @@ class PopupMenu:
                 if enabled and command is not None:
                     lbl.bind("<Enter>", lambda e, n=n: self._pointer_light(n))
                     lbl.bind("<Leave>", lambda e, n=n: self.light(None) if self.lit == n else None)
-                    lbl.bind("<Button-1>", lambda e, n=n: self.choose(n, "click"))
+                    lbl.bind("<ButtonPress-1>", lambda e, n=n: self.press(n))
+                    lbl.bind("<ButtonRelease-1>", lambda e, n=n: self.release(n, e))
         t.update_idletasks()
         wd, ht = t.winfo_reqwidth(), t.winfo_reqheight()
         bx, top, bottom = at if at is not None else lens.menu_anchor()
@@ -4317,7 +4472,7 @@ class PopupMenu:
             menu = t.look_menu = lens_look.menus.Menu(
                 t, LOOK, name, items, enter=self._pointer_light,
                 leave=lambda n: self.light(None) if self.lit == n else None,
-                click=lambda n: self.choose(n, "click"))
+                press=self.press, release=self.release)
         except Exception as e:
             self._menu_fault(t, e)
             return False
@@ -4350,6 +4505,22 @@ class PopupMenu:
         mouse_held."""
         if not mouse_held():
             self.light(n)
+
+    def press(self, n):
+        """The left button went down on entry n: it lights, and is chosen
+        once the button comes up on it, see release."""
+        self.down = n
+        self.light(n)
+
+    def release(self, n, event):
+        """The left button came up after it went down on entry n. Tk gives
+        the release to the entry the press was on, wherever the pointer is by
+        then, so n is chosen only while the pointer is still on it. Off it,
+        nothing is chosen and the menu stays open for the next click, as it
+        does for a release with no press on this menu before it."""
+        down, self.down = self.down, None
+        if down == n and 0 <= n < len(self.labels) and self.inside(self.labels[n], event.x_root, event.y_root):
+            self.choose(n, "click")
 
     def light(self, n):
         """Light this entry and no other, for the pointer or the arrow keys
@@ -4446,7 +4617,7 @@ class PopupMenu:
 
     def close(self):
         t, self.win = self.win, None
-        self.labels, self.cmds, self.lit, self.live = [], [], None, None
+        self.labels, self.cmds, self.lit, self.live, self.down = [], [], None, None, None
         if t is not None:
             try:
                 t.destroy()
@@ -4739,6 +4910,7 @@ class Lens:
         self.tweak = False          # True while the viewport is interactive
         self.tweak_until = 0.0      # the overlay is followed until then after Done
         self.tweak_prev = None      # the window that had the keyboard before tweak mode
+        self.home_catch = None      # the look for a Home that opens the overlay outside tweak mode, see catch_home
         self.nr_wait = None         # an NR switch that waits for the overlay's last write, see nr_by_restart
         self.proxy_scale = None     # the Cost Scaler's scale this session, or off
         self.engine = "stack"       # which presenter runs, fast or stack, see pick_engine
@@ -4850,6 +5022,7 @@ class Lens:
         self._shown = None          # (time, out_frames, gen_frames) behind the fps readout
         self._fps_hist = collections.deque(maxlen=3)
         self.restart = False        # set by the folder settings, read by main()
+        self.reset_asked = None     # set by Reset everything, {"profiles": removed}, read by main(), see _reset_all
         self.minimized = False      # hidden, with the presenter paused, until the taskbar button
         self.in_tray = False        # minimised to the tray, with no taskbar button, see to_tray
         self.tray_after = []        # entries of the tray icon's menu that wait for the lens, see _from_tray
@@ -4857,6 +5030,12 @@ class Lens:
         self.profile = self.profiles.get("current")      # the name on the bar, or None
         if self.profile not in self.profiles["profiles"]:
             self.profile = None
+        # after Reset everything with the profiles kept, none is in use, while
+        # profiles.json stays as it was until quit writes it, see quit
+        self.profile_dropped = None
+        if _RESET_ALL is not None and self.profile is not None:
+            self.profile_dropped, self.profile = self.profile, None
+            self.profiles["current"] = None
         self.anchor_widget = None   # what the menu opens under, when not the bar
         self.attach = None          # the window the lens is attached to, see attach_to
         self.tab = None             # the tab on the top edge while attached or folded
@@ -5603,6 +5782,10 @@ class Lens:
             pass
         try:
             self.watch_front()
+        except Exception:
+            pass
+        try:
+            self.catch_home()           # only while the presenter is in front out of tweak mode
         except Exception:
             pass
         if not self.minimized and self.attach is None:
@@ -9968,7 +10151,12 @@ class Lens:
         else:
             self.start_tweak(how)
 
-    def start_tweak(self, how=None):
+    def start_tweak(self, how=None, press_home=True):
+        """Tweak mode: the presenter takes the mouse and the keyboard, and a
+        Home posted to it opens ReShade's overlay. With press_home False the
+        user's own Home has opened the overlay already, with the presenter in
+        front, see catch_home, so no Home is posted and the keyboard stays
+        where it is. how is the way it was asked for, for the log."""
         if self.nr_wait is not None:
             # the overlay would open on the presenter that the waiting restart
             # ends, see nr_by_restart
@@ -9978,7 +10166,12 @@ class Lens:
         if how:
             self.act("tweak mode on (%s)" % how)
         self.tweak = True
-        self.tweak_prev = u.GetForegroundWindow()
+        # the window the keyboard goes back to, see hand_focus_back: the one in
+        # front, or where that is a window of the lens's own, such as the
+        # presenter still in front after tweak mode, or none, the program last
+        # in front, see watch_front
+        fg = u.GetForegroundWindow()
+        self.tweak_prev = fg if fg and not self.own_foreground(fg) else self.fg_auto
         # interactive first, so the overlay that opens can be used with the
         # mouse; the key itself does not need the focus. The overlay is drawn
         # and read on every present, so the presenter presents at full rate
@@ -9986,8 +10179,9 @@ class Lens:
         self.set_interactive(h, True)
         self.tell_presenter("live 1")
         self.say("Tweak mode is on. Press Home when done.", WARN, 8.0)
-        self.post_key(h, 0x24)
-        self.root.after(150, lambda: self.focus(h))
+        if press_home:
+            self.post_key(h, 0x24)
+            self.root.after(150, lambda: self.focus(h))
         self.tweak_until = float("inf")
         self.root.after(700, self.follow_overlay)
         u.GetAsyncKeyState(0x24)            # forget a press from before, see watch_home
@@ -10009,9 +10203,11 @@ class Lens:
             # keyboard goes back before the styles, while the presenter is
             # still in front, which hand_focus_back needs
             self.post_key(h, 0x24)
+        # nothing of it where tweak mode is on again by then, as a second Home
+        # right after the first has it, see catch_home
         self.root.after(KEY_HOLD + 200 if press_home else 200,
-                        lambda: (self.hand_focus_back(prev, h), self.set_interactive(h, False),
-                                 self.tell_presenter("live 0")))
+                        lambda: self.tweak or (self.hand_focus_back(prev, h), self.set_interactive(h, False),
+                                               self.tell_presenter("live 0")))
         self.info.config(text="%d x %d" % (self.cw, self.ch), fg=DIM)
         self.notes.pop("note", None)        # a fullscreen lens's notice of tweak mode goes with it
         self.show_notice()
@@ -10047,10 +10243,64 @@ class Lens:
             return
         self.root.after(30, lambda: self.watch_home(h, pressing))
 
+    def catch_home(self, h=None, pressing=False):
+        """Start tweak mode when the user's Home opens the overlay outside it.
+
+        A Home reaches the presenter, and ReShade opens its overlay on it,
+        while the presenter is the foreground window, which it can stay after
+        tweak mode where the keyboard had nowhere to go back to, see
+        hand_focus_back. So while the ReShade engine runs out of tweak mode
+        and the presenter is in front, watch_filter has the key read here as
+        watch_home reads it, every 30 ms for as long as that lasts and at no
+        other time. A press from before is forgotten, and so is the NR
+        settings hotkey's own Home, see tweak_by_key. The presenter is woken
+        as the key goes down, since ReShade sees a press only on a present
+        and an idle presenter presents four times a second, see post_key.
+        Once the key is up the overlay is open, so tweak mode starts with no
+        Home posted and the keyboard where it is, see start_tweak, and
+        watch_home ends it at the next Home as always.
+        """
+        if h is None:
+            # from watch_filter: the look starts, where it does not run yet
+            if self.home_catch is not None or not self.home_reaches():
+                return
+            u.GetAsyncKeyState(0x24)        # forget a press from before, see watch_home
+            h = self.visible()
+            self.home_catch = self.root.after(30, lambda: self.catch_home(h))
+            return
+        self.home_catch = None
+        if not self.home_reaches() or h != self.visible():
+            return
+        state = u.GetAsyncKeyState(0x24)
+        last = self.hotkeys.last
+        if self.key_wait or (last[0] == "nr_panel" and time.perf_counter() - last[1] < 0.7):
+            # the NR settings hotkey is being pressed, and its Home is not the
+            # user's own Home for the overlay, see tweak_by_key
+            self.home_catch = self.root.after(30, lambda: self.catch_home(h))
+            return
+        down = bool(state & 0x8000)
+        if not pressing and (down or state & 1):
+            pressing = True
+            self.tell_presenter("wake")
+        if pressing and not down:
+            self.start_tweak("Home", press_home=False)
+            return
+        self.home_catch = self.root.after(30, lambda: self.catch_home(h, pressing))
+
+    def home_reaches(self):
+        """Whether a Home pressed now reaches the presenter out of tweak mode,
+        so that ReShade opens its overlay on it: the ReShade engine runs with
+        its picture up and in view, out of tweak mode, and the presenter is
+        the window in front."""
+        return (not self.closing and not self.tweak and self.engine != "fast" and bool(self.stages)
+                and not self.rebuilding and not self.minimized and u.GetForegroundWindow() == self.visible())
+
     def hand_focus_back(self, prev, h):
         """Give the keyboard back to the window that had it before the presenter
-        took it, so the next key goes where the user expects rather than to
-        ReShade. A window of the lens's own, or one that has gone, is left be.
+        took it, or where a window of the lens's own had it to the program last
+        in front, see start_tweak, so the next key goes where the user expects
+        rather than to ReShade. A window of the lens's own, or one that has
+        gone, is left be.
 
         Windows lets a program hand the foreground on while the window in front
         is its own or shares its input. So this is done only while a window of
@@ -10967,6 +11217,7 @@ class Lens:
         self._panel_model_look()
         self._panel_look_load(addon)        # the Look page's values, see LOOK_KEYS
         self._panel_framegen_look()         # frame generation as the lens has it, see FRAMEGEN
+        self._panel_motion_look()           # Motion vectors explained as the engine can use them
         self.panel_show_pass(min(self.panel_pass, max(1, self.passes)))
         self.sync_panel()
 
@@ -11207,8 +11458,10 @@ class Lens:
     def _panel_look_show(self):
         """The Look page's rows live or greyed, the rows Adjust the look gates
         greyed while it is off and the two Stabilize alone uses while it is Off
-        as well, the numbers greyed with their sliders, and the words beside
-        the Look row on the first page, see _look_state."""
+        as well, Motion vectors greyed where the engine cannot use the card's
+        motion estimator, see _panel_motion_look, the numbers greyed with their
+        sliders, and the words beside the Look row on the first page, see
+        _look_state."""
         ui = self.panel_ui
         if self.panel is None or "look_word" not in ui:
             return
@@ -11217,6 +11470,8 @@ class Lens:
             for key in LOOK_KEYS:
                 live = key not in LOOK_GATED or (bool(v[LOOK_MODE_KEY]) and (
                     key not in LOOK_UNDER_STABILIZE or v[LOOK_STABILIZE_KEY] != "0"))
+                if key == LOOK_MOTION_KEY:
+                    live = self._motion_live()
                 state = "normal" if live else "disabled"
                 if key in LOOK_SWITCHES:
                     ui[key + " box"].config(state=state)
@@ -11294,6 +11549,42 @@ class Lens:
             scale.set(v)
         shown.config(text=_look_number(key, v))
         self._panel_look_set(key, v, how)
+
+    def _motion_live(self):
+        """Whether the Look page's Motion vectors row takes a change: as long
+        as the engine that runs has not said that it cannot use the card's
+        motion estimator, see framegen_refused."""
+        return getattr(self, "framegen_refused", None) is None
+
+    def _panel_motion_look(self):
+        """The Look page's Motion vectors row live and explained by its
+        LOOK_WHY, or greyed and explained in every part by MOTION_NONE_WHY
+        where the engine that runs has said it cannot use the card's motion
+        estimator, see _motion_live, since the network is told then that
+        nothing moved, whatever the row says. load_panel and sync_panel call
+        it, so the engine's word shows within a second, and the row's parts
+        are set again only where it turned greyed or live."""
+        ui, key = self.panel_ui, LOOK_MOTION_KEY
+        if self.panel is None or key + " btns" not in ui:
+            return
+        live = self._motion_live()
+        if ui.get("motion_live") == live:
+            return
+        turned = "motion_live" in ui
+        ui["motion_live"] = live
+        try:
+            why = LOOK_WHY[key] if live else MOTION_NONE_WHY
+            hints = self.panel.hints
+            for part in [ui.get(key + " word"), ui.get(key + " row")] + list(ui.get(key + " btns", ())):
+                if part is not None:
+                    hints.add(part, why)
+            self._panel_look_show()
+            n = self.panel_row
+            if (turned and n is not None and n < len(self.panel_rows)
+                    and tuple(self.panel_rows[n][:2]) == ("look_choice", key)):
+                self.panel_light(n)     # the lit row's explanation as it is now
+        except Exception:
+            pass
 
     # ---- frame generation, see FRAMEGEN
 
@@ -11567,8 +11858,10 @@ class Lens:
                 ui["free"].set(bool(FREE_MOUSE))
             # frame generation as the lens has it, which the Fullscreen page of
             # Settings changes as well, greyed once the engine has said it
-            # cannot make the pictures, see _panel_framegen_look
+            # cannot make the pictures, see _panel_framegen_look, and the Look
+            # page's Motion vectors row with it, see _panel_motion_look
             self._panel_framegen_look()
+            self._panel_motion_look()
             # the note beside the switch comes and goes with the key being in
             # effect, and the panel's window takes the size its contents ask
             # for then. A new pass count shows the tabs anew, the switch's row
@@ -12747,6 +13040,7 @@ class Lens:
                 p.row += 1
                 made = (b,)
             tip(p, text, why, *made)
+            return made[0]
 
         # the fast engine can run only where its exe is, and the Cost Scaler's
         # files, since it calls the model through that proxy. Where it can, the
@@ -13169,9 +13463,10 @@ class Lens:
                        ("Codec", val("NRCodecMode", {"0": "Classic", "1": "Anchored", "2": "Auto", "3": "Display"})),
                        ("Local tone", val("NRLocalTone")),
                        ("Auto mask", val("NRAutoMask", onoff)),
-                       # the fast engine's Look stage, its Detail stability, Keep blacks and whether the
-                       # Look page's switch is on, with the values that differ from their defaults, see
-                       # LOOK_KEYS
+                       # the fast engine's Look page, its Motion vectors, Detail stability, Keep blacks and
+                       # whether the Look page's switch is on, with the values that differ from their
+                       # defaults, see LOOK_KEYS
+                       (LOOK_LABELS[LOOK_MOTION_KEY], _look_word(a, LOOK_MOTION_KEY)),
                        (LOOK_LABELS[LOOK_STABILITY_KEY], _look_word(a, LOOK_STABILITY_KEY)),
                        (LOOK_LABELS[LOOK_KEEP_KEY], _look_word(a, LOOK_KEEP_KEY)),
                        (LOOK_LABEL, _look_summary(a)),
@@ -13517,6 +13812,14 @@ class Lens:
         folder(prog, "The lens's state and logs", data, "Where should the lens keep its state and logs?",
                "Where the lens keeps its window state and archived logs. Takes effect at the next launch, so "
                "a change restarts the lens.")
+
+        # every setting back as a new install has them, after the lens's own
+        # question, see reset_everything. A heading of its own, so the button is
+        # not one of the folders, and a click or Enter only asks
+        heading(prog, RESET_ALL_HEADING, RESET_ALL_WHY, beside=RESET_ALL_BESIDE)
+        reset_b = button(prog, RESET_ALL_LABEL, lambda: self.reset_everything(t), RESET_ALL_WHY)
+        for key in ("<Return>", "<KP_Enter>"):
+            reset_b.bind(key, lambda e: (reset_b.invoke(), "break")[1])
 
         # the attribution NVIDIA's licence for its model asks for where a program
         # names itself, on this page, which says what the program is and has its
@@ -13886,6 +14189,79 @@ class Lens:
         self.root.wait_window(d)
         return picked[0] if picked else None
 
+    def reset_everything(self, t):
+        """Reset everything, the button on the Program page of Settings, t:
+        the lens's own question, with the box for the profiles, and on its
+        yes the lens closes for main to reset the files and start it again,
+        see _reset_all. Refused while another lens runs, since the two share
+        the files, before the question and again after it. What Settings held
+        unsaved goes, as everything does, and the window's place is not saved."""
+        if self.closing:
+            return
+        if _other_lens():
+            self.act(RESET_ALL_LOG["refused"])
+            messagebox.showinfo(RESET_ALL_TITLE, RESET_ALL_OTHER, parent=t)
+            return
+        box = tk.BooleanVar(master=t, value=False)
+        if self._ask_reset_all(t, box) != RESET_ALL_GO:
+            self.act(RESET_ALL_LOG["cancelled"])
+            return
+        if _other_lens():
+            self.act(RESET_ALL_LOG["refused"])
+            messagebox.showinfo(RESET_ALL_TITLE, RESET_ALL_OTHER, parent=t)
+            return
+        removed = bool(box.get())
+        self.act(RESET_ALL_LOG["go"] % ("removed" if removed else "kept"))
+        self.reset_asked = {"profiles": removed}
+        try:
+            t.destroy()
+        except tk.TclError:
+            pass
+        self.quit(restart=True, how="Settings")
+
+    def _reset_all_dialog(self, parent, box):
+        """The question of Reset everything, made and not shown, in the
+        look, over parent: the warning sign and sound, Reset everything and
+        Cancel, Cancel the default and the answer to Escape and to the close
+        button, its first paragraph the head, and the box for the profiles,
+        off, whose variable is box. For _ask_reset_all, and for the sizes
+        check, which builds it unseen."""
+        return lens_look.dialogs.Dialog(RESET_ALL_TITLE, _reset_all_words(), (RESET_ALL_GO, "Cancel"),
+                                        parent=parent, look=LOOK, default=1, cancel="Cancel", icon="warning",
+                                        form="ask", check=(RESET_ALL_BOX, RESET_ALL_BOX_WHY, box))
+
+    def _ask_reset_all(self, t, box):
+        """The question of Reset everything over Settings, t, the lens's own
+        dialog in the look, see _reset_all_dialog, else Windows' own box, OK
+        and Cancel, Cancel its default, which has no box, so the profiles
+        stay. Returns RESET_ALL_GO or "Cancel"."""
+        if lens_look is not None:
+            try:
+                return self._reset_all_dialog(t, box).run()
+            except Exception as e:
+                print('the lens\'s own dialog could not be shown ("%s"), so Windows\' own box asks instead'
+                      % (str(e) or type(e).__name__), flush=True)
+        ok = messagebox.askokcancel(RESET_ALL_TITLE, _reset_all_words(fallback=True), icon="warning",
+                                    default="cancel", parent=t)
+        return RESET_ALL_GO if ok else "Cancel"
+
+    def reset_all_said(self, marker):
+        """The start after Reset everything, marker being what the reset did,
+        see _reset_all_marker: its line in lens.log, and on the bar for 20
+        seconds the first note that applies, the stack setup offered and
+        declined, files that stayed, the profiles removed, or kept."""
+        removed = marker.get("profiles") == "removed"
+        print(RESET_ALL_LOG["started"] % ("removed" if removed else "kept with none in use"), flush=True)
+        if marker.get("repair"):
+            note = RESET_ALL_NOTE_REPAIR
+        elif marker.get("stayed"):
+            note = RESET_ALL_NOTE_STAYED
+        elif removed:
+            note = RESET_ALL_NOTE_REMOVED
+        else:
+            note = RESET_ALL_NOTE_KEPT
+        self.hold_note(note, 20.0, windowed=True)
+
     def quit(self, restart=False, how=None):
         """Close the lens, or with restart, close it for main to start it
         again. how is the way the person at the lens asked, for the log. Where
@@ -13898,6 +14274,11 @@ class Lens:
             self.close_panel()          # what its sliders left unwritten goes into ReShade.ini first
         except Exception:
             pass
+        # the profile a reset left out of use, where none is in use still, is
+        # no longer named in profiles.json either, see _reset_all_unname
+        if getattr(self, "profile_dropped", None) is not None and self.profile is None:
+            _reset_all_unname(self.profile_dropped)
+            self.profile_dropped = None
         self.restart = restart
         self.closing = True
         self.popup.close()
@@ -14017,6 +14398,287 @@ def _offer_setup(reason):
     return True
 
 
+# ---- the Tk thread's wait for a message
+# Tcl's notifier waits in Tcl_WaitForEvent, and once PeekMessageW has seen a
+# message there it calls GetMessageW, which has no timeout. A message sent to
+# the thread in between is answered inside GetMessageW and can take away the
+# message PeekMessageW saw. PrintWindow from another program does that, since
+# it sends the window WM_PAINT, which paints it there and then, so a WM_PAINT
+# that was waiting is gone. GetMessageW then waits for the next posted message
+# or input for the thread. It answers every sent message meanwhile, so the
+# program that sends them sees nothing wrong, but none of the lens's timers
+# runs, and the hotkeys, the summary and all the rest wait. Tcl ends such a
+# wait with a timer on a window of its own, which it makes only as the thread
+# first enters a modal loop of Windows, a native menu or a message box say, and
+# a lens may never enter one. Without that window a call into Tk from another
+# thread sets an event, which GetMessageW does not wait for, so it ends nothing
+# either. _tcl_window has Tcl make the window at the lens's start. Tcl then
+# sets a timer on it for its next timer each time a timer is made, and posts
+# to it when another thread calls into Tk, and either message ends such a wait.
+def _tcl_window():
+    """Have Tcl's notifier make its window now, on the thread Tk runs on, as
+    it does for its first modal loop. Tcl_SetServiceMode switches the service
+    mode to TCL_SERVICE_ALL, which makes the window, and straight back.
+    Returns None once that is done, else what went wrong, as text."""
+    for name in ("tcl86t.dll", "tcl90.dll", "tcl9tcl90.dll"):
+        handle = _k32.GetModuleHandleW(name)
+        if handle:
+            break
+    else:
+        return "no Tcl library is loaded"
+    try:
+        tcl = ctypes.CDLL(name, handle=handle)
+        tcl.Tcl_SetServiceMode.restype, tcl.Tcl_SetServiceMode.argtypes = ctypes.c_int, [ctypes.c_int]
+        mode = tcl.Tcl_SetServiceMode(1)            # TCL_SERVICE_ALL, which makes the window
+        tcl.Tcl_SetServiceMode(mode)                # and the mode the thread had
+    except (OSError, AttributeError) as exc:
+        return str(exc) or type(exc).__name__
+    return None
+
+
+# ---- Reset everything
+# The button on the Program page of Settings asks, see Lens.reset_everything,
+# and on a yes the lens quits as for a restart from Settings. Once its main
+# loop is over, with every presenter gone, main resets the files, see
+# _reset_all, before it hands lens.log on and starts the lens again, which is
+# told what was done, see _reset_all_marker. A named mutex of the lens's own
+# marks the work, so a lens started meanwhile ends at once, see
+# _reset_all_running. No handle to another process is opened.
+RESET_ALL_MUTEX = "Local\\NeuralLens.reset." + DO_NAME
+SYNCHRONIZE = 0x00100000
+
+
+def _reset_all_running():
+    """Whether Reset everything is under way in a lens, by its mutex, which
+    is opened only to ask and let go at once. One that a lens started as
+    administrator holds cannot be opened, and counts as well."""
+    ctypes.set_last_error(0)
+    h = _k32.OpenMutexW(SYNCHRONIZE, False, RESET_ALL_MUTEX)
+    if h:
+        _k32.CloseHandle(h)
+        return True
+    return ctypes.get_last_error() == 5             # ERROR_ACCESS_DENIED
+
+
+def _reset_all_why(exc):
+    """What went wrong with a file, as Windows says it, without the path."""
+    return (getattr(exc, "strerror", None) or str(exc) or type(exc).__name__) if exc is not None else "unknown"
+
+
+def _reset_all_remove(path, stayed):
+    """A file of the lens's own removed for Reset everything, tried again for
+    two seconds while Windows will not let it go, as neural_stack's reset
+    tries the stack's. One that is not there is passed over, and one that
+    stays is named in stayed and in lens.log. Returns whether it is gone."""
+    why = None
+    for i in range(20):
+        try:
+            os.remove(path)
+            print(RESET_ALL_LOG["removed"] % path, flush=True)
+            return True
+        except FileNotFoundError:
+            return True
+        except PermissionError as exc:
+            why = exc
+            if i < 19:
+                time.sleep(0.1)
+        except OSError as exc:
+            why = exc
+            break
+    stayed.append(path)
+    print(RESET_ALL_LOG["stayed"] % (path, _reset_all_why(why)), flush=True)
+    return False
+
+
+def _reset_all_carry(src_dir, dst_dir, name, stayed):
+    """A file of the person's own, profiles.json or themes.json, brought by
+    Reset everything from the data folder data_dir had moved the lens to into
+    its own data folder, byte for byte, written beside its place first and
+    then put there in one step. A different file of that name in the own
+    folder is kept as name.before-reset, with the time added where that name
+    is taken. Where the moved folder has no such file, the own folder's goes
+    aside the same way, so the lens comes back with what it had. Nothing
+    changes where the two are alike. A file that stays is named in stayed and
+    in lens.log. Returns whether it is done."""
+    src, dst = os.path.join(src_dir, name), os.path.join(dst_dir, name)
+
+    def held(path):
+        try:
+            with open(path, "rb") as fh:
+                return fh.read()
+        except FileNotFoundError:
+            return None
+
+    try:
+        new, old = held(src), held(dst)
+        if new == old:
+            return True
+        os.makedirs(dst_dir, exist_ok=True)
+        if old is not None:
+            aside = dst + ".before-reset"
+            if os.path.exists(aside):
+                aside = "%s-%s" % (aside, time.strftime("%Y%m%d-%H%M%S"))
+            os.replace(dst, aside)
+            print(RESET_ALL_LOG["kept as"] % (dst, aside), flush=True)
+        if new is not None:
+            with open(dst + ".tmp", "wb") as fh:
+                fh.write(new)
+            os.replace(dst + ".tmp", dst)
+            print(RESET_ALL_LOG["copied"] % (src, dst), flush=True)
+    except OSError as exc:
+        stayed.append(dst)
+        print(RESET_ALL_LOG["stayed"] % (dst, _reset_all_why(exc)), flush=True)
+        return False
+    return True
+
+
+def _reset_all_unname(name):
+    """At the quit of a lens that a reset started with the profiles kept,
+    where it still has none in use: profiles.json's profile in use, the one
+    the lens dropped as it started, see Lens.__init__, set to none, only
+    where the file, read again now, still names it, so a write of another
+    lens since is never undone. The rest of the file is written as it was
+    read. Returns whether it was written."""
+    try:
+        with open(PROFILES, encoding="utf-8") as fh:
+            d = json.load(fh)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(d, dict) or d.get("current") != name:
+        return False
+    d["current"] = None
+    if not _save_profiles(d):
+        return False
+    print(RESET_ALL_LOG["unnamed"], flush=True)
+    return True
+
+
+def _reset_all_words(fallback=False):
+    """The question of Reset everything: what goes, what stays, the folders
+    the lens leaves where the person had chosen others, a stack that is not
+    there, and the restart. With fallback, for Windows' own box, which has no
+    box for the profiles, so they stay. The folders are this run's, as the
+    question is asked."""
+    stack, data = _stack_after_reset(), _data_after_reset()
+    paras = [RESET_ALL_HEAD, RESET_ALL_GOES,
+             RESET_ALL_STAYS if fallback else RESET_ALL_STAYS + " " + RESET_ALL_KEEPS]
+    if not _same_folder(DATA_DIR, data):
+        paras.append(RESET_ALL_MOVED_DATA + "\n" + DATA_DIR)
+    if STACK_DIR and not (stack and _same_folder(STACK_DIR, stack)):
+        paras.append(RESET_ALL_MOVED_STACK + "\n" + STACK_DIR)
+    # ReShade.ini is one of the parts the start looks for, see _missing_stack,
+    # and the reset writes it, so it is no part the next start would lack
+    if not stack or any(not os.path.isfile(os.path.join(stack, n)) for n, _d in NEURAL_STACK if n != "ReShade.ini"):
+        paras.append(RESET_ALL_NO_STACK)
+    paras.append(RESET_ALL_RESTART)
+    if fallback:
+        paras.append(RESET_ALL_FALLBACK_END)
+    return "\n\n".join(paras)
+
+
+def _reset_all_env(on):
+    """The start after Reset everything puts what the reset did back into its
+    environment, with repair off, while it offers the stack setup, whose
+    relaunch inherits the environment, so the lens the setup starts still has
+    no profile in use and says what the reset did, and takes it out again
+    where the offer is declined. Nothing for any other start."""
+    if _RESET_ALL is None:
+        return
+    if on:
+        os.environ["NEURAL_LENS_RESET"] = json.dumps(dict(_RESET_ALL, repair=False))
+    else:
+        os.environ.pop("NEURAL_LENS_RESET", None)
+
+
+def _reset_all(asked):
+    """Reset everything, which main runs after the main loop of the lens that
+    asked, with every presenter gone, in the closing process, before it hands
+    lens.log on and starts the lens again. asked is Lens.reset_asked.
+
+    The stack the next start uses, the program's own or NEURAL_LENS_STACK's,
+    goes back to what a new install has, see neural_stack.reset_stack, and a
+    stack elsewhere, which stack_dir or --stack-dir named, is left as it is.
+    In the data folder the next start uses, and in the one data_dir moved the
+    lens to, the window's state and the update check's day go, and the
+    profiles with them where asked says so. From a moved data folder the
+    person's profiles.json, where they stay, and themes.json come with the
+    lens, see _reset_all_carry. The ini goes whole, stack_dir, data_dir and
+    screenshot_dir with it, and the relaunch loses any --stack-dir. Then the
+    stack's logs are copied into the archive and the setup's self test runs,
+    where every file of the stack was written and its parts passed their
+    check. Screenshots, logs and themes.json are never removed. A file
+    Windows will not let go of is tried again for two seconds and named, and
+    the rest is done all the same. Nothing raises. A named mutex marks the
+    work, see _reset_all_running. Returns what was done, which the next start
+    is handed, see _reset_all_marker."""
+    removed = bool((asked or {}).get("profiles"))
+    marker = {"profiles": "removed" if removed else "kept", "stayed": [], "parts": [], "selftest": "skipped",
+              "stack_left": None, "repair": False}
+    held = _k32.CreateMutexW(None, False, RESET_ALL_MUTEX)
+    try:
+        print(RESET_ALL_LOG["start"] % marker["profiles"], flush=True)
+        stack, data = _stack_after_reset(), _data_after_reset()
+        if STACK_DIR and not (stack and _same_folder(STACK_DIR, stack)):
+            marker["stack_left"] = STACK_DIR
+            print(RESET_ALL_LOG["stack left"] % STACK_DIR, flush=True)
+        whole, neural_stack = False, None
+        if stack is not None:
+            try:
+                import neural_stack
+                got = neural_stack.reset_stack(stack, log=print)
+                marker["stayed"] += list(got["stayed"])
+                marker["parts"] = [list(p) for p in got["parts"]]
+                whole = not got["stayed"]
+            except Exception as exc:
+                marker["stayed"].append("the stack's settings in %s" % stack)
+                print(RESET_ALL_LOG["stack failed"] % (stack, str(exc) or type(exc).__name__), flush=True)
+        # the window's state and the update check's day, and the profiles
+        # where asked, in the next start's data folder and in a moved one
+        names = ["lens-state.txt", "lens-state-fullscreen.txt", "update-check.txt"]
+        if removed:
+            names += ["profiles.json", "profiles.json.tmp", "profiles.json.bad"]
+        moved = not _same_folder(DATA_DIR, data)
+        for folder in [data] + ([DATA_DIR] if moved else []):
+            if os.path.isdir(folder):
+                for name in names:
+                    _reset_all_remove(os.path.join(folder, name), marker["stayed"])
+        if moved and os.path.isdir(DATA_DIR):
+            _reset_all_carry(DATA_DIR, data, "themes.json", marker["stayed"])
+            if not removed:
+                _reset_all_carry(DATA_DIR, data, "profiles.json", marker["stayed"])
+        _reset_all_remove(_ini_path(), marker["stayed"])
+        # the relaunch starts at the lens's own stack, as Settings' restart
+        # does where the stack's folder changes
+        k = 1
+        while k < len(sys.argv):
+            if sys.argv[k] in ("--stack-dir", "--mpv-dir"):
+                del sys.argv[k:k + 2]
+            else:
+                k += 1
+        if stack is None:
+            print(RESET_ALL_LOG["no stack"], flush=True)
+        elif whole and not marker["parts"]:
+            logdir = os.path.join(data, "logs")
+            archive_logs(stack, logdir)
+            print(RESET_ALL_LOG["logs"] % logdir, flush=True)
+            try:
+                ok, detail = neural_stack.verify(stack, log=print)
+                print(detail, flush=True)
+            except Exception as exc:
+                ok = False
+                print(RESET_ALL_LOG["self test fault"] % (str(exc) or type(exc).__name__), flush=True)
+            marker["selftest"] = "passed" if ok else "failed"
+            print(RESET_ALL_LOG["passed" if ok else "failed"], flush=True)
+        else:
+            print(RESET_ALL_LOG["no self test"], flush=True)
+        marker["repair"] = bool(marker["parts"]) or marker["selftest"] == "failed"
+        print(RESET_ALL_LOG["done"], flush=True)
+    finally:
+        if held:
+            _k32.CloseHandle(held)
+    return marker
+
+
 def _main():
     # Three entry points the installer uses. This one runs DURING setup, so it
     # must never open a window of its own: the whole point is that the user
@@ -14095,6 +14757,11 @@ def _main():
         except neural_stack.StackError as exc:
             print(exc, flush=True)
         return
+    # a lens started while Reset everything is under way in another, which
+    # starts the lens again itself once it is done, see _reset_all
+    if _reset_all_running():
+        print(RESET_ALL_LOG["under way"], flush=True)
+        return
     # From source the taskbar button and its list belong together through an id
     # of the lens's own, which the process has to carry before its first window
     # is made. Installed there is none to set, see APP_ID.
@@ -14103,9 +14770,13 @@ def _main():
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(ctypes.c_wchar_p(APP_ID))
         except Exception:
             pass
+    # each offer of the stack setup at a start after Reset everything hands
+    # what the reset did on to the lens the setup starts, see _reset_all_env
     if not STACK_DIR:
+        _reset_all_env(True)
         if _offer_setup("The lens could not find its Neural Rendering stack."):
             return
+        _reset_all_env(False)
         _fatal("\n".join([
             "Could not find the Neural Rendering stack.",
             "",
@@ -14179,6 +14850,9 @@ def _main():
     _set_icon(root)
     root.withdraw()
     LOOK.bind(root)                 # the scale and the faces of the look, see Look.bind
+    wrong = _tcl_window()           # so no wait of the Tk thread outlasts its next timer, see _tcl_window
+    if wrong:
+        print("Tcl's notifier window could not be made at the start (%s)" % wrong, flush=True)
     missing = _missing_stack()
     if missing:
         # This has to run before the presenter exists. Its window is topmost
@@ -14195,8 +14869,18 @@ def _main():
                "The lens will still open, but it will most likely show the screen",
                "back to you unchanged. The stack setup fetches every one of them."])
         print("\n" + note + "\n", flush=True)
+        _reset_all_env(True)
         if _offer_setup(note):
             return
+        _reset_all_env(False)
+    elif _RESET_ALL is not None and _RESET_ALL.get("repair"):
+        # after Reset everything a part failed its check, or the self test did
+        # not pass, see _reset_all, and declined, the lens says so on its bar
+        print(RESET_ALL_REPAIR, flush=True)
+        _reset_all_env(True)
+        if _offer_setup(RESET_ALL_REPAIR):
+            return
+        _reset_all_env(False)
     # the lens's ReShade has to switch on in its own presenter alone, see
     # _layer_ungated. Where this copy's own description would switch it on in
     # every program, the lens says so and offers the stack setup, which writes
@@ -14209,8 +14893,11 @@ def _main():
         print("the lens's Vulkan layer is not limited to the lens: %s has no enable_environment for "
               "ENABLE_VK_LAYER_reshade_neural_lens" % ", ".join(ungated), flush=True)
         own = _layer_own()
-        if any(_layer_key(p) == own for p in ungated) and not missing and _offer_setup(LAYER_WORDS):
-            return
+        if any(_layer_key(p) == own for p in ungated) and not missing:
+            _reset_all_env(True)
+            if _offer_setup(LAYER_WORDS):
+                return
+            _reset_all_env(False)
         for p in ungated:
             # kept by the ini, or a moment ago, see _layer_stray
             if _layer_key(p) != own and _layer_key(p) not in {_layer_key(k) for k in LAYER_STRAY_KEPT}:
@@ -14240,6 +14927,9 @@ def _main():
     if not ADDON_PASSES:
         print("the add-on in the stack cannot run several passes itself, so the lens runs one",
               flush=True)
+    # the start after Reset everything says what the reset did
+    if _RESET_ALL is not None:
+        lens.reset_all_said(_RESET_ALL)
     # the list on the taskbar button's right click. The lens runs without it
     # where Windows does not take it
     try:
@@ -14305,6 +14995,10 @@ def _main():
         except Exception:
             pass
         time.sleep(1.0)
+        # Reset everything works now, with every presenter gone, and before
+        # lens.log is handed on, so its lines are in this lens's log
+        asked = getattr(lens, "reset_asked", None)
+        marker = _reset_all(asked) if asked is not None else None
         cmd = _relaunch_cmd()
         note = os.path.join(LOGDIR, "restart.log")
         print("restarting", flush=True)
@@ -14330,6 +15024,9 @@ def _main():
                 except OSError:
                     pass
                 env = dict(os.environ, NEURAL_LENS_LOG_APPEND=handed)
+            if marker is not None:
+                # what the reset did, for the lens it starts, see _reset_all_marker
+                env = dict(env if env is not None else os.environ, NEURAL_LENS_RESET=json.dumps(marker))
             child = subprocess.Popen(cmd, cwd=_script_dir(), env=env,
                                      stdout=out, stderr=subprocess.STDOUT)
         except Exception as exc:

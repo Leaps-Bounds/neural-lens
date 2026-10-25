@@ -15,13 +15,13 @@ int wmain(int argc, wchar_t** argv) {
     fail("%s", err.c_str());
     return exit_code::usage;
   }
-  if (o.help || !o.selftest) {
+  if (o.help || !(o.selftest || o.sequence)) {
     say("lens-fast-selftest.exe --stack DIR --selftest IMAGE OUTDIR [--passes N] [--quality N] "
         "[--work-size W H | --work-scale S | --work-max W H] [--data DIR] [--switches LIST] "
         "[--switch-frames N] [--switch-rest S]");
     return o.help ? exit_code::ok : exit_code::usage;
   }
-  const int code = run_selftest(o);
+  const int code = o.sequence ? run_sequence(o) : run_selftest(o);
   // Out as the engine leaves on every path: not through the C runtime's exit, which would
   // run the Neural Rendering runtime's unload code (see leave_now). Every line is already
   // written, say() holds nothing back.

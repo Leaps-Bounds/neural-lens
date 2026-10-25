@@ -34,9 +34,12 @@ APP itself for the installed program and APP\\stack when run from source:
     TARGET\\renodx-dlss5.addon64                RenoDX, via the RHI repository, the build chosen
     TARGET\\addons\\renodx-dlss5_*.zip           both builds as fetched, and each one's copy of
                                                its section of ReShade.ini, see ADDON_BUILDS
+    TARGET\\addons\\DLSSNR-Cost-Scaler-v1.0.6.zip   the Cost Scaler's release as fetched, from which
+                                               Reset everything in the lens writes its ini
+                                               again with nothing downloaded, see reset_stack
     TARGET\\RenoDX-DLSS5-crash.log              the 8.5 build's own journal, see addon_journal_trim
     TARGET\\reshade-shaders\\Shaders\\...        DLSS5_Feed.fx, DRME, VORT, ReShade headers
-    TARGET\\ReShade.ini, ReShadePreset.ini, dlss5-feed.cfg
+    TARGET\\ReShade.ini, ReShadePreset.ini, dlss5-feed.cfg, see config_texts
     TARGET\\install-record.json                 everything above, for uninstall
     TARGET\\fast\\lens-fast.exe                 the fast engine, installed with the program and
                                                never written here. From source the lens runs the
@@ -121,7 +124,7 @@ import winreg
 import zipfile
 import zlib
 
-__version__ = "0.9.0"
+__version__ = "0.9.1"
 
 FROZEN = getattr(sys, "frozen", False)
 # Everything lives in the lens's own folder, the one the installer put it in or
@@ -373,8 +376,8 @@ ADDON_BACKUP = "ReShade.ini.renodx-dlss5-"     # how each copy of ReShade.ini th
 # takes from the section as it is, by the key names in the two files and the
 # 8.5 build's source. 5.2.1 reads two more, NRAdaptiveExposure and NRPreUpscale,
 # and the 8.5 build about a hundred more. NREnableUpscaling is the Feed's, which
-# neither build reads and the Feed writes and keeps, and NRKeepBlacks the fast
-# engine's, which neither build reads either.
+# neither build reads and the Feed writes and keeps, and NRKeepBlacks and
+# NRMotionSource the fast engine's, which neither build reads either.
 # Skin structure goes from -1 to 1 under the 8.5 build, which runs a value above
 # 1 at 1, so such a value goes to it as 1, and comes back to 5.2.1 as its own
 # copy has it while the 8.5 build has left it at 1. The codec is 0 Classic or 1
@@ -388,9 +391,10 @@ ADDON_SHARED = ("EnableHooks", "NeuralUplift", "NRAutoMask", "NRChainedHistory",
                 "NRScreenshotKey", "NRSkinStructure", "NRStyle", "NRToggleKey", "NRTransferStrength",
                 "NRUICorrection",
                 # the Look stage's keys, which the 8.5 build and the fast engine read and 5.2.1 leaves
-                # alone, and Keep blacks, NRKeepBlacks, which the fast engine alone reads, so a fullscreen
-                # lens keeps its look whichever build the window runs, see LOOK_KEYS in neural_lens.py
-                "NRDetailStability", "NRKeepBlacks", "NRLookMode", "NRLookTone", "NRLookDetail",
+                # alone, and Keep blacks, NRKeepBlacks, and Motion vectors, NRMotionSource, which the fast
+                # engine alone reads, so a fullscreen lens keeps its look whichever build the window runs,
+                # see LOOK_KEYS in neural_lens.py
+                "NRMotionSource", "NRDetailStability", "NRKeepBlacks", "NRLookMode", "NRLookTone", "NRLookDetail",
                 "NRLookDetailRadius", "NRLookHalo", "NRLookHaloBrightSide", "NRLookStabilize", "NRLookStabilizeMs",
                 "NRLookStabilizeDetail", "NRLookMaxBrighten", "NRLookMaxDarken", "NRLookMaxColour")
 # Before upscaling, "Denoise before upscaling" in 5.2.1's Home menu, is
@@ -1340,6 +1344,290 @@ def addon_journal_trim(target, most=ADDON_JOURNAL_MOST):
     return len(tail)
 
 
+# ---------------------------------------------------------------- Reset everything
+# The lens's Reset everything puts the stack's settings back as a new install
+# has them, see reset_stack: ReShade.ini, ReShadePreset.ini and dlss5-feed.cfg
+# from the templates above, as step_config writes them for a new install, see
+# config_texts, and the Cost Scaler's ini from its release, which the setup
+# keeps in ADDON_DIR under the name the release gives it, see step_cost_scaler.
+COST_SCALER_ZIP = "DLSSNR-Cost-Scaler-v%s.zip" % COST_SCALER_VERSION
+# the motion vector provider by the name install-record.json gives it, see step_shaders
+PROVIDER_OF_RECORD = {"ReshadeMotionEstimation": "drme", "VORT": "vort"}
+# what a write cut short leaves beside the files the setup and the reset write
+RESET_LEFTOVERS = ("ReShade.ini.tmp", "ReShadePreset.ini.tmp", "dlss5-feed.cfg.tmp", "nvngx_dlssnr.ini.tmp",
+                   "renodx-dlss5.addon64.part")
+# a file Windows will not let go of, as one a presenter that is ending still
+# holds, is tried this many times this many seconds apart, two seconds in all
+RESET_TRIES, RESET_WAIT = 20, 0.1
+
+
+def config_texts(provider="drme", section=None):
+    """ReShade.ini as bytes, ReShadePreset.ini and dlss5-feed.cfg as text,
+    as the setup writes them for a new install with this provider: the
+    templates, the provider substituted, the add-on's section holding the
+    lines of section in place of the template's two where it is given, and
+    no section of the lens's own. ReShade.ini has Windows' line ends, as
+    write_text gives the other two theirs. An unknown provider is DRME, as
+    for Install."""
+    ini, preset = RESHADE_INI, RESHADE_PRESET
+    # the templates are written for VORT, and DRME is substituted
+    if provider not in PROVIDERS or provider == "drme":
+        ini = ini.replace("DLSS5_MV_PROVIDER=2,V_MV_MODE=1", "DLSS5_MV_PROVIDER=0")
+        preset = preset.replace("vort_MotionEffects@vort_Motion.fx", "DRME@MotionEstimation.fx")
+    if section:
+        ini = ini.replace(ADDON_SECTION + "\nConfigVersion=2\nNRPreset=1\n",
+                          ADDON_SECTION + "\n" + "\n".join(section) + "\n")
+    return ini.replace("\n", "\r\n").encode("utf-8"), preset, FEED_CFG
+
+
+def provider_of(target):
+    """The motion vector provider install-record.json in target names, see
+    step_shaders, drme where it names none or cannot be read."""
+    try:
+        with open(os.path.join(target, "install-record.json"), encoding="utf-8") as f:
+            named = json.load(f)["components"]["motion_vectors"]
+        return PROVIDER_OF_RECORD.get(named, "drme")
+    except (OSError, ValueError, KeyError, TypeError):
+        return "drme"
+
+
+def cost_scaler_release(target):
+    """The Cost Scaler's release kept in the stack's addons folder, see
+    step_cost_scaler, where its hash is a known one, else None."""
+    path = os.path.join(target, ADDON_DIR, COST_SCALER_ZIP)
+    try:
+        return path if sha256(path) in HASHES["cost-scaler.zip"] else None
+    except OSError:
+        return None
+
+
+def stack_parts(target, provider):
+    """[(name, why)] for each part of the stack in target that fails its
+    check, read only: lens-presenter.exe, the two add-ons, the Cost Scaler's
+    ini, the Feed's shader, the provider's and ReShade's headers for being
+    there, and NVIDIA's runtime, the model and the Cost Scaler's DLL by their
+    hashes, see HASHES. The Feed is its latest release and the shaders are
+    not pinned, so they have no hash to be held to."""
+    shaders = os.path.join("reshade-shaders", "Shaders")
+    there = ["lens-presenter.exe", "renodx-dlss5.addon64", "dlss5-feed.addon64", "nvngx_dlssnr.ini",
+             os.path.join(shaders, "DLSS5_Feed.fx")]
+    there += [os.path.join(shaders, n) for n in (["vort_Motion.fx"] if provider == "vort" else DRME_FILES)]
+    there += [os.path.join(shaders, n) for n in HEADER_FILES]
+    parts = [(name, "it is not there") for name in there if not os.path.isfile(os.path.join(target, name))]
+    model = HASHES["nvngx_dlssnr.dll"][MODEL] + HASHES["nvngx_dlssnr.dll"][NVIDIA_MODEL]
+    for name, want in (("nvngx_dlss.dll", HASHES["nvngx_dlss.dll"]), ("nvngx_dlssnr_real.dll", model),
+                       ("nvngx_dlssnr.dll", HASHES["cost-scaler.dll"])):
+        path = os.path.join(target, name)
+        try:
+            if sha256(path) not in want:
+                parts.append((name, "it matches no known hash"))
+        except OSError:
+            parts.append((name, "it cannot be read" if os.path.isfile(path) else "it is not there"))
+    return parts
+
+
+def _why(exc):
+    """What went wrong with a file, as Windows says it, without the path."""
+    return (getattr(exc, "strerror", None) or str(exc) or type(exc).__name__) if exc is not None else "unknown"
+
+
+def _put(path, data, stayed, log=None, suffix=".tmp"):
+    """data written beside path first and then put in its place in one step,
+    so a reader never finds the file cut short, tried again while Windows
+    will not let the file go, see RESET_TRIES. A file that stays as it was
+    is named in stayed and in the log, and leaves nothing beside it. Returns
+    whether it was written."""
+    part, why = path + suffix, None
+    try:
+        with open(part, "wb") as f:
+            f.write(data)
+    except OSError as exc:
+        why = exc
+    if why is None:
+        for i in range(RESET_TRIES):
+            try:
+                os.replace(part, path)
+                return True
+            except PermissionError as exc:
+                why = exc
+                if i + 1 < RESET_TRIES:
+                    time.sleep(RESET_WAIT)
+            except OSError as exc:
+                why = exc
+                break
+    try:
+        os.remove(part)
+    except OSError:
+        pass
+    stayed.append(path)
+    say(log, "%s could not be changed (%s), so it stays as it was" % (path, _why(why)))
+    return False
+
+
+def _drop(path, stayed, log=None, shown=None):
+    """path removed, tried again while Windows will not let it go, see
+    RESET_TRIES, and said in the log by shown, else by the path. One that is
+    not there is passed over, and one that stays is named in stayed and in
+    the log. Returns whether it is gone."""
+    why = None
+    for i in range(RESET_TRIES):
+        try:
+            os.remove(path)
+            say(log, "%s removed" % (shown or path))
+            return True
+        except FileNotFoundError:
+            return True
+        except PermissionError as exc:
+            why = exc
+            if i + 1 < RESET_TRIES:
+                time.sleep(RESET_WAIT)
+        except OSError as exc:
+            why = exc
+            break
+    stayed.append(path)
+    say(log, "%s could not be changed (%s), so it stays as it was" % (path, _why(why)))
+    return False
+
+
+def reset_stack(target, log=None):
+    """The stack's settings in target as a new install has them, with
+    nothing downloaded, registered or run, for Reset everything in the lens.
+    For a stack no presenter of which runs.
+
+    ReShade.ini, ReShadePreset.ini and dlss5-feed.cfg are written whole from
+    the templates with the provider install-record.json names, see
+    config_texts, so the add-on's section is the template's two lines and the
+    lens's own section goes. The 5.2.1 add-on goes in place of the 8.5 build
+    from its zip in ADDON_DIR, checked by hash, and where that zip is missing
+    or does not check out the 8.5 build stays with a section at its own
+    ConfigVersion, as a new install of that build has it, see step_renodx.
+    An add-on of neither build is left as it is. The copies of the add-on's
+    section the builds keep, the 8.5 build's copies of ReShade.ini and
+    ReShade's own overlay settings, ReShadeGUI.ini, go, and so does what a
+    write cut short left. nvngx_dlssnr.ini is written from the Cost Scaler's
+    release kept in ADDON_DIR, see step_cost_scaler, with the setup's four
+    switches, and without the release those four switches are set in the
+    file as it is, every other byte kept. The fast engine's own copy of that
+    ini goes, see fast_engine_dirs, and the engine makes it again from the
+    stack's. The parts are checked where they are, see stack_parts, and
+    nothing else of the stack is touched: the parts, both zips, the
+    record, the logs, the 8.5 build's journal and the screenshots stay.
+
+    Every file goes in through a file beside it, and one Windows will not
+    let go of is tried again for two seconds and then named, and the rest is
+    reset all the same. StackError where target has no lens-presenter.exe,
+    with nothing written. Returns {"parts": [(name, why)], "stayed": [path],
+    "addon": the build in place after, "cost_scaler": "release",
+    "switches", "left" or "none", "provider": the provider}."""
+    target = os.path.abspath(target)
+    if not os.path.isfile(os.path.join(target, "lens-presenter.exe")):
+        raise StackError("%s has no lens-presenter.exe, so it is not a stack folder" % target)
+    stayed = []
+
+    def shown(path):
+        """A path in the log, relative to the stack folder where it is in it."""
+        try:
+            rel = os.path.relpath(path, target)
+        except ValueError:
+            return path
+        return path if rel.startswith("..") else rel
+
+    provider = provider_of(target)
+    release = cost_scaler_release(target)
+    say(log, "the stack in %s goes back to what a new install has" % target)
+    # the Cost Scaler's ini is written below from its release where the stack
+    # keeps it, so it is a part only without one
+    parts = [p for p in stack_parts(target, provider) if not (p[0] == "nvngx_dlssnr.ini" and release)]
+    for name, _because in parts:
+        say(log, "%s did not pass its check, so the lens offers the stack setup when it opens" % name)
+
+    # what a write cut short left, never a zip's .part, which a download of
+    # the lens may still be writing
+    left = [os.path.join(target, n) for n in RESET_LEFTOVERS]
+    try:
+        left += [os.path.join(target, ADDON_DIR, n) for n in sorted(os.listdir(os.path.join(target, ADDON_DIR)))
+                 if n.startswith("section-") and n.endswith(".ini.tmp")]
+    except OSError:
+        pass
+    for path in left:
+        _drop(path, stayed, log, shown(path))
+
+    # the add-on: 5.2.1, the default, in place of the 8.5 build from its zip
+    build = have = addon_in_place(target)
+    if have in ADDON_BUILDS and have != ADDON_DEFAULT:
+        data = None
+        z = addon_zip(target, ADDON_DEFAULT, log, fetch_missing=False)
+        if z is not None:
+            try:
+                data = addon_file(z, ADDON_DEFAULT)
+            except StackError:
+                data = None
+        if data is None:
+            say(log, "the Home menu add-on stays %s, since the %s zip is not in the %s folder or does not check out"
+                % (ADDON_BUILDS[have]["version"], ADDON_BUILDS[ADDON_DEFAULT]["version"], ADDON_DIR))
+        elif _put(os.path.join(target, "renodx-dlss5.addon64"), data, stayed, log, ".part"):
+            build = ADDON_DEFAULT
+            say(log, "the Home menu add-on is %s again" % ADDON_BUILDS[ADDON_DEFAULT]["version"])
+    elif have == "other":
+        say(log, "the add-on in the stack is neither build the lens knows, so it is left as it is")
+
+    # the copies of the add-on's section each build keeps, which a new install
+    # has none of and which would bring old values back at the next change of
+    # the build, the 8.5 build's copies of ReShade.ini, and ReShade's own
+    for path in ([addon_kept_path(target, b) for b in ADDON_BUILDS] + addon_backups(target)
+                 + [os.path.join(target, "ReShadeGUI.ini")]):
+        _drop(path, stayed, log, shown(path))
+
+    # the three files of the templates, the add-on's section at the 8.5
+    # build's own ConfigVersion where that build stays, see step_renodx
+    section = None
+    if build in ADDON_BUILDS and build != ADDON_DEFAULT:
+        section = ["ConfigVersion=%s" % ADDON_BUILDS[build]["schema"], "%s=%s" % (MODEL_KEY, LARGE)]
+    ini, preset, feed = config_texts(provider, section)
+    for name, data in (("ReShade.ini", ini), ("ReShadePreset.ini", preset.replace("\n", "\r\n").encode("utf-8")),
+                       ("dlss5-feed.cfg", feed.replace("\n", "\r\n").encode("utf-8"))):
+        if _put(os.path.join(target, name), data, stayed, log):
+            say(log, "%s written as a new install has it" % name)
+
+    # the Cost Scaler's ini, latin-1 both ways as step_cost_scaler writes it,
+    # so every byte of its comments survives
+    ini_path = os.path.join(target, "nvngx_dlssnr.ini")
+    cost, data = "none", None
+    if release is not None:
+        try:
+            with zipfile.ZipFile(release) as zf:
+                member = next((n for n in zf.namelist() if n.lower().endswith("nvngx_dlssnr.ini")), None)
+                if member:
+                    data = set_ini_values(zf.read(member).decode("latin-1"), COST_SCALER_SETTINGS).encode("latin-1")
+                    cost = "release"
+        except (OSError, zipfile.BadZipFile, StackError):
+            data = None
+    if data is None and os.path.isfile(ini_path):
+        try:
+            with open(ini_path, "rb") as f:
+                data = set_ini_values(f.read().decode("latin-1"), COST_SCALER_SETTINGS).encode("latin-1")
+            cost = "switches"
+        except StackError:
+            cost = "left"
+            say(log, "nvngx_dlssnr.ini is left as it is, since it lacks a switch the stack setup sets")
+        except OSError as exc:
+            cost = "left"
+            stayed.append(ini_path)
+            say(log, "%s could not be changed (%s), so it stays as it was" % (ini_path, _why(exc)))
+    if data is not None and _put(ini_path, data, stayed, log):
+        say(log, "nvngx_dlssnr.ini written from the Cost Scaler's release in the %s folder" % ADDON_DIR
+            if cost == "release" else
+            "nvngx_dlssnr.ini has the four switches a new install sets, and its other settings as they were, "
+            "since the Cost Scaler's release is not in the %s folder" % ADDON_DIR)
+
+    # the fast engine's own copy of the proxy's ini, which it makes again from
+    # the stack's as it starts, as after an install
+    for d in fast_engine_dirs(target):
+        path = os.path.join(d, "nvngx_dlssnr.ini")
+        _drop(path, stayed, log, shown(path))
+    return {"parts": parts, "stayed": stayed, "addon": build, "cost_scaler": cost, "provider": provider}
+
+
 # ---------------------------------------------------------------- steps
 class Install:
     def __init__(self, target=DEFAULT_TARGET, dlssnr=None, dlss=None, log=None, provider="drme"):
@@ -1702,9 +1990,11 @@ class Install:
         except OSError:
             pass
 
-    # DLSSNR-Cost-Scaler: the proxy as nvngx_dlssnr.dll, forwarding to the model
+    # DLSSNR-Cost-Scaler: the proxy as nvngx_dlssnr.dll, forwarding to the
+    # model. Its release is kept in the stack's addons folder, from which
+    # Reset everything in the lens writes its ini again, see reset_stack
     def step_cost_scaler(self):
-        name = "DLSSNR-Cost-Scaler-v%s.zip" % COST_SCALER_VERSION
+        name = COST_SCALER_ZIP
         z = fetch(SOURCES["cost_scaler"], os.path.join(CACHE_DIR, name), self.log,
                   "DLSSNR Cost Scaler " + COST_SCALER_VERSION)
         check_hash(z, HASHES["cost-scaler.zip"], name)
@@ -1732,6 +2022,16 @@ class Install:
         self.record["components"]["cost_scaler"] = COST_SCALER_VERSION
         self.say("DLSSNR Cost Scaler %s: in front of the model, off until the lens asks for it.%s"
                  % (COST_SCALER_VERSION, kept))
+        # the release as fetched, where the stack does not hold it already,
+        # hash checked, beside the add-on's zips, and in the record, so an
+        # uninstall takes it away with the rest
+        release = os.path.join(self.target, ADDON_DIR, name)
+        if cost_scaler_release(self.target) is None:
+            os.makedirs(os.path.dirname(release), exist_ok=True)
+            shutil.copyfile(z, release + ".part")
+            os.replace(release + ".part", release)
+        self.add(release)
+        self.say("the Cost Scaler's release is kept in the %s folder, for Reset everything" % ADDON_DIR)
 
     def step_feeder(self):
         rel = fetch_json(SOURCES["feeder_api"])
@@ -1842,26 +2142,21 @@ class Install:
         self.say("motion vectors: %s will provide them" % self.record["components"]["motion_vectors"])
 
     def step_config(self):
-        # the templates are written for VORT; the chosen provider is substituted
-        ini, preset = RESHADE_INI, RESHADE_PRESET
-        if self.provider == "drme":
-            ini = ini.replace("DLSS5_MV_PROVIDER=2,V_MV_MODE=1", "DLSS5_MV_PROVIDER=0")
-            preset = preset.replace("vort_MotionEffects@vort_Motion.fx", "DRME@MotionEstimation.fx")
+        # the templates with the chosen provider, see config_texts, which
+        # Reset everything in the lens writes them with too, and the add-on's
+        # section of an existing ReShade.ini in place of the template's
         path = os.path.join(self.target, "ReShade.ini")
         kept = self._addon_section(path)
-        if kept:
-            ini = ini.replace(ADDON_SECTION + "\nConfigVersion=2\nNRPreset=1\n",
-                              ADDON_SECTION + "\n" + "\n".join(self._model_preset(kept)) + "\n")
-            # not for the section step_renodx itself wrote a moment ago for a
-            # new install of the 8.5 build, which holds no settings of anyone's
-            if not getattr(self, "stub_section", False):
-                self.say("config: the Neural Rendering add-on's settings in the existing ReShade.ini are kept")
+        data, preset, feed = config_texts(self.provider, self._model_preset(kept) if kept else None)
+        # not for the section step_renodx itself wrote a moment ago for a new
+        # install of the 8.5 build, which holds no settings of anyone's
+        if kept and not getattr(self, "stub_section", False):
+            self.say("config: the Neural Rendering add-on's settings in the existing ReShade.ini are kept")
         # the template's section starts on the large network, and an
         # existing one is on it now unless it was set before, see _model_preset
         self.record[PRESET_DONE] = True
         # the template goes in as write_text writes it, and the lens's own
         # section of the existing file after it, byte for byte, see _lens_section
-        data = ini.replace("\n", "\r\n").encode("utf-8")
         own = self._lens_section(path)
         if own:
             data += b"\r\n" + own
@@ -1869,7 +2164,7 @@ class Install:
                      "second on have of their own, is kept as it was")
         self.add(write_bytes(path, data))
         self.add(write_text(os.path.join(self.target, "ReShadePreset.ini"), preset))
-        self.add(write_text(os.path.join(self.target, "dlss5-feed.cfg"), FEED_CFG))
+        self.add(write_text(os.path.join(self.target, "dlss5-feed.cfg"), feed))
         self.say("config: ReShade, the preset and the feed written")
 
     def _model_preset(self, lines):

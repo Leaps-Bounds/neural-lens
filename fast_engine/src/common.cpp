@@ -198,12 +198,17 @@ const char kUsage[] =
     "                [--crop X Y] [--title T] [--exclude] [--ready] [--max-fps N]\n"
     "                [--data DIR] [--passes N] [--quality N] [--present hwnd|dcomp]\n"
     "                [--framegen off|ahead|between] [--no-settle] [--lifetime S]\n"
-    "                [--work-size W H | --work-scale S | --work-max W H]\n"
+    "                [--work-size W H | --work-scale S | --work-max W H] [--motion card|none]\n"
     "  lens-fast.exe --stack DIR --selftest IMAGE OUTDIR [--passes N] [--quality N]\n"
     "                [--work-size W H | --work-scale S | --work-max W H] [--data DIR]\n"
     "                [--switches LIST] [--switch-frames N] [--switch-rest S]\n"
+    "  lens-fast.exe --stack DIR --sequence DIR OUTDIR --framegen off|ahead|between\n"
+    "                [--sequence-stride N] [--sequence-nr] [--quality N] [--data DIR]\n"
+    "                [--sequence-save nr] [--sequence-settle K] [--sequence-dump LIST]\n"
+    "                [--motion card|none]\n"
     "  lens-fast.exe --at X Y --size W H --capturetest SECONDS [--crop X Y] [--max-fps N]\n"
     "  lens-fast.exe --steps W H\n"
+    "  lens-fast.exe --motion-cases\n"
     "  lens-fast.exe --help\n"
     "\n"
     "  --source monitor:<n>  monitor capture. n counts from 1 and is only repeated in\n"
@@ -240,10 +245,51 @@ const char kUsage[] =
     "                        frame of it, see framegen.h. Off unless given\n"
     "  --no-settle           do not run the network again on a picture that has come to\n"
     "                        rest (it runs up to 4 more times, see settle below)\n"
+    "  --motion card|none    for tests, where the network's motion vectors come from, in\n"
+    "                        place of NRMotionSource in the stack's ReShade.ini. card is\n"
+    "                        the card's own motion estimate and none is zero vectors. The\n"
+    "                        lens never passes it\n"
     "  --lifetime S          leave after S seconds whatever happens, for tests\n"
     "  --selftest IMAGE OUTDIR\n"
     "                        run IMAGE through the pipeline with no window and no\n"
     "                        capture, time it and write the pictures into OUTDIR\n"
+    "  --sequence DIR OUTDIR\n"
+    "                        frame generation offline, no window: the frames DIR\\f0000.png,\n"
+    "                        f0002.png and so on, every --sequence-stride th (2 unless\n"
+    "                        given), go through the pipeline in order as a capture would,\n"
+    "                        and the picture made between each two, or carried on from the\n"
+    "                        last with --framegen ahead, is written into OUTDIR as made-N.png,\n"
+    "                        N the frame it stands for. The network is off unless\n"
+    "                        --sequence-nr is given, so the pictures show the motion's work.\n"
+    "                        With --framegen off no picture is made, and the motion is\n"
+    "                        estimated only for the network or the Look stage. With no\n"
+    "                        --framegen the run is between\n"
+    "  --sequence-white W    with --sequence, the frames are f0000.npy and so on, float16 RGBA\n"
+    "                        in linear scRGB (1.0 is 80 nits), and the run goes through the HDR\n"
+    "                        path at that SDR white level, W in units of 80 nits (3 at 240 nits);\n"
+    "                        the made pictures are made-N.npy\n"
+    "  --sequence-save nr    with --sequence, each source's picture after its render and\n"
+    "                        before any made picture, as nr-N.png, or nr-N.npy with\n"
+    "                        --sequence-white, N the source's frame\n"
+    "  --sequence-settle K   with --sequence, in place of the run, each source alone from a\n"
+    "                        reset, rendered K times at rest with zero vectors and written as\n"
+    "                        settled-N, then 8 more times and written as settled2-N. Nothing\n"
+    "                        is estimated and no picture is made\n"
+    "  --sequence-dump LIST  with --sequence, one or both of these with a comma between\n"
+    "                          vectors  each source's motion estimate as vectors-src-N.bin,\n"
+    "                                   int16 pairs, one a block, rows tight\n"
+    "                          fed      the vectors the network was handed as fed-N.bin,\n"
+    "                                   float16 pairs, one a work texel, rows tight, and a\n"
+    "                                   line for each source and pass saying what it got\n"
+    "  --sequence-lab LIST   with --sequence, research switches, a comma list: nocoarse\n"
+    "                        (no coarser estimates), levels1, levels2 (one or two of the three),\n"
+    "                        fixedgate (the warp's gate at six levels whatever the noise),\n"
+    "                        and for the network's motion vectors mvneg (each one turned\n"
+    "                        round), mvscale:S (each one times S), mvconst:DX:DY (one vector\n"
+    "                        everywhere, in work texels), mvzero (zeros handed the way the\n"
+    "                        estimate is), mvallpasses (every pass handed them in the shared\n"
+    "                        mode, where only the first is) and noestimator (no motion\n"
+    "                        estimator)\n"
     "  --switches LIST       with --selftest, at the end switch through these quality\n"
     "                        steps in order, as in 5,3,2,1,0,4, and keep a picture of each\n"
     "  --switch-frames N     frames drawn at each of them (421). Under 100 no picture is\n"
@@ -253,6 +299,9 @@ const char kUsage[] =
     "  --capturetest SECONDS capture for that long and report, with no window and no network\n"
     "  --steps W H           print the six steps' work sizes for a W x H picture and\n"
     "                        leave. It may be given several times\n"
+    "  --motion-cases        print, for a few scripted runs of frames, which renders hand\n"
+    "                        the network the card's motion estimate and which zeros, one\n"
+    "                        line a case, and leave\n"
     "  --help                this text\n"
     "An option it does not know is ignored with a note on stderr.\n"
     "\n"
@@ -273,9 +322,12 @@ const char kUsage[] =
     "               with its own values, so one history serves them all. ScaleChange=1\n"
     "               there, with Strength from 1 to 2, scales the change the passes made\n"
     "               together by the strength, once the last pass has run, since the\n"
-    "               network itself does no more above an intensity of 1. The start reads\n"
-    "               the same. A new preset or shared state makes the features again, as\n"
-    "               quality does, while the pictures go on\n"
+    "               network itself does no more above an intensity of 1. NRMotionSource\n"
+    "               in [RenoDX.DLSS5] says where the network's motion vectors come from,\n"
+    "               1 the card's own motion estimate and 0 none, and a change of it is\n"
+    "               taken from the next new frame on. The start reads the same. A new\n"
+    "               preset or shared state makes the features again, as quality does,\n"
+    "               while the pictures go on\n"
     "  settle 1|0   on by default. When a picture that changed over 1/32 of its area or\n"
     "               more has stood still for 150 ms, the network runs on it up to 4\n"
     "               more times, so a still picture reaches the network's settled state.\n"
@@ -311,7 +363,7 @@ const char kUsage[] =
     "                        they were made, in the state named, which the stats line\n"
     "                        keeps saying. A reload that changes the state asks again\n"
     "  stats new=N arrived=N repeated=N dropped=N skipped=N meter=MS delay=MS shared=on|off\n"
-    "        network=MS generated=N preset=N\n"
+    "        network=MS generated=N preset=N look=L motion=N\n"
     "                        once a second. meter is the time in ms from a captured\n"
     "                        frame's timestamp to the present call, negative because the\n"
     "                        timestamp is a refresh still to come. delay is the time in\n"
@@ -322,8 +374,13 @@ const char kUsage[] =
     "                        together, the mean over the second's runs, nan where it did\n"
     "                        not run. generated is the pictures made between the frames\n"
     "                        and presented. preset is the model preset the features in\n"
-    "                        use were made with, 0 without a network. With\n"
-    "                        LENS_PRESENTER_PROFILE=1 more pairs come before shared\n"
+    "                        use were made with, 0 without a network. look is 1 while\n"
+    "                        the Look stage changes the network's picture. motion is the\n"
+    "                        network's runs in the second that were handed the card's\n"
+    "                        motion estimate, 0 where it gets none or nothing moved. With\n"
+    "                        LENS_PRESENTER_PROFILE=1 more pairs come before shared, the\n"
+    "                        last of them est, the motion estimate's time in ms on the\n"
+    "                        card's video engine, 0 where none was made or none timed\n"
     "  paused | resumed | shot done ... | shot failed REASON\n"
     "  probe n=N median=M max=X | capture lost REASON | engine failed REASON\n";
 
@@ -576,6 +633,14 @@ bool read_nr_passes(const std::wstring& stack_dir, NrPasses& out, std::string& e
     const int stability = (int)section_number(addon, L"NRDetailStability", 1.0f);
     k.detail_stability = stability >= 0 && stability <= 2 ? stability : 1;
     k.keep_blacks = (int)section_number(addon, L"NRKeepBlacks", 0.0f) != 0 ? 1 : 0;
+    // the source of the model's motion vectors, the engine's own key like NRKeepBlacks, read
+    // always: cut to a whole number as the lens's choices are, and anything but 0 or 1 is the
+    // default, see look_settings.h
+    {
+      const float value = section_number(addon, L"NRMotionSource", (float)kMotionSourceDefault);
+      const int source = value > -2.0f && value < 2.0f ? (int)value : -1;
+      k.motion_source = source == kMotionNone || source == kMotionCard ? source : kMotionSourceDefault;
+    }
     if ((int)section_number(addon, L"NRLookMode", 0.0f) != 0) {
       k.tone = std::clamp(section_number(addon, L"NRLookTone", 1.0f), 0.0f, 2.0f);
       k.detail = std::clamp(section_number(addon, L"NRLookDetail", 1.0f), 0.0f, 2.0f);
@@ -860,6 +925,17 @@ bool parse_options(int argc, wchar_t** argv, Options& out, std::string& err) {
         err = "--framegen needs off, ahead or between";
         return false;
       }
+      o.framegen_given = true;
+    } else if (a == L"--motion") {
+      if (!values(1)) return false;
+      if (_wcsicmp(v[0].c_str(), L"card") == 0) o.motion = kMotionCard;
+      else if (_wcsicmp(v[0].c_str(), L"none") == 0) o.motion = kMotionNone;
+      else {
+        err = "--motion needs card or none";
+        return false;
+      }
+    } else if (a == L"--motion-cases") {
+      o.motion_cases = true;
     } else if (a == L"--no-settle") {
       o.settle = false;
     } else if (a == L"--lifetime") {
@@ -874,6 +950,63 @@ bool parse_options(int argc, wchar_t** argv, Options& out, std::string& err) {
       o.selftest = true;
       o.selftest_image = absolute(v[0]);
       o.selftest_outdir = absolute(v[1]);
+    } else if (a == L"--sequence") {
+      if (!values(2)) return false;
+      o.sequence = true;
+      o.sequence_dir = absolute(v[0]);
+      o.selftest_outdir = absolute(v[1]);
+    } else if (a == L"--sequence-stride") {
+      if (!values(1)) return false;
+      double n = 0.0;
+      if (!to_number(v[0], n) || n < 1.0 || n > 16.0 || n != (double)(int)n) {
+        err = "--sequence-stride needs a whole number from 1 to 16";
+        return false;
+      }
+      o.sequence_stride = (int)n;
+    } else if (a == L"--sequence-white") {
+      if (!values(1)) return false;
+      double wht = 0.0;
+      if (!to_number(v[0], wht) || wht < 1.0 || wht > 20.0) {
+        err = "--sequence-white needs the SDR white level in units of 80 nits, 1 to 20";
+        return false;
+      }
+      o.sequence_white = wht;
+    } else if (a == L"--sequence-lab") {
+      if (!values(1)) return false;
+      o.sequence_lab = narrow(v[0]);
+    } else if (a == L"--sequence-nr") {
+      o.sequence_nr = true;
+    } else if (a == L"--sequence-save") {
+      if (!values(1)) return false;
+      if (_wcsicmp(v[0].c_str(), L"nr") != 0) {
+        err = "--sequence-save needs nr";
+        return false;
+      }
+      o.sequence_save_nr = true;
+    } else if (a == L"--sequence-settle") {
+      if (!values(1)) return false;
+      double n = 0.0;
+      if (!to_number(v[0], n) || n < 1.0 || n > 256.0 || n != (double)(int)n) {
+        err = "--sequence-settle needs a whole number from 1 to 256";
+        return false;
+      }
+      o.sequence_settle = (int)n;
+    } else if (a == L"--sequence-dump") {
+      if (!values(1)) return false;
+      // a comma list of vectors and fed
+      bool good = !v[0].empty();
+      for (size_t at = 0; good && at <= v[0].size();) {
+        const size_t comma = std::min(v[0].find(L',', at), v[0].size());
+        const std::wstring word = v[0].substr(at, comma - at);
+        if (_wcsicmp(word.c_str(), L"vectors") == 0) o.sequence_dump_vectors = true;
+        else if (_wcsicmp(word.c_str(), L"fed") == 0) o.sequence_dump_fed = true;
+        else good = false;
+        at = comma + 1;
+      }
+      if (!good) {
+        err = "--sequence-dump needs vectors, fed or both with a comma between";
+        return false;
+      }
     } else if (a == L"--capturetest") {
       if (!values(1)) return false;
       if (!to_number(v[0], o.capturetest_seconds) || o.capturetest_seconds <= 0.0) {
@@ -895,8 +1028,8 @@ bool parse_options(int argc, wchar_t** argv, Options& out, std::string& err) {
     }
   }
 
-  // --steps only prints, and nothing else is required or checked
-  if (!o.steps_for.empty()) return true;
+  // --steps and --motion-cases only print, and nothing else is required or checked
+  if (!o.steps_for.empty() || o.motion_cases) return true;
 
   if (o.data_dir.empty()) {
     wchar_t temp[MAX_PATH + 2] = {};
@@ -925,6 +1058,13 @@ bool parse_options(int argc, wchar_t** argv, Options& out, std::string& err) {
   if (o.selftest) {
     if (o.stack_dir.empty()) {
       err = "--selftest needs --stack DIR";
+      return false;
+    }
+    return true;
+  }
+  if (o.sequence) {
+    if (o.stack_dir.empty()) {
+      err = "--sequence needs --stack DIR";
       return false;
     }
     return true;

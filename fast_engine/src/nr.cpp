@@ -238,26 +238,38 @@ void subrect(ngx::Params* p, const char* base_x, const char* base_y, const char*
 // the engine's pictures are still theirs byte for byte.
 constexpr unsigned kZeroSide = 1;
 
+// The motion vectors as eval_params() binds them: the texture, the part of it its subrect
+// takes, and the motion scale.
+struct MotionBinding {
+  ID3D12Resource* texture = nullptr;
+  unsigned w = 0, h = 0;               // the subrect, from 0, 0
+  float scale_x = 0.0f, scale_y = 0.0f;
+};
+
 // Everything the runtime reads at an evaluate is set afresh every time, as the probe did:
 // the proxy writes sizes and textures into this object when it scales, and nothing of that
 // may be left over. Some fifty values, a few microseconds.
-void eval_params(ngx::Params* p, ID3D12Resource* in, ID3D12Resource* out, ID3D12Resource* motion,
+void eval_params(ngx::Params* p, ID3D12Resource* in, ID3D12Resource* out, const MotionBinding& motion,
                  ID3D12Resource* depth, unsigned w, unsigned h, bool reset, const NrSettings& s) {
   sizes(p, w, h);
   p->Set("DLSSNR.Color", in);
   p->Set("DLSSNR.Output", out);
-  p->Set("DLSSNR.MVec", motion);
+  p->Set("DLSSNR.MVec", motion.texture);
   p->Set("DLSSNR.Depth", depth);
   // the runtime asks for both; null is what the probe handed over
   p->Set("DLSSNR.UI", static_cast<ID3D12Resource*>(nullptr));
   p->Set("DLSSNR.UIAlpha", static_cast<ID3D12Resource*>(nullptr));
   subrect(p, "DLSSNR.ColorSubrectBaseX", "DLSSNR.ColorSubrectBaseY", "DLSSNR.ColorSubrectWidth",
           "DLSSNR.ColorSubrectHeight", w, h);
-  // The whole of the two zero textures, with the motion scale that maps them onto the work
-  // size. The vectors are zero, so the scale changes no value, and it is set to match all
-  // the same.
+  // The motion vectors: the zero texel with its subrect that one texel, or a field of the
+  // work size with its subrect the whole of it, see Nr::evaluate. The runtime takes a vector
+  // as MVec x MVecScale x (work size / subrect size) work texels, measured by the motion
+  // probe and stated by the add-on of the stack, so a field in work texels takes a scale of
+  // 1. The zero texel keeps the scale it always had, the work size: with zero vectors the
+  // scale changes no value, and so the call stays the one the self test's pictures were made
+  // with. The depth is the zero texel always, see nr.h.
   subrect(p, "DLSSNR.MVecSubrectBaseX", "DLSSNR.MVecSubrectBaseY", "DLSSNR.MVecSubrectWidth",
-          "DLSSNR.MVecSubrectHeight", kZeroSide, kZeroSide);
+          "DLSSNR.MVecSubrectHeight", motion.w, motion.h);
   subrect(p, "DLSSNR.DepthSubrectBaseX", "DLSSNR.DepthSubrectBaseY", "DLSSNR.DepthSubrectWidth",
           "DLSSNR.DepthSubrectHeight", kZeroSide, kZeroSide);
   subrect(p, "DLSSNR.OutputSubrectBaseX", "DLSSNR.OutputSubrectBaseY", "DLSSNR.OutputSubrectWidth",
@@ -266,8 +278,8 @@ void eval_params(ngx::Params* p, ID3D12Resource* in, ID3D12Resource* out, ID3D12
   p->Set("Jitter.Offset.Y", 0.0f);
   p->Set("DLSSNR.JitterOffsetX", 0.0f);
   p->Set("DLSSNR.JitterOffsetY", 0.0f);
-  p->Set("DLSSNR.MVecScaleX", (float)w / (float)kZeroSide);
-  p->Set("DLSSNR.MVecScaleY", (float)h / (float)kZeroSide);
+  p->Set("DLSSNR.MVecScaleX", motion.scale_x);
+  p->Set("DLSSNR.MVecScaleY", motion.scale_y);
   p->Set("DLSSNR.DepthInverted", 0);
   p->Set("DLSSNR.Enabled", 1);
   p->Set("DLSSNR.Reset", reset ? 1 : 0);
@@ -782,7 +794,7 @@ void Nr::drop_prepared() {
 }
 
 bool Nr::evaluate(ID3D12GraphicsCommandList* list, int pass, ID3D12Resource* input, ID3D12Resource* output,
-                  bool reset, std::string& err) {
+                  bool reset, const NrMotion* motion, std::string& err) {
   if (!ready()) {
     err = "the network is not loaded";
     return false;
@@ -799,7 +811,26 @@ bool Nr::evaluate(ID3D12GraphicsCommandList* list, int pass, ID3D12Resource* inp
     err = strf("no feature for pass %d", pass + 1);
     return false;
   }
-  eval_params(m.now.params[f], input, output, m.motion.Get(), m.depth.Get(), m.now.w, m.now.h, reset,
+  // the zero texel with the scale it always had, or the field, whole, at a scale of 1
+  MotionBinding binding;
+  if (motion && motion->field) {
+    if (motion->w != m.now.w || motion->h != m.now.h) {
+      err = strf("the motion vectors are %ux%u and the work size %ux%u", motion->w, motion->h, m.now.w, m.now.h);
+      return false;
+    }
+    binding.texture = motion->field;
+    binding.w = motion->w;
+    binding.h = motion->h;
+    binding.scale_x = 1.0f;
+    binding.scale_y = 1.0f;
+  } else {
+    binding.texture = m.motion.Get();
+    binding.w = kZeroSide;
+    binding.h = kZeroSide;
+    binding.scale_x = (float)m.now.w / (float)kZeroSide;
+    binding.scale_y = (float)m.now.h / (float)kZeroSide;
+  }
+  eval_params(m.now.params[f], input, output, binding, m.depth.Get(), m.now.w, m.now.h, reset,
               m.settings.pass[pass]);
   const ngx::Result r = call_evaluate(m.evaluate, list, m.now.feature[f], m.now.params[f]);
   if (!good(r)) {

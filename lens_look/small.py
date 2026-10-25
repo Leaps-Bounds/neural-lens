@@ -19,9 +19,11 @@ changes, keep the lens's whole words. Every word is the lens's own, given by
 the lens, and only the names of keys are the look's.
 
 Nothing here makes a window of its own, gives anything the keyboard, takes a
-grab, raises a window or binds a key. A part drawn inside another widget is
-drawn again after that widget, since Tk draws a widget again over what lies
-inside it in a window that has an alpha, see kept_over.
+grab, raises a window or binds a key, apart from the box a dialog of the
+lens's own draws with BoxFace, whose box the keyboard reaches there and
+Space ticks, see lens_look.dialogs.Dialog.check. A part drawn inside another
+widget is drawn again after that widget, since Tk draws a widget again over
+what lies inside it in a window that has an alpha, see kept_over.
 
 Imports tkinter and the package, and nothing of the lens.
 """
@@ -243,11 +245,21 @@ class BoxFace(faces.Face):
     that is made and never shown, which keeps the words, the variable and the
     command. The box follows the variable, and a click on the box or on the
     words invokes the button, as a click on the button would. It takes no
-    keyboard."""
+    keyboard, unless keys is given, as for the box of a dialog of the lens's
+    own: then Tab and the dialog's keys can give it the keyboard, its box's
+    edge is in the accent while it has it, as a tie's is while lit, and
+    Space invokes the button. words_at is where its words start, for what
+    goes under them."""
 
-    def __init__(self, master, look, model, role, gap, ground):
-        self.model, self.role, self.gap = model, role, gap
+    def __init__(self, master, look, model, role, gap, ground, keys=False):
+        self.model, self.role, self.gap, self.takes_keys = model, role, gap, keys
+        self.words_at = 0
         faces.Face.__init__(self, master, look, ground)
+        if keys:
+            self.configure(takefocus=1)
+            self.bind("<space>", self._space, add="+")
+            self.bind("<FocusIn>", lambda event: self.light(True), add="+")
+            self.bind("<FocusOut>", lambda event: self.light(False), add="+")
         self.watch(str(model.cget("variable")))
         self.redraw_now()
 
@@ -261,16 +273,24 @@ class BoxFace(faces.Face):
         gap = ctx.px(self.gap)
         width = box + gap + ctx.measure(font, words)
         height = max(box, ctx.linespace(font))
+        self.words_at = box + gap
         items = []
         faces.rect(items, 0, 0, width, height, self.ground())
-        drawn, _hits, _size = faces.tie_items(ctx, box, height, faces.selected(self.model), False, False,
-                                              self.ground())
+        # lit only while the keyboard is on a box that takes it, so the note's is drawn as it always was
+        drawn, _hits, _size = faces.tie_items(ctx, box, height, faces.selected(self.model), False,
+                                              bool(self.takes_keys and self.is_lit), self.ground())
         items += drawn
         faces.words(items, box + gap, height // 2, words, font, ctx.c("text"), "w")
         return items, [(0, 0, width, height, ("invoke",))], (width, height)
 
     def act(self, action, x):
         self.model.invoke()
+
+    def _space(self, event=None):
+        """Space on a box that has the keyboard ticks or unticks it, as a
+        click does."""
+        self.model.invoke()
+        return "break"
 
 
 def _cap(master, look, key, ground):

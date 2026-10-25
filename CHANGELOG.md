@@ -3,6 +3,98 @@
 Versions follow semantic versioning. While the major version is 0 the project is beta, and
 settings, the state file format and behaviour may change between releases.
 
+## 0.9.1, 2026-10-27
+
+Frame generation that holds the edges of moving things and fast motion better, and finds motion in
+the bright parts of the picture with Windows HDR on. The Look page can hand the network the card's
+own motion estimate as its motion vectors, with Card the default. Reset everything, on the Program
+page of Settings, puts every setting back as a new install has them, after asking, and keeps the
+profiles unless you tick the box to remove them. A click on the lens menu stays with the lens, a
+Home that opens ReShade's overlay outside tweak mode starts tweak mode, and a fullscreen lens keeps
+acting on its keys while another program takes pictures of its windows.
+
+- **Frame generation's pictures at the edges of what moves and in fast motion.** The motion
+  estimator gives one vector a block of 8 by 8 texels, which is wrong at the edge of a thing that
+  moves against its background and wherever the motion outruns the estimator. Where the pictures of
+  the last two frames disagree under a block's vector by more than resampling and the picture's own
+  grain leave, the made picture now tries the vectors of the blocks around it, no motion, and those
+  of up to three coarser estimates at half, a quarter and an eighth of the size, which reach
+  further, and takes the one the pictures agree on best. Measured on a test computer with an
+  RTX 5090 over sequences made from a still at 2560x1440 with known motion, the search with the
+  first coarser estimate took 58 percent off the made pictures' error with Between and 42 with
+  Ahead under a pan of 128 texels a frame, 34 and 22 percent under a pan of 32, and 41 and 21
+  percent where a textured thing crossed a panning background. The other two estimates took a
+  further 48 and 37 percent off under the pan of 128, and 20 and 14 percent under a pan of 64. At
+  2560x1440 the made picture's draw takes 0.23 to 0.30 ms on clean pictures, where it took
+  0.105 ms, 0.40 to 0.42 ms on heavy grain and 0.59 to 0.63 ms under the pan of 128, and the
+  coarser estimates take 0.83 ms on the video engine beside the shader cores.
+- **Frame generation finds motion in the bright parts of the picture with Windows HDR on.** The
+  motion estimator's copy of a 16-bit frame was held inside 80 nits, a third of an SDR white level
+  of 240 nits, so everything brighter was flat white to it and it found no motion there. Wherever
+  the picture was brighter than that, which in a bright scene of a game is most of it, the made
+  pictures of Between were plain blends of the two frames and those of Ahead the last frame
+  unmoved. The frame is now scaled by the SDR white level first, standard range content filling the
+  lower 0.8 of the estimator's range and what is brighter compressed above that, never flat.
+  Measured on a test computer with an RTX 5090 over a 3840x1200 monitor at an SDR white of 240
+  nits, with a 240 px square moving 8 px a frame over a field, both bright standard range content,
+  the made pictures of Between show the square in one place with 134 to 1,568 pixels at in-between
+  levels along its edges, where they were blends of two places with 7,680, and 120 to 809 with both
+  above SDR white. Highlights have only the top fifth of the estimator's range, and over a pan of
+  16 texels a frame with a region three times brighter than SDR white, measured offline, 16.5
+  percent of the textured blocks' vectors were off by more than a pixel, against 7.2 percent on an
+  8-bit pan of 16. The made picture's own test of a block's vector reads the 16-bit frame on that
+  same footing, standard range content as an 8-bit picture and what is brighter compressed above
+  it, so its search opens where it does on an 8-bit picture whatever the scene's brightness.
+- **Motion vectors for the network, a choice on the Look page.** The network builds each picture
+  on the one it made before, read where the motion vectors say each part of the picture was. In a
+  window the Feed gives it motion vectors, but the fast engine has always told it that nothing
+  moved, which showed as noise on anything that moved. Motion vectors, the first row of the Look
+  page of the NR settings panel, now hands it the card's own motion estimate instead, the one frame
+  generation and Detail stability follow, as Card, the default, or tells it that nothing moved, as
+  None. It is `NRMotionSource` in the add-on's section of `ReShade.ini`, which a profile and
+  a switch of the Home menu add-on's build carry, and the row is greyed on a card without a motion
+  estimator the engine can use. Measured on a test computer with an RTX 5090 over sequences made
+  from a still at 2560x1440 with known motion, Card brought the pictures of pans, a zoom and things
+  moving across them 41 to 77 percent nearer the network's own picture of each frame at rest at the
+  Quality and Balanced steps, but left fine detail in motion up to 17 percent softer and the 8 px
+  along each edge of a moving square up to 153 percent further off, and where the network works on
+  a much smaller copy it raised the boiling by 15 percent in the median. None keeps the network's
+  picture of 0.9.0 for material where the softer detail, an outline round moving things or the
+  boiling shows. Live at 6144x2560 the estimate took 1.95 to 2.52 ms of the video engine for each
+  new picture, which the network waits for.
+- **Reset everything, on the Program page of Settings.** It puts every setting of the lens and of
+  Neural Rendering back as a new install has them, after asking in a window of the lens's own where
+  Cancel is the default and Escape cancels. `neural-lens.ini`, the window's place and size, the
+  whole of `ReShade.ini` with ReShade's own settings, `ReShadePreset.ini`, the Feed's settings and
+  the Cost Scaler's go back, the 5.2.1 add-on goes back in place, and the copies of the add-on's
+  section kept for a change of its build go. Screenshots, logs, a `themes.json` of your own and the
+  stack's parts stay, the parts checked where they are and nothing downloaded, and the lens runs the
+  self test before it opens again, offering the stack setup where the stack fails it. The profiles
+  and their ties to programs stay, with none in use, unless the box Remove the profiles too is
+  ticked. The stack setup now keeps the Cost Scaler's release in the stack's `addons` folder, so
+  that a reset gives its settings back whole.
+- **A sequence mode in the fast engine, for tests.** `lens-fast.exe --sequence DIR OUTDIR` takes a
+  folder of frames through frame generation with no window, in 8 bits or with `--sequence-white` in
+  16-bit floats through the HDR path, and writes each made picture beside the vectors it was made
+  from, with the cost a frame. It is described under Switches for tests in `docs/NOTES.md`, and the
+  offline figures above were measured with it.
+- **A click on the lens menu stays with the lens.** An entry of the lens menu, the style list or
+  the profile list is chosen as the mouse button comes up on it, so the program under the menu no
+  longer gets the button coming up, which it could take as a click of its own. A click that starts
+  on an entry and ends off it chooses nothing, and the menu stays open.
+- **A Home that opens ReShade's overlay outside tweak mode starts tweak mode.** Where a window of
+  the lens's own was in front as tweak mode began, as after a click on the lens's taskbar button,
+  the lens's picture kept the keyboard after tweak mode, and a Home then opened the overlay over a
+  picture that let every click through, so the overlay could be seen and not used. The lens now
+  gives the keyboard back to the program last in front in that case, and starts tweak mode on a
+  Home that reaches its picture while tweak mode is off, so the overlay takes the mouse and the
+  next Home ends it.
+- **A fullscreen lens acts on its keys while another program takes pictures of its windows.**
+  Another program's PrintWindow on a window of the lens could leave the lens's window thread
+  waiting for a message with no end of its own, so the lens did not act on its keys and wrote no
+  summary until some message came, while the picture went on. The lens now has Tcl make, at its
+  start, the window whose timer ends such a wait.
+
 ## 0.9.0, 2026-10-25
 
 Frame generation in the fast engine, NVIDIA's own Neural Rendering model on an RTX 50 card with a

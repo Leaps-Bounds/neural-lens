@@ -7,6 +7,9 @@
 #include <cmath>
 
 #include "fullscreen_vs.h"
+#include "gen_hdr_ps.h"
+#include "gen_noise_hdr_cs.h"
+#include "gen_noise_cs.h"
 #include "gen_ps.h"
 #include "nv12_cs.h"
 
@@ -20,19 +23,40 @@ constexpr UINT kMostSide = 4096;   // the largest picture the estimator takes, m
 constexpr UINT kSlotFrame = 0;     // the descriptor heap: the frame for the conversion
 constexpr UINT kSlotLuma = 1;      // its two planes
 constexpr UINT kSlotChroma = 2;
-constexpr UINT kSlotFirst = 3;     // the draw's two pictures and the vectors
+constexpr UINT kSlotFirst = 3;     // the draw's two pictures and the vectors, fine then the levels'
 constexpr UINT kSlotSecond = 4;
 constexpr UINT kSlotVectors = 5;
-constexpr UINT kSlots = 6;
+constexpr UINT kSlotLevelVectors = 6;  // one a level, kLevels of them
+constexpr UINT kSlotLevelFrame = 6 + FrameGen::kLevels;  // the conversion again at each level's size:
+                                                          // the frame, the luma, the chroma, a level at a time
+constexpr UINT kSlots = kSlotLevelFrame + 3 * FrameGen::kLevels;
 
 struct Nv12Constants {
-  UINT me_w, me_h, fp16, pad;
+  UINT me_w, me_h, fp16, taps;
+  float white;  // the SDR white level, units of 80 nits, for a 16-bit frame
 };
+
+// The conversion's taps a side for planes out_w wide from a frame frame_w wide: one
+// bilinear tap is the mean of a two by two of the frame, right up to twice the planes'
+// size; a frame four times as large (the coarse planes, or a fine picture halved above
+// kMostSide) takes two taps a side two frame texels apart, the mean of a four by four, and
+// so on. Without it the planes alias on the texture the coarse estimate is to see past
+static UINT taps_for(UINT frame_w, UINT out_w) {
+  const UINT ratio = out_w ? frame_w / out_w : 1;
+  return ratio >= 4 ? ratio / 2 : 1;
+}
 
 struct GenConstants {
   UINT w, h, vec_w, vec_h;
   float scale, block, part;
   UINT mode;
+  UINT levels, adaptive;          // the coarser levels drawn from, 0 for none; adaptive 1, the
+                                  // gate's threshold follows the frame's noise
+  float white;                    // a 16-bit picture's SDR white in units of 80 nits, 1 for 8-bit
+  UINT pad2;                      // keeps the vectors below on 16-byte bounds, as the cbuffer packs them
+  UINT lvec_w[4];                 // each level's vectors, and the target's texels per texel of its picture
+  UINT lvec_h[4];
+  float lscale[4];
 };
 
 D3D12_RESOURCE_BARRIER barrier(ID3D12Resource* r, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after) {
@@ -79,7 +103,13 @@ bool make_gen_pso(ID3D12Device* device, ID3D12RootSignature* root, DXGI_FORMAT f
   D3D12_GRAPHICS_PIPELINE_STATE_DESC d = {};
   d.pRootSignature = root;
   d.VS = {g_fullscreen_vs, sizeof(g_fullscreen_vs)};
-  d.PS = {g_gen_ps, sizeof(g_gen_ps)};
+  // the 16-bit form is its own blob, the gate's encode built in: a runtime switch there
+  // stopped the warp's loops unrolling and cost it nearly three times its time
+  if (format == DXGI_FORMAT_R16G16B16A16_FLOAT) {
+    d.PS = {g_gen_hdr_ps, sizeof(g_gen_hdr_ps)};
+  } else {
+    d.PS = {g_gen_ps, sizeof(g_gen_ps)};
+  }
   D3D12_RENDER_TARGET_BLEND_DESC& blend = d.BlendState.RenderTarget[0];
   blend.SrcBlend = D3D12_BLEND_ONE;
   blend.DestBlend = D3D12_BLEND_ZERO;
@@ -184,6 +214,29 @@ bool FrameGen::init(Gpu& g, UINT width, UINT height, DXGI_FORMAT target_format, 
     return false;
   }
   encode_queue->SetName(L"framegen encode");
+  // the estimates' timestamps, where the encode queue takes them (the video encoding
+  // specification asks for timestamp queries on encode lists; probed, never assumed)
+  encode_hz = 0;
+  if (SUCCEEDED(encode_queue->GetTimestampFrequency(&encode_hz)) && encode_hz > 0) {
+    D3D12_QUERY_HEAP_DESC qh = {};
+    qh.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+    qh.Count = 3;
+    std::string e;
+    void* p = nullptr;
+    if (FAILED(device->CreateQueryHeap(&qh, IID_PPV_ARGS(&encode_query_heap))) ||
+        !g.make_buffer(3 * 8, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_FLAG_NONE,
+                       L"framegen encode stamps", encode_stamps, e) ||
+        FAILED(encode_stamps->Map(0, nullptr, &p)) || !p) {
+      encode_query_heap.Reset();
+      encode_stamps.Reset();
+      encode_hz = 0;
+    } else {
+      memset(p, 0, 3 * 8);
+      encode_ticks = (const UINT64*)p;
+    }
+  } else {
+    encode_hz = 0;
+  }
   hr = device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_VIDEO_ENCODE, IID_PPV_ARGS(&encode_allocator));
   if (SUCCEEDED(hr)) {
     hr = device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_VIDEO_ENCODE, encode_allocator.Get(), nullptr,
@@ -237,7 +290,72 @@ bool FrameGen::init(Gpu& g, UINT width, UINT height, DXGI_FORMAT target_format, 
       return false;
     }
   }
-  if (!make_outs(err)) return false;
+  // ---- the coarser estimates, each at half the size of the one before, while that is large
+  // enough; where one cannot be made the finer ones go on alone, with a line in the log
+  level_count = 0;
+  {
+    const auto make_level = [&](Level& v, int i, std::string& e) -> bool {
+      v.vec_w = (v.me_w + kBlock - 1) / kBlock;
+      v.vec_h = (v.me_h + kBlock - 1) / kBlock;
+      D3D12_VIDEO_MOTION_ESTIMATOR_DESC edl = ed;
+      edl.SizeRange.MaxWidth = edl.SizeRange.MinWidth = v.me_w;
+      edl.SizeRange.MaxHeight = edl.SizeRange.MinHeight = v.me_h;
+      HRESULT h = video->CreateVideoMotionEstimator(&edl, nullptr, IID_PPV_ARGS(&v.estimator));
+      D3D12_VIDEO_MOTION_VECTOR_HEAP_DESC hdl = hd;
+      hdl.SizeRange = edl.SizeRange;
+      if (SUCCEEDED(h)) h = video->CreateVideoMotionVectorHeap(&hdl, nullptr, IID_PPV_ARGS(&v.mv_heap));
+      if (FAILED(h)) {
+        e = "the motion estimator of level " + std::to_string(i + 1) + " failed " + hr_text(h);
+        return false;
+      }
+      const std::wstring tag = L"framegen level " + std::to_wstring(i + 1);
+      for (int k = 0; k < 2; ++k) {
+        if (!g.make_texture(DXGI_FORMAT_NV12, v.me_w, v.me_h, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COMMON,
+                            (tag + (k ? L" nv12 1" : L" nv12 0")).c_str(), v.nv[k], e)) {
+          return false;
+        }
+      }
+      if (!g.make_texture(DXGI_FORMAT_R8_UNORM, v.me_w, v.me_h, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                          D3D12_RESOURCE_STATE_COMMON, (tag + L" luma").c_str(), v.luma, e) ||
+          !g.make_texture(DXGI_FORMAT_R8G8_UNORM, v.me_w / 2, v.me_h / 2, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                          D3D12_RESOURCE_STATE_COMMON, (tag + L" chroma").c_str(), v.chroma, e) ||
+          !g.make_texture(DXGI_FORMAT_R16G16_SINT, v.vec_w, v.vec_h, D3D12_RESOURCE_FLAG_NONE,
+                          D3D12_RESOURCE_STATE_COMMON, (tag + L" vectors").c_str(), v.vectors, e)) {
+        return false;
+      }
+      const D3D12_RESOURCE_DESC ndl = v.nv[0]->GetDesc();
+      UINT64 bytesl = 0;
+      device->GetCopyableFootprints(&ndl, 0, 2, 0, v.plane_fp, nullptr, nullptr, &bytesl);
+      return g.make_buffer(bytesl, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_FLAG_NONE,
+                           (tag + L" planes").c_str(), v.planes, e);
+    };
+    UINT lw = me_w, lh = me_h;
+    for (int i = 0; i < kLevels && i < lab_levels; ++i) {
+      lw = (lw / 2) & ~1u;
+      lh = (lh / 2) & ~1u;
+      if (lw < 32 || lh < 32 || lw < f.SizeRange.MinWidth || lh < f.SizeRange.MinHeight) break;
+      levels_[i].me_w = lw;
+      levels_[i].me_h = lh;
+      std::string e;
+      if (!make_level(levels_[i], i, e)) {
+        note("framegen: the coarser estimate %d is not made, %s", i + 1, e.c_str());
+        drop_levels(i);
+        break;
+      }
+      level_count = i + 1;
+    }
+  }
+  // The two copies of the finished picture are made at the first keep(), not here: the
+  // estimator also serves the Look stage's filter and the network's motion vectors, which
+  // never read them, and at 6144x2560 they take 126 MB in 8 bits and 252 MB in 16
+  {
+    // the timer is for the self test's figures: without one the figures are 0
+    std::string e;
+    if (!timer.init(g, 4, e)) {
+      note("framegen: no GPU timer, %s", e.c_str());
+      timer.shutdown();
+    }
+  }
 
   // ---- the shaders
   {
@@ -267,8 +385,8 @@ bool FrameGen::init(Gpu& g, UINT width, UINT height, DXGI_FORMAT target_format, 
   {
     D3D12_DESCRIPTOR_RANGE range = {};
     range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    range.NumDescriptors = 3;
-    D3D12_ROOT_PARAMETER params[2] = {};
+    range.NumDescriptors = 3 + (UINT)kLevels;
+    D3D12_ROOT_PARAMETER params[3] = {};
     params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     params[0].Constants.Num32BitValues = sizeof(GenConstants) / 4;
     params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
@@ -276,11 +394,51 @@ bool FrameGen::init(Gpu& g, UINT width, UINT height, DXGI_FORMAT target_format, 
     params[1].DescriptorTable.NumDescriptorRanges = 1;
     params[1].DescriptorTable.pDescriptorRanges = &range;
     params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    if (!make_root(device, params, 2, D3D12_SHADER_VISIBILITY_PIXEL, "made picture", gen_root, err)) return false;
+    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;   // the noise pass's sum, t6
+    params[2].Descriptor.ShaderRegister = 6;
+    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    if (!make_root(device, params, 3, D3D12_SHADER_VISIBILITY_PIXEL, "made picture", gen_root, err)) return false;
     if (!make_gen_pso(device, gen_root.Get(), DXGI_FORMAT_B8G8R8A8_UNORM, gen_pso_8, err) ||
         !make_gen_pso(device, gen_root.Get(), DXGI_FORMAT_R16G16B16A16_FLOAT, gen_pso_16, err)) {
       return false;
     }
+    // the noise pass: the same constants and pictures, its sum as a root UAV
+    D3D12_ROOT_PARAMETER nparams[3] = {};
+    nparams[0] = params[0];
+    nparams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    nparams[1] = params[1];
+    nparams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    nparams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+    nparams[2].Descriptor.ShaderRegister = 0;
+    nparams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    if (!make_root(device, nparams, 3, D3D12_SHADER_VISIBILITY_ALL, "noise pass", noise_root, err)) return false;
+    // one blob for 8-bit pictures and one for 16-bit, whose samples are encoded first, as the warp's
+    D3D12_COMPUTE_PIPELINE_STATE_DESC nd = {};
+    nd.pRootSignature = noise_root.Get();
+    nd.CS = {g_gen_noise_cs, sizeof(g_gen_noise_cs)};
+    hr = device->CreateComputePipelineState(&nd, IID_PPV_ARGS(&noise_pso_8));
+    if (SUCCEEDED(hr)) {
+      nd.CS = {g_gen_noise_hdr_cs, sizeof(g_gen_noise_hdr_cs)};
+      hr = device->CreateComputePipelineState(&nd, IID_PPV_ARGS(&noise_pso_16));
+    }
+    if (FAILED(hr)) {
+      err = "the noise pass's pipeline state failed " + hr_text(hr);
+      return false;
+    }
+    // sixteen bins and the count, 68 bytes, in a buffer of 256
+    if (!g.make_buffer(256, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_COMMON,
+                       D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, L"framegen noise histogram", noise_acc, err) ||
+        !g.make_buffer(256, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE,
+                       L"framegen noise zeros", noise_zero, err)) {
+      return false;
+    }
+    void* zp = nullptr;
+    if (FAILED(noise_zero->Map(0, nullptr, &zp)) || !zp) {
+      err = "mapping the noise pass's zeros failed";
+      return false;
+    }
+    memset(zp, 0, 256);
+    noise_zero->Unmap(0, nullptr);
   }
   {
     D3D12_DESCRIPTOR_HEAP_DESC d = {};
@@ -303,6 +461,15 @@ bool FrameGen::init(Gpu& g, UINT width, UINT height, DXGI_FORMAT target_format, 
     ud.Format = DXGI_FORMAT_R8G8_UNORM;
     at.ptr += heap_step;
     device->CreateUnorderedAccessView(chroma.Get(), nullptr, &ud, at);
+    for (int i = 0; i < level_count; ++i) {
+      at = heap->GetCPUDescriptorHandleForHeapStart();
+      at.ptr += (kSlotLevelFrame + 3 * i + 1) * heap_step;
+      ud.Format = DXGI_FORMAT_R8_UNORM;
+      device->CreateUnorderedAccessView(levels_[i].luma.Get(), nullptr, &ud, at);
+      ud.Format = DXGI_FORMAT_R8G8_UNORM;
+      at.ptr += heap_step;
+      device->CreateUnorderedAccessView(levels_[i].chroma.Get(), nullptr, &ud, at);
+    }
   }
   cur = 0;
   have = 0;
@@ -409,11 +576,15 @@ void FrameGen::shot(const Target& target, ID3D12Resource* first, ID3D12Resource*
   note("framegen: made picture %d written to %s", n, narrow(shot_dir).c_str());
 }
 
+// The two copies of the finished picture, both or neither. Where the second cannot be made
+// the first goes too, so keep() never finds a pair half made.
 bool FrameGen::make_outs(std::string& err) {
   for (int i = 0; i < 2; ++i) {
     out[i].Reset();
     if (!gpu->make_texture(format, w, h, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COMMON,
                            i ? L"framegen picture 1" : L"framegen picture 0", out[i], err)) {
+      out[0].Reset();
+      out[1].Reset();
       return false;
     }
   }
@@ -425,13 +596,55 @@ bool FrameGen::retarget(DXGI_FORMAT target_format, std::string& err) {
     err = "frame generation is not set up";
     return false;
   }
-  if (!gpu->wait(prep_value, kWaitMs, err) || !gpu->wait(draw_value, kWaitMs, err)) return false;
+  if (!gpu->wait(prep_value, kWaitMs, err) || !gpu->wait(keep_value, kWaitMs, err) ||
+      !gpu->wait(draw_value, kWaitMs, err))
+    return false;
   format = target_format;
   have = 0;
-  return make_outs(err);
+  // made again in the new format at the next keep(), see init()
+  out[0].Reset();
+  out[1].Reset();
+  return true;
 }
 
 void FrameGen::forget() { have = 0; }
+
+void FrameGen::drop_levels(int from) {
+  for (int i = from < 0 ? 0 : from; i < kLevels; ++i) {
+    Level& v = levels_[i];
+    v.vectors.Reset();
+    v.planes.Reset();
+    v.luma.Reset();
+    v.chroma.Reset();
+    v.nv[0].Reset();
+    v.nv[1].Reset();
+    v.mv_heap.Reset();
+    v.estimator.Reset();
+    v.me_w = v.me_h = v.vec_w = v.vec_h = 0;
+  }
+  if (level_count > from) level_count = from < 0 ? 0 : from;
+  if (level_count == 0) have_coarse = false;
+}
+
+std::string FrameGen::level_text() const {
+  std::string s;
+  for (int i = 0; i < level_count; ++i) {
+    s += (i ? ", " : "") + std::to_string(levels_[i].me_w) + "x" + std::to_string(levels_[i].me_h);
+  }
+  return s.empty() ? "none" : s;
+}
+
+double FrameGen::last_estimate_ms() const {
+  if (!encode_ticks || encode_hz == 0) return 0.0;
+  const UINT64 a = encode_ticks[0], b = encode_ticks[1];
+  return a && b && b >= a ? (double)(b - a) * 1000.0 / (double)encode_hz : 0.0;
+}
+
+double FrameGen::last_coarse_estimate_ms() const {
+  if (!encode_ticks || encode_hz == 0) return 0.0;
+  const UINT64 a = encode_ticks[1], b = encode_ticks[2];
+  return a && b && b >= a ? (double)(b - a) * 1000.0 / (double)encode_hz : 0.0;
+}
 
 void FrameGen::srv(ID3D12Resource* r, DXGI_FORMAT f, UINT slot) {
   D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
@@ -478,11 +691,16 @@ bool FrameGen::wait_estimate_on_queue(std::string& err) {
 }
 
 bool FrameGen::keep(const Target& target, std::string& err) {
+  outs_failed = false;
   if (!gpu) {
     err = "frame generation is not set up";
     return false;
   }
   if (target.format != format && !retarget(target.format, err)) return false;
+  if ((!out[0] || !out[1]) && !make_outs(err)) {  // the first keep since init() or a new format
+    outs_failed = true;
+    return false;
+  }
   // the slot written held the picture before the last, which the last draw read as its first
   if (!gpu->wait(keep_value, kWaitMs, err) || !gpu->wait(draw_value, kWaitMs, err)) return false;
   if (FAILED(keep_allocator->Reset()) || FAILED(keep_list->Reset(keep_allocator.Get(), nullptr))) {
@@ -516,6 +734,7 @@ bool FrameGen::estimate(ID3D12Resource* frame, bool& ready, UINT64& read_value, 
     return false;
   }
   ID3D12GraphicsCommandList* l = prep_list.Get();
+  timer.mark(l, 0);
   const D3D12_RESOURCE_DESC fd = frame->GetDesc();
   const bool fp16 = fd.Format == DXGI_FORMAT_R16G16B16A16_FLOAT;
   srv(frame, fd.Format, kSlotFrame);
@@ -531,7 +750,7 @@ bool FrameGen::estimate(ID3D12Resource* frame, bool& ready, UINT64& read_value, 
   l->SetDescriptorHeaps(1, heaps);
   l->SetComputeRootSignature(nv12_root.Get());
   l->SetPipelineState(nv12_pso.Get());
-  const Nv12Constants k = {me_w, me_h, fp16 ? 1u : 0u, 0u};
+  const Nv12Constants k = {me_w, me_h, fp16 ? 1u : 0u, taps_for((UINT)fd.Width, me_w), sdr_white};
   l->SetComputeRoot32BitConstants(0, sizeof(k) / 4, &k, 0);
   l->SetComputeRootDescriptorTable(1, gpu_slot(kSlotFrame));
   l->Dispatch((me_w + 7) / 8, (me_h + 7) / 8, 1);
@@ -567,6 +786,53 @@ bool FrameGen::estimate(ID3D12Resource* frame, bool& ready, UINT64& read_value, 
   transition(l, planes.Get(), kSource, kCommon);
   transition(l, luma.Get(), kSource, kCommon);
   transition(l, chroma.Get(), kSource, kCommon);
+  const bool do_coarse = level_count > 0 && coarse_on;
+  for (int i = 0; do_coarse && i < level_count; ++i) {
+    // the same again at each level's size, into its pictures
+    Level& v = levels_[i];
+    const UINT slot = kSlotLevelFrame + 3 * (UINT)i;
+    srv(frame, fd.Format, slot);
+    transition(l, frame, kCommon, kRead);
+    transition(l, v.luma.Get(), kCommon, kWrite);
+    transition(l, v.chroma.Get(), kCommon, kWrite);
+    const Nv12Constants kl = {v.me_w, v.me_h, fp16 ? 1u : 0u, taps_for((UINT)fd.Width, v.me_w), sdr_white};
+    l->SetComputeRoot32BitConstants(0, sizeof(kl) / 4, &kl, 0);
+    l->SetComputeRootDescriptorTable(1, gpu_slot(slot));
+    l->Dispatch((v.me_w + 7) / 8, (v.me_h + 7) / 8, 1);
+    transition(l, frame, kRead, kCommon);
+    transition(l, v.luma.Get(), kWrite, kSource);
+    transition(l, v.chroma.Get(), kWrite, kSource);
+    transition(l, v.planes.Get(), kCommon, kDest);
+    for (int plane = 0; plane < 2; ++plane) {
+      D3D12_TEXTURE_COPY_LOCATION dst = {};
+      dst.pResource = v.planes.Get();
+      dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+      dst.PlacedFootprint = v.plane_fp[plane];
+      D3D12_TEXTURE_COPY_LOCATION src = {};
+      src.pResource = plane ? v.chroma.Get() : v.luma.Get();
+      src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+      l->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    }
+    transition(l, v.planes.Get(), kDest, kSource);
+    transition(l, v.nv[next].Get(), kCommon, kDest);
+    for (int plane = 0; plane < 2; ++plane) {
+      D3D12_TEXTURE_COPY_LOCATION dst = {};
+      dst.pResource = v.nv[next].Get();
+      dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+      dst.SubresourceIndex = (UINT)plane;
+      D3D12_TEXTURE_COPY_LOCATION src = {};
+      src.pResource = v.planes.Get();
+      src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+      src.PlacedFootprint = v.plane_fp[plane];
+      l->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    }
+    transition(l, v.nv[next].Get(), kDest, kCommon);
+    transition(l, v.planes.Get(), kSource, kCommon);
+    transition(l, v.luma.Get(), kSource, kCommon);
+    transition(l, v.chroma.Get(), kSource, kCommon);
+  }
+  timer.mark(l, 1);
+  timer.resolve(l, 0, 2);
   if (!gpu->execute(l, prep_value, err)) return false;
   read_value = prep_value;
 
@@ -583,6 +849,7 @@ bool FrameGen::estimate(ID3D12Resource* frame, bool& ready, UINT64& read_value, 
         barrier(vectors.Get(), kCommon, D3D12_RESOURCE_STATE_VIDEO_ENCODE_WRITE),
     };
     encode_list->ResourceBarrier(3, in);
+    if (encode_query_heap) encode_list->EndQuery(encode_query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0);
     D3D12_VIDEO_MOTION_ESTIMATOR_OUTPUT mo = {};
     mo.pMotionVectorHeap = mv_heap.Get();
     D3D12_VIDEO_MOTION_ESTIMATOR_INPUT mi = {};
@@ -596,6 +863,40 @@ bool FrameGen::estimate(ID3D12Resource* frame, bool& ready, UINT64& read_value, 
     ri.PixelWidth = me_w;
     ri.PixelHeight = me_h;
     encode_list->ResolveMotionVectorHeap(&ro, &ri);
+    if (encode_query_heap) encode_list->EndQuery(encode_query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 1);
+    have_coarse = do_coarse;
+    for (int i = 0; do_coarse && i < level_count; ++i) {
+      Level& v = levels_[i];
+      D3D12_RESOURCE_BARRIER inl[3] = {
+          barrier(v.nv[cur].Get(), kCommon, D3D12_RESOURCE_STATE_VIDEO_ENCODE_READ),
+          barrier(v.nv[next].Get(), kCommon, D3D12_RESOURCE_STATE_VIDEO_ENCODE_READ),
+          barrier(v.vectors.Get(), kCommon, D3D12_RESOURCE_STATE_VIDEO_ENCODE_WRITE),
+      };
+      encode_list->ResourceBarrier(3, inl);
+      D3D12_VIDEO_MOTION_ESTIMATOR_OUTPUT mol = {};
+      mol.pMotionVectorHeap = v.mv_heap.Get();
+      D3D12_VIDEO_MOTION_ESTIMATOR_INPUT mil = {};
+      mil.pInputTexture2D = v.nv[next].Get();
+      mil.pReferenceTexture2D = v.nv[cur].Get();
+      encode_list->EstimateMotion(v.estimator.Get(), &mol, &mil);
+      D3D12_RESOLVE_VIDEO_MOTION_VECTOR_HEAP_OUTPUT rol = {};
+      rol.pMotionVectorTexture2D = v.vectors.Get();
+      D3D12_RESOLVE_VIDEO_MOTION_VECTOR_HEAP_INPUT ril = {};
+      ril.pMotionVectorHeap = v.mv_heap.Get();
+      ril.PixelWidth = v.me_w;
+      ril.PixelHeight = v.me_h;
+      encode_list->ResolveMotionVectorHeap(&rol, &ril);
+      D3D12_RESOURCE_BARRIER backl[3] = {
+          barrier(v.nv[cur].Get(), D3D12_RESOURCE_STATE_VIDEO_ENCODE_READ, kCommon),
+          barrier(v.nv[next].Get(), D3D12_RESOURCE_STATE_VIDEO_ENCODE_READ, kCommon),
+          barrier(v.vectors.Get(), D3D12_RESOURCE_STATE_VIDEO_ENCODE_WRITE, kCommon),
+      };
+      encode_list->ResourceBarrier(3, backl);
+    }
+    if (encode_query_heap) {
+      encode_list->EndQuery(encode_query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 2);
+      encode_list->ResolveQueryData(encode_query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0, 3, encode_stamps.Get(), 0);
+    }
     D3D12_RESOURCE_BARRIER back[3] = {
         barrier(nv[cur].Get(), D3D12_RESOURCE_STATE_VIDEO_ENCODE_READ, kCommon),
         barrier(nv[next].Get(), D3D12_RESOURCE_STATE_VIDEO_ENCODE_READ, kCommon),
@@ -651,21 +952,29 @@ bool FrameGen::draw_made(const Target& target, int mode, float part, std::string
     return false;
   }
   ID3D12GraphicsCommandList* l = draw_list.Get();
+  timer.mark(l, 2);
   ID3D12Resource* first = out[1 - cur].Get();
   ID3D12Resource* second = out[cur].Get();
   srv(first, format, kSlotFirst);
   srv(second, format, kSlotSecond);
   srv(vectors.Get(), DXGI_FORMAT_R16G16_SINT, kSlotVectors);
+  const int use_levels = have_coarse ? level_count : 0;  // the last estimate made them
+  for (int i = 0; i < kLevels; ++i) {
+    // every slot of the range holds a vectors picture, the fine one where a level is not drawn from
+    srv(i < use_levels ? levels_[i].vectors.Get() : vectors.Get(), DXGI_FORMAT_R16G16_SINT,
+        kSlotLevelVectors + (UINT)i);
+  }
   const D3D12_RESOURCE_STATES kCommon = D3D12_RESOURCE_STATE_COMMON;
-  const D3D12_RESOURCE_STATES kPixel = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+  // read by the noise pass (a compute shader) and then by the warp (a pixel shader)
+  const D3D12_RESOURCE_STATES kPixel =
+      D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
   transition(l, first, kCommon, kPixel);
   transition(l, second, kCommon, kPixel);
   transition(l, vectors.Get(), kCommon, kPixel);
+  for (int i = 0; i < use_levels; ++i) transition(l, levels_[i].vectors.Get(), kCommon, kPixel);
   transition(l, target.texture, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
   ID3D12DescriptorHeap* heaps[] = {heap.Get()};
   l->SetDescriptorHeaps(1, heaps);
-  l->SetGraphicsRootSignature(gen_root.Get());
-  l->SetPipelineState(format == DXGI_FORMAT_R16G16B16A16_FLOAT ? gen_pso_16.Get() : gen_pso_8.Get());
   GenConstants k = {};
   k.w = w;
   k.h = h;
@@ -675,8 +984,32 @@ bool FrameGen::draw_made(const Target& target, int mode, float part, std::string
   k.block = (float)kBlock;
   k.part = part;
   k.mode = (UINT)mode;
+  k.levels = (UINT)use_levels;
+  k.adaptive = lab_fixed_gate ? 0u : 1u;
+  k.white = format == DXGI_FORMAT_R16G16B16A16_FLOAT ? sdr_white : 1.0f;
+  for (int i = 0; i < 4; ++i) {
+    const bool on = i < use_levels;
+    k.lvec_w[i] = on ? levels_[i].vec_w : vec_w;
+    k.lvec_h[i] = on ? levels_[i].vec_h : vec_h;
+    k.lscale[i] = (float)w / (float)(on ? levels_[i].me_w : me_w);
+  }
+  // the noise pass: the sum zeroed, then one thread a 16x16 block of the target
+  transition(l, noise_acc.Get(), kCommon, D3D12_RESOURCE_STATE_COPY_DEST);
+  l->CopyBufferRegion(noise_acc.Get(), 0, noise_zero.Get(), 0, 256);
+  transition(l, noise_acc.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+  l->SetComputeRootSignature(noise_root.Get());
+  l->SetPipelineState(format == DXGI_FORMAT_R16G16B16A16_FLOAT ? noise_pso_16.Get() : noise_pso_8.Get());
+  l->SetComputeRoot32BitConstants(0, sizeof(k) / 4, &k, 0);
+  l->SetComputeRootDescriptorTable(1, gpu_slot(kSlotFirst));
+  l->SetComputeRootUnorderedAccessView(2, noise_acc->GetGPUVirtualAddress());
+  l->Dispatch(((w + 15) / 16 + 7) / 8, ((h + 15) / 16 + 7) / 8, 1);
+  transition(l, noise_acc.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+  // the warp
+  l->SetGraphicsRootSignature(gen_root.Get());
+  l->SetPipelineState(format == DXGI_FORMAT_R16G16B16A16_FLOAT ? gen_pso_16.Get() : gen_pso_8.Get());
   l->SetGraphicsRoot32BitConstants(0, sizeof(k) / 4, &k, 0);
   l->SetGraphicsRootDescriptorTable(1, gpu_slot(kSlotFirst));
+  l->SetGraphicsRootShaderResourceView(2, noise_acc->GetGPUVirtualAddress());
   D3D12_VIEWPORT view = {0.0f, 0.0f, (float)w, (float)h, 0.0f, 1.0f};
   D3D12_RECT all = {0, 0, (LONG)w, (LONG)h};
   l->RSSetViewports(1, &view);
@@ -687,7 +1020,11 @@ bool FrameGen::draw_made(const Target& target, int mode, float part, std::string
   transition(l, first, kPixel, kCommon);
   transition(l, second, kPixel, kCommon);
   transition(l, vectors.Get(), kPixel, kCommon);
+  for (int i = 0; i < use_levels; ++i) transition(l, levels_[i].vectors.Get(), kPixel, kCommon);
+  transition(l, noise_acc.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, kCommon);
   transition(l, target.texture, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
+  timer.mark(l, 3);
+  timer.resolve(l, 2, 2);
   if (!gpu->execute(l, draw_value, err)) return false;
   if (shots_left > 0) {
     shot(target, first, second);
@@ -709,6 +1046,11 @@ void FrameGen::shutdown() {
   nv12_pso.Reset();
   gen_root.Reset();
   nv12_root.Reset();
+  noise_pso_8.Reset();
+  noise_pso_16.Reset();
+  noise_root.Reset();
+  noise_acc.Reset();
+  noise_zero.Reset();
   heap.Reset();
   out[0].Reset();
   out[1].Reset();
@@ -718,6 +1060,7 @@ void FrameGen::shutdown() {
   chroma.Reset();
   nv[0].Reset();
   nv[1].Reset();
+  drop_levels(0);
   draw_list.Reset();
   draw_allocator.Reset();
   keep_list.Reset();
@@ -727,9 +1070,15 @@ void FrameGen::shutdown() {
   encode_list.Reset();
   encode_allocator.Reset();
   encode_fence.Reset();
+  if (encode_stamps && encode_ticks) encode_stamps->Unmap(0, nullptr);
+  encode_ticks = nullptr;
+  encode_stamps.Reset();
+  encode_query_heap.Reset();
+  encode_hz = 0;
   encode_queue.Reset();
   mv_heap.Reset();
   estimator.Reset();
+  timer.shutdown();
   video.Reset();
   if (encode_event) {
     CloseHandle(encode_event);

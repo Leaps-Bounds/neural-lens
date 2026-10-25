@@ -54,6 +54,9 @@
 #include <objbase.h>
 #include <wincodec.h>
 
+#include "framegen.h"
+#include "model_motion.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -162,18 +165,22 @@ struct Loader {
   D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp = {};
   UINT64 bytes = 0;
   UINT w = 0, h = 0;
+  DXGI_FORMAT format = DXGI_FORMAT_B8G8R8A8_UNORM;  // or R16G16B16A16_FLOAT, 8 bytes a texel
+  UINT texel = 4;
 
-  bool init(Gpu& g, UINT width, UINT height, std::string& err) {
+  bool init(Gpu& g, UINT width, UINT height, std::string& err, DXGI_FORMAT fmt = DXGI_FORMAT_B8G8R8A8_UNORM) {
     gpu = &g;
     w = width;
     h = height;
+    format = fmt;
+    texel = fmt == DXGI_FORMAT_R16G16B16A16_FLOAT ? 8 : 4;
     D3D12_RESOURCE_DESC d = {};
     d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     d.Width = w;
     d.Height = h;
     d.DepthOrArraySize = 1;
     d.MipLevels = 1;
-    d.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    d.Format = format;
     d.SampleDesc.Count = 1;
     g.device->GetCopyableFootprints(&d, 0, 1, 0, &fp, nullptr, nullptr, &bytes);
     return g.make_list(allocator, list, L"selftest uploads", err) &&
@@ -198,8 +205,7 @@ struct Loader {
 
   // A new frame texture holding the picture.
   bool frame(const std::vector<uint8_t>& bgra, const wchar_t* name, ComPtr<ID3D12Resource>& out, std::string& err) {
-    if (!gpu->make_texture(DXGI_FORMAT_B8G8R8A8_UNORM, w, h, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COMMON,
-                           name, out, err))
+    if (!gpu->make_texture(format, w, h, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COMMON, name, out, err))
       return false;
     return fill(bgra, out.Get(), err);
   }
@@ -212,8 +218,10 @@ struct Loader {
       err = "mapping the upload failed";
       return false;
     }
-    for (UINT y = 0; y < h; ++y)
-      memcpy(p + fp.Offset + (size_t)y * fp.Footprint.RowPitch, bgra.data() + (size_t)y * w * 4, (size_t)w * 4);
+    for (UINT y = 0; y < h; ++y) {
+      memcpy(p + fp.Offset + (size_t)y * fp.Footprint.RowPitch, bgra.data() + (size_t)y * w * texel,
+             (size_t)w * texel);
+    }
     upload->Unmap(0, nullptr);
     if (!begin(err)) return false;
     transition(list.Get(), out, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
@@ -335,6 +343,9 @@ int run_selftest(const Options& o) {
   if (!read_nr_passes(o.stack_dir, pass_settings, err, o.passes)) {
     note("selftest: %s, the runtime's defaults are used", err.c_str());
   }
+  // as the loop takes it, though the self test makes no motion estimate: every evaluate here
+  // hands the network zero vectors, whatever the source says
+  take_motion_option(o, pass_settings);
   const NrSettings settings = pass_settings.base();
   // the shared state as the features are made with it: off with one pass whatever the file says
   const bool shared = pass_settings.shared && o.passes > 1;
@@ -1280,4 +1291,675 @@ int run_selftest(const Options& o) {
   if (!checks_ok) return failed("a check of the self test did not hold, see the lines above");
   say("selftest ok");
   return exit_code::ok;
+}
+
+// ---- the sequence mode, see selftest.h: frame generation with no window, frames from PNGs
+
+namespace {
+
+// Reads a texture of the target's size back into tight RGB8, through a readback buffer of
+// its own and a list of its own, waiting for the GPU each time.
+struct Reader {
+  Gpu* gpu = nullptr;
+  ComPtr<ID3D12CommandAllocator> allocator;
+  ComPtr<ID3D12GraphicsCommandList> list;
+  ComPtr<ID3D12Resource> buffer;
+  D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp = {};
+  UINT64 bytes = 0;
+  UINT64 value = 0;
+
+  bool init(Gpu& g, ID3D12Resource* like, std::string& err) {
+    gpu = &g;
+    const D3D12_RESOURCE_DESC td = like->GetDesc();
+    gpu->device->GetCopyableFootprints(&td, 0, 1, 0, &fp, nullptr, nullptr, &bytes);
+    return g.make_list(allocator, list, L"sequence reads", err) &&
+           g.make_buffer(bytes, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_FLAG_NONE,
+                         L"sequence readback", buffer, err);
+  }
+
+  // texture in the state rest, returned to it
+  bool read(ID3D12Resource* texture, D3D12_RESOURCE_STATES rest, UINT w, UINT h, std::vector<uint8_t>& rgb,
+            std::string& err) {
+    if (FAILED(allocator->Reset()) || FAILED(list->Reset(allocator.Get(), nullptr))) {
+      err = "resetting the reader's list failed";
+      return false;
+    }
+    transition(list.Get(), texture, rest, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    D3D12_TEXTURE_COPY_LOCATION dst = {};
+    dst.pResource = buffer.Get();
+    dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    dst.PlacedFootprint = fp;
+    D3D12_TEXTURE_COPY_LOCATION src = {};
+    src.pResource = texture;
+    src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    transition(list.Get(), texture, D3D12_RESOURCE_STATE_COPY_SOURCE, rest);
+    if (!gpu->execute(list.Get(), value, err) || !gpu->wait(value, kWaitMs, err)) return false;
+    void* p = nullptr;
+    const D3D12_RANGE whole = {0, (SIZE_T)bytes};
+    if (FAILED(buffer->Map(0, &whole, &p)) || !p) {
+      err = "mapping the readback failed";
+      return false;
+    }
+    rgb.resize((size_t)w * h * 3);
+    for (UINT y = 0; y < h; ++y) {
+      const uint8_t* in = (const uint8_t*)p + fp.Offset + (size_t)y * fp.Footprint.RowPitch;
+      uint8_t* out_row = rgb.data() + (size_t)y * w * 3;
+      for (UINT x = 0; x < w; ++x, in += 4, out_row += 3) {
+        out_row[0] = in[2];
+        out_row[1] = in[1];
+        out_row[2] = in[0];
+      }
+    }
+    const D3D12_RANGE none = {0, 0};
+    buffer->Unmap(0, &none);
+    return true;
+  }
+
+  // The texture's rows as they are, row_bytes each, into out
+  bool read_raw(ID3D12Resource* texture, D3D12_RESOURCE_STATES rest, UINT rows, UINT row_bytes,
+                std::vector<uint8_t>& out, std::string& err) {
+    if (FAILED(allocator->Reset()) || FAILED(list->Reset(allocator.Get(), nullptr))) {
+      err = "resetting the reader's list failed";
+      return false;
+    }
+    transition(list.Get(), texture, rest, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    D3D12_TEXTURE_COPY_LOCATION dst = {};
+    dst.pResource = buffer.Get();
+    dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    dst.PlacedFootprint = fp;
+    D3D12_TEXTURE_COPY_LOCATION src = {};
+    src.pResource = texture;
+    src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    transition(list.Get(), texture, D3D12_RESOURCE_STATE_COPY_SOURCE, rest);
+    if (!gpu->execute(list.Get(), value, err) || !gpu->wait(value, kWaitMs, err)) return false;
+    void* p = nullptr;
+    const D3D12_RANGE whole = {0, (SIZE_T)bytes};
+    if (FAILED(buffer->Map(0, &whole, &p)) || !p) {
+      err = "mapping the readback failed";
+      return false;
+    }
+    out.resize((size_t)rows * row_bytes);
+    for (UINT y = 0; y < rows; ++y) {
+      memcpy(out.data() + (size_t)y * row_bytes, (const uint8_t*)p + fp.Offset + (size_t)y * fp.Footprint.RowPitch,
+             row_bytes);
+    }
+    const D3D12_RANGE none = {0, 0};
+    buffer->Unmap(0, &none);
+    return true;
+  }
+};
+
+bool write_file(const std::wstring& path, const std::vector<uint8_t>& data, std::string& err) {
+  FILE* f = _wfopen(path.c_str(), L"wb");
+  if (!f) {
+    err = "cannot write " + narrow(path);
+    return false;
+  }
+  const bool ok = fwrite(data.data(), 1, data.size(), f) == data.size();
+  fclose(f);
+  if (!ok) err = "writing " + narrow(path) + " failed";
+  return ok;
+}
+
+std::wstring frame_name(const wchar_t* stem, int n) {
+  wchar_t name[32];
+  swprintf(name, 32, L"%s%04d.png", stem, n);
+  return name;
+}
+
+}  // namespace
+
+// A .npy file of float16 RGBA, (h, w, 4), as NumPy writes it: the magic, version 1.0, a header
+// line, then the halves tight, top row first. The sequence mode's frames in 16-bit scRGB.
+bool load_npy_f16(const std::wstring& path, UINT& w, UINT& h, std::vector<uint8_t>& halves, std::string& err) {
+  FILE* f = _wfopen(path.c_str(), L"rb");
+  if (!f) {
+    err = "cannot read " + narrow(path);
+    return false;
+  }
+  uint8_t pre[10] = {};
+  if (fread(pre, 1, 10, f) != 10 || memcmp(pre, "\x93NUMPY", 6) != 0 || pre[6] != 1) {
+    fclose(f);
+    err = narrow(path) + " is not a version 1 .npy file";
+    return false;
+  }
+  const size_t header_len = (size_t)pre[8] | ((size_t)pre[9] << 8);
+  std::string header(header_len, '\0');
+  if (fread(&header[0], 1, header_len, f) != header_len) {
+    fclose(f);
+    err = narrow(path) + ": the header is short";
+    return false;
+  }
+  const size_t shape_at = header.find("'shape': (");
+  if (header.find("'<f2'") == std::string::npos || shape_at == std::string::npos) {
+    fclose(f);
+    err = narrow(path) + " is not float16 with a shape: " + header;
+    return false;
+  }
+  unsigned hh = 0, ww = 0, cc = 0;
+  if (sscanf_s(header.c_str() + shape_at + 10, "%u, %u, %u", &hh, &ww, &cc) != 3 || cc != 4 || !hh || !ww) {
+    fclose(f);
+    err = narrow(path) + ": the shape is not (h, w, 4): " + header;
+    return false;
+  }
+  w = ww;
+  h = hh;
+  halves.resize((size_t)w * h * 8);
+  const bool ok = fread(halves.data(), 1, halves.size(), f) == halves.size();
+  fclose(f);
+  if (!ok) err = narrow(path) + ": the data is short";
+  return ok;
+}
+
+bool save_npy_f16(const std::wstring& path, UINT w, UINT h, const std::vector<uint8_t>& halves, std::string& err) {
+  std::string dict = "{'descr': '<f2', 'fortran_order': False, 'shape': (" + std::to_string(h) + ", " +
+                     std::to_string(w) + ", 4), }";
+  while ((10 + dict.size() + 1) % 64 != 0) dict += ' ';
+  dict += '\n';
+  std::vector<uint8_t> out;
+  out.reserve(10 + dict.size() + halves.size());
+  const char magic[] = "\x93NUMPY";
+  out.insert(out.end(), magic, magic + 6);
+  out.push_back(1);
+  out.push_back(0);
+  out.push_back((uint8_t)(dict.size() & 0xff));
+  out.push_back((uint8_t)(dict.size() >> 8));
+  out.insert(out.end(), dict.begin(), dict.end());
+  out.insert(out.end(), halves.begin(), halves.end());
+  return write_file(path, out, err);
+}
+
+std::wstring npy_name(const wchar_t* stem, int n) {
+  wchar_t name[48];
+  swprintf(name, 48, L"%s%04d.npy", stem, n);
+  return name;
+}
+
+namespace {
+
+// The sequence mode's research switches for the network's motion vectors, from the comma list
+// of --sequence-lab, each word whole. The words for frame generation (nocoarse, levels1,
+// levels2, fixedgate) are looked up by run_sequence() itself, as they always were.
+struct MotionLab {
+  float factor = 1.0f;        // mvneg turns every vector round, mvscale:S multiplies it by S
+  bool constant = false;      // mvconst:DX:DY one vector everywhere, in work texels, previous
+  float cx = 0.0f, cy = 0.0f; // minus current; mvzero the same with zeros
+  bool all_passes = false;    // mvallpasses: every pass handed the vectors in the shared mode
+  bool no_estimator = false;  // noestimator: the estimator refused, as on a card without one
+  std::string words;          // the switches taken, for the first line
+};
+
+MotionLab motion_lab(const std::string& list) {
+  MotionLab lab;
+  size_t at = 0;
+  while (at <= list.size()) {
+    const size_t comma = std::min(list.find(',', at), list.size());
+    const std::string word = list.substr(at, comma - at);
+    at = comma + 1;
+    bool taken = true;
+    float a = 0.0f, b = 0.0f;
+    if (word == "mvneg") {
+      lab.factor = -lab.factor;
+    } else if (sscanf_s(word.c_str(), "mvscale:%f", &a) == 1) {
+      lab.factor *= a;
+    } else if (sscanf_s(word.c_str(), "mvconst:%f:%f", &a, &b) == 2) {
+      lab.constant = true;
+      lab.cx = a;
+      lab.cy = b;
+    } else if (word == "mvzero") {
+      lab.constant = true;
+      lab.cx = lab.cy = 0.0f;
+    } else if (word == "mvallpasses") {
+      lab.all_passes = true;
+    } else if (word == "noestimator") {
+      lab.no_estimator = true;
+    } else {
+      taken = false;
+    }
+    if (taken) lab.words += (lab.words.empty() ? "" : ",") + word;
+  }
+  return lab;
+}
+
+// A half as a float, for the sums of a field read back: the sign, five bits of exponent, ten
+// of fraction, the subnormals included. The field holds no infinity or NaN.
+float half_value(uint16_t h) {
+  const int exponent = (h >> 10) & 0x1F;
+  const int fraction = h & 0x3FF;
+  float v = exponent == 0 ? (float)fraction * (1.0f / 16777216.0f)
+                          : std::ldexp(1.0f + (float)fraction / 1024.0f, exponent - 15);
+  return (h & 0x8000) ? -v : v;
+}
+
+// The card's last estimate as the network's motion vectors, see Pipeline::set_model_motion, the
+// research switches with it.
+ModelMotion estimate_for_network(const FrameGen& gen, const MotionLab& lab) {
+  ModelMotion m;
+  m.vectors = gen.vectors.Get();
+  m.vec_w = gen.vec_width();
+  m.vec_h = gen.vec_height();
+  m.me_w = gen.me_width();
+  m.me_h = gen.me_height();
+  m.factor = lab.factor;
+  m.constant = lab.constant;
+  m.cx = lab.cx;
+  m.cy = lab.cy;
+  m.all_passes = lab.all_passes;
+  return m;
+}
+
+// One scripted run of frames for --motion-cases, through model_motion.h as the loop goes
+// through it. Each letter is a draw or an event:
+//   N  a new frame
+//   R  a new frame whose render resets the network (a crop's jump, a resume, a settings change
+//      that resets, the first frame at a new work size)
+//   S  a settle run of the frame on screen, or an again run
+//   F  the estimator forgets its frames: a pause, a recapture, a crop's step, the network
+//      switched, a reload, frame generation switched
+//   X  a new frame whose estimate fails
+//   H  a new frame while another work size is being made: the network does not run, and
+//      frame generation goes on estimating
+//   J  a joined frame, LENS_FAST_JOIN, which wants no estimate for the network
+//   Z  a new frame while NRMotionSource says none and nothing else wants the estimate
+// Frame generation is off but where H says otherwise, and the Look stage's filter off. What
+// each draw hands the network, in order: card or zero.
+std::string motion_case(const char* script) {
+  MotionPair pair;
+  int have = 0;  // FrameGen's frames since it last forgot, 2 at most, see FrameGen::estimate
+  std::string out;
+  for (const char* c = script; *c; ++c) {
+    const char e = *c;
+    if (e == 'F') {
+      have = 0;
+      continue;
+    }
+    if (!out.empty()) out += " ";
+    if (e == 'S') {
+      pair.drew(true);  // the same frame once more, with no estimate of its own
+      out += "zero";
+      continue;
+    }
+    pair.new_frame();
+    const bool network = e != 'H';
+    const bool model_wants = network && e != 'Z' && e != 'J';  // as estimate_motion() in main.cpp
+    bool ready = false;
+    if (motion_wanted(e == 'H' ? 1 : 0, false, model_wants)) {
+      if (e == 'X') {
+        pair.estimated(false, false);  // the estimate returns before the frames move on
+      } else {
+        ready = have >= 1;
+        have = std::min(have + 1, 2);
+        pair.estimated(true, ready);
+      }
+    }
+    // a render that resets reads no history, see Pipeline::set_model_motion
+    const bool fed = feed_model(pair, model_wants, e == 'J', ready) && e != 'R';
+    pair.drew(network);
+    out += fed ? "card" : "zero";
+  }
+  return out;
+}
+
+}  // namespace
+
+int run_motion_cases() {
+  struct Case {
+    const char* name;
+    const char* script;
+  };
+  const Case cases[] = {
+      {"first frames", "NNN"},     {"settle", "NNSSN"},          {"forget", "NNFNN"},
+      {"failed estimate", "NNXNN"}, {"hold", "NNHHRN"},           {"key none to card", "ZZFNN"},
+      {"joined", "NNJJNN"},         {"reset", "NNRN"},
+  };
+  for (const Case& c : cases) say("motion case %s %s: %s", c.name, c.script, motion_case(c.script).c_str());
+  return exit_code::ok;
+}
+
+int run_sequence(const Options& o) {
+  std::string err;
+  const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+  if (FAILED(com) && com != RPC_E_CHANGED_MODE) return failed("COM did not start " + hr_text(com));
+  const int stride = o.sequence_stride > 0 ? o.sequence_stride : 2;
+  const int mode = o.framegen == 1 ? 1 : 0;  // ahead, else between
+  // Frame generation is off only where --framegen off was given: without --framegen the run is
+  // between, as it always was
+  const bool gen_on = !(o.framegen_given && o.framegen == 0);
+  const bool settle_run = o.sequence_settle > 0;  // --sequence-settle, see below
+  const bool hdr = o.sequence_white > 0.0;   // 16-bit scRGB frames through the HDR path
+  const DXGI_FORMAT fmt = hdr ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_B8G8R8A8_UNORM;
+  const MotionLab lab = motion_lab(o.sequence_lab);
+
+  // ---- the sources: every stride-th frame, until one is missing
+  std::vector<std::wstring> sources;
+  for (int i = 0;; i += stride) {
+    const std::wstring path = path_join(o.sequence_dir, hdr ? npy_name(L"f", i) : frame_name(L"f", i));
+    if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) break;
+    sources.push_back(path);
+  }
+  if (sources.size() < 2) {
+    return failed("the sequence needs two source frames at least, f0000.png and f" + std::to_string(stride) +
+                  " in " + narrow(o.sequence_dir));
+  }
+  if (!make_dirs(o.selftest_outdir)) return failed("cannot create " + narrow(o.selftest_outdir));
+  Picture first;  // in HDR its bgra holds the halves, 8 bytes a texel
+  if (hdr ? !load_npy_f16(sources[0], first.w, first.h, first.bgra, err) : !load_picture(sources[0], first, err))
+    return failed(err);
+  const UINT W = first.w, H = first.h;
+  const WorkPlan plan = work_plan((int)W, (int)H, o);
+  NrPasses pass_settings;
+  if (!read_nr_passes(o.stack_dir, pass_settings, err, o.passes)) {
+    note("sequence: %s, the runtime's defaults are used", err.c_str());
+  }
+  take_motion_option(o, pass_settings);
+
+  // ---- the device, the target, the pipeline and the frame generation
+  Gpu gpu;
+  if (!gpu.init(nullptr, err)) return failed(err);
+  Loader loader;
+  if (!loader.init(gpu, W, H, err, fmt)) return failed(err);
+  ComPtr<ID3D12Resource> target;
+  if (!gpu.make_texture(fmt, W, H, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT,
+                        L"sequence target", target, err))
+    return failed(err);
+  ComPtr<ID3D12DescriptorHeap> rtv_heap;
+  {
+    D3D12_DESCRIPTOR_HEAP_DESC d = {};
+    d.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    d.NumDescriptors = 1;
+    const HRESULT hr = gpu.device->CreateDescriptorHeap(&d, IID_PPV_ARGS(&rtv_heap));
+    if (FAILED(hr)) return failed("the target's descriptor heap failed " + hr_text(hr));
+  }
+  Target back;
+  back.texture = target.Get();
+  back.rtv = rtv_heap->GetCPUDescriptorHandleForHeapStart();
+  back.width = W;
+  back.height = H;
+  back.format = fmt;
+  gpu.device->CreateRenderTargetView(target.Get(), nullptr, back.rtv);
+  PipelineDesc desc;
+  desc.width = W;
+  desc.height = H;
+  desc.work_w = (UINT)plan.w;
+  desc.work_h = (UINT)plan.h;
+  desc.passes = o.passes;
+  desc.stack_dir = o.stack_dir;
+  desc.data_dir = o.data_dir;
+  desc.settings = pass_settings;
+  Pipeline pipeline;
+  if (!pipeline.init(gpu, desc, err)) return failed(err);
+  pipeline.set_nr(o.sequence_nr);
+  if (hdr) pipeline.set_sdr_white(o.sequence_white);
+  Reader reader;
+  if (!reader.init(gpu, target.Get(), err)) return failed(err);
+  std::vector<uint8_t> rgb;
+  // A picture of the target, as it stands after the last draw, into OUTDIR as STEM-N
+  const auto save_target = [&](const wchar_t* stem, int n) -> bool {
+    if (hdr) {
+      return reader.read_raw(target.Get(), D3D12_RESOURCE_STATE_PRESENT, H, W * 8, rgb, err) &&
+             save_npy_f16(path_join(o.selftest_outdir, npy_name(stem, n)), W, H, rgb, err);
+    }
+    return reader.read(target.Get(), D3D12_RESOURCE_STATE_PRESENT, W, H, rgb, err) &&
+           save_png(path_join(o.selftest_outdir, frame_name(stem, n)), rgb, W, H, err);
+  };
+  // A source as a frame texture of the capture's kind
+  const auto load_source = [&](size_t k, ComPtr<ID3D12Resource>& out) -> bool {
+    Picture pic;
+    if (k == 0) {
+      pic = first;
+    } else if (hdr ? !load_npy_f16(sources[k], pic.w, pic.h, pic.bgra, err) : !load_picture(sources[k], pic, err)) {
+      return false;
+    }
+    if (pic.w != W || pic.h != H) {
+      err = "frame " + narrow(sources[k]) + " is not the first frame's size";
+      return false;
+    }
+    out.Reset();
+    return loader.frame(pic.bgra, L"sequence frame", out, err);
+  };
+
+  // ---- --sequence-settle K: the references a measure of the network in motion holds its
+  // pictures against. Each source alone, from a reset, as if it had stood still: rendered K
+  // times, as the loop's settle renders a picture at rest with zero vectors, and written as
+  // settled-N, then 8 more times, written as settled2-N, whose distance from settled-N is the
+  // network's own unrest at rest. No estimate and no made picture
+  if (settle_run) {
+    say("sequence %s: %zu sources, a stride of %d, %ux%u, work %dx%d, each source settled from a reset, %d runs "
+        "and 8 more, network %s, motion none%s",
+        narrow(o.sequence_dir).c_str(), sources.size(), stride, W, H, plan.w, plan.h, o.sequence_settle,
+        o.sequence_nr ? "on" : "off",
+        hdr ? strf(", 16-bit scRGB at an SDR white of %.2f", o.sequence_white).c_str() : "");
+    const double t0 = now_s();
+    for (size_t k = 0; k < sources.size(); ++k) {
+      ComPtr<ID3D12Resource> cur;
+      if (!load_source(k, cur)) return failed(err);
+      bool changed = false;
+      if (!pipeline.ingest(cur.Get(), nullptr, nullptr, 0, changed, err)) return failed(err);
+      const int n = (int)(k * stride);
+      for (int r = 0; r < o.sequence_settle + 8; ++r) {
+        if (!pipeline.render(cur.Get(), back, r == 0, false, err)) return failed(err);
+        if (r + 1 == o.sequence_settle && !save_target(L"settled-", n)) return failed(err);
+      }
+      if (!save_target(L"settled2-", n)) return failed(err);
+      if (!gpu.flush(kWaitMs, err)) return failed(err);
+    }
+    say("sequence done: %zu sources settled in %.1f s, in %s", sources.size(), now_s() - t0,
+        narrow(o.selftest_outdir).c_str());
+    return 0;
+  }
+
+  // ---- what wants the motion estimate, as the loop has it (model_motion.h): frame generation,
+  // the Look stage's filter, and the network where NRMotionSource says the card's estimate
+  const bool look_wants = pass_settings.look.wants_motion();
+  const bool source_card = pass_settings.look.motion_source == kMotionCard;
+  const bool model_wants = source_card && pipeline.network_runs();
+  FrameGen gen;
+  gen.lab_levels = o.sequence_lab.find("nocoarse") != std::string::npos ? 0
+                   : o.sequence_lab.find("levels1") != std::string::npos ? 1
+                   : o.sequence_lab.find("levels2") != std::string::npos ? 2 : FrameGen::kLevels;
+  gen.lab_fixed_gate = o.sequence_lab.find("fixedgate") != std::string::npos;
+  if (hdr) gen.sdr_white = (float)o.sequence_white;
+  bool have_gen = false;
+  std::string no_estimator;  // why there is none where one was wanted
+  if (motion_wanted(gen_on ? 1 : 0, look_wants, model_wants)) {
+    if (lab.no_estimator) {
+      no_estimator = "the motion estimator is switched off for a test";
+    } else if (gen.init(gpu, W, H, fmt, err)) {
+      have_gen = true;
+    } else {
+      no_estimator = err;
+    }
+    if (!have_gen && gen_on) return failed("frame generation: " + no_estimator);
+    if (!have_gen) gen.shutdown();  // said after the first line, as the loop says it, once
+  }
+  // the coarser levels only for frame generation, as in the loop: the network and the Look
+  // stage take the fine estimate alone
+  gen.coarse_on = gen_on;
+  Reader vectors_reader, field_reader;
+  if (have_gen && !vectors_reader.init(gpu, gen.vectors.Get(), err)) return failed(err);
+  bool field_reader_made = false;
+  std::vector<uint8_t> raw;
+  const std::string motion_text =
+      !source_card ? std::string("motion none")
+      : (!have_gen && !no_estimator.empty()) ? "motion none, no motion estimator (" + no_estimator + ")"
+                                             : std::string("motion card");
+  const std::string estimator_text =
+      have_gen ? strf("the estimator at %ux%u in %ux%u blocks, the coarser ones %s", gen.me_width(), gen.me_height(),
+                      gen.vec_width(), gen.vec_height(),
+                      gen.has_coarse() && gen_on ? strf("at %s", gen.level_text().c_str()).c_str() : "not made")
+               : std::string("no estimator");
+  say("sequence %s: %zu sources, a stride of %d, %ux%u, work %dx%d, %s, network %s, %s, lab %s%s, %s",
+      narrow(o.sequence_dir).c_str(), sources.size(), stride, W, H, plan.w, plan.h,
+      gen_on ? (mode == 1 ? "ahead" : "between") : "frame generation off", o.sequence_nr ? "on" : "off",
+      estimator_text.c_str(), o.sequence_lab.empty() ? "none" : o.sequence_lab.c_str(),
+      hdr ? strf(", 16-bit scRGB at an SDR white of %.2f", o.sequence_white).c_str() : "", motion_text.c_str());
+  if (!no_estimator.empty()) {
+    note("sequence: framegen: %s, so no motion estimate", no_estimator.c_str());
+    say("framegen unavailable %s", no_estimator.c_str());
+  }
+
+  // ---- the frames, in order, as the loop takes a capture's: every source is new to it
+  ComPtr<ID3D12Resource> prev, cur;
+  MotionPair pair;
+  int made = 0, estimates = 0, fed_frames = 0;
+  double prep_ms = 0.0, estimate_ms = 0.0, draw_ms = 0.0;  // the cost, summed over the frames
+  double fine_gpu_ms = 0.0, coarse_gpu_ms = 0.0;           // the estimates by the encode queue's clock
+  double nr_gpu_ms = 0.0;                                  // the network's passes, with the
+  int nr_runs = 0;                                         // vectors' resolve where it ran
+  const double t0 = now_s();
+  for (size_t k = 0; k < sources.size(); ++k) {
+    const int n = (int)(k * stride);  // the source's frame
+    if (!load_source(k, cur)) return failed(err);
+    pair.new_frame();
+    bool ready = false;
+    UINT64 read_value = 0;
+    if (have_gen) {
+      if (!gen.estimate(cur.Get(), ready, read_value, err)) return failed("estimate: " + err);
+      pair.estimated(true, ready);
+    }
+    if (ready) {
+      ++estimates;
+      // the estimate's time by the clock: from the conversion's end, which the encode queue
+      // waits for, to the estimate's fence
+      if (!gpu.wait(gen.prep_value, kWaitMs, err)) return failed(err);
+      const double te = now_s();
+      if (gen.encode_fence && gen.encode_fence->GetCompletedValue() < gen.encode_value) {
+        gen.encode_fence->SetEventOnCompletion(gen.encode_value, gen.encode_event);
+        WaitForSingleObject(gen.encode_event, kWaitMs);
+      }
+      estimate_ms += (now_s() - te) * 1000.0;
+    }
+    bool changed = false;
+    if (!pipeline.ingest(cur.Get(), prev.Get(), nullptr, 0, changed, err)) return failed(err);
+    // the motion for the render, as the loop's estimate_motion() hands it over: the queue waits
+    // for the estimate before the render reads it
+    const bool feed = feed_model(pair, model_wants, false, ready);
+    const bool look_motion = ready && look_wants;
+    if ((feed || look_motion) && !gen.wait_estimate_on_queue(err)) return failed(err);
+    if (look_motion) {
+      pipeline.set_motion(gen.vectors_texture(), gen.vec_width(), gen.vec_height(), gen.cell_texels((UINT)plan.w),
+                          gen.unit_texels((UINT)plan.w));
+    } else {
+      pipeline.set_motion(nullptr, 0, 0, 1.0f, 0.0f);
+    }
+    if (feed) pipeline.set_model_motion(estimate_for_network(gen, lab));
+    if (!pipeline.render(cur.Get(), back, k == 0, false, err)) return failed(err);
+    pair.drew(pipeline.network_runs());
+    if (pipeline.motion_fed(0)) ++fed_frames;
+    if (o.sequence_save_nr && !save_target(L"nr-", n)) return failed(err);
+    if (o.sequence_dump_fed) {
+      // what each pass was handed, and the field itself where it was
+      UINT fw = 0, fh = 0;
+      ID3D12Resource* field = pipeline.motion_field(fw, fh);
+      std::string field_text;
+      if (pipeline.motion_fed(0) && field) {
+        if (!field_reader_made) {
+          if (!field_reader.init(gpu, field, err)) return failed(err);
+          field_reader_made = true;
+        }
+        if (!field_reader.read_raw(field, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, fh, fw * 4, raw, err))
+          return failed(err);
+        wchar_t name[32];
+        swprintf(name, 32, L"fed-%04d.bin", n);
+        if (!write_file(path_join(o.selftest_outdir, name), raw, err)) return failed(err);
+        double sx = 0.0, sy = 0.0;
+        size_t zero = 0;
+        const uint16_t* v = (const uint16_t*)raw.data();
+        const size_t count = (size_t)fw * fh;
+        for (size_t i = 0; i < count; ++i) {
+          sx += half_value(v[2 * i]);
+          sy += half_value(v[2 * i + 1]);
+          if ((v[2 * i] & 0x7FFF) == 0 && (v[2 * i + 1] & 0x7FFF) == 0) ++zero;
+        }
+        const ModelMotion mm = estimate_for_network(gen, lab);
+        field_text = strf(", field %ux%u R16G16_FLOAT, subrect 0 0 %u %u, scale 1 1, unit %.6f %.6f, mean %.4f %.4f, "
+                          "zero share %.2f%%",
+                          fw, fh, fw, fh, mm.constant ? 0.0 : 0.25 * fw / mm.me_w * mm.factor,
+                          mm.constant ? 0.0 : 0.25 * fh / mm.me_h * mm.factor, sx / (double)count,
+                          sy / (double)count, 100.0 * (double)zero / (double)count);
+      }
+      for (int p = 0; p < o.passes; ++p) {
+        std::string what;
+        if (pipeline.motion_fed(p)) what = "card" + field_text;
+        else if (!source_card) what = strf("none (%s)", o.motion >= 0 ? "--motion" : "NRMotionSource");
+        else if (!pipeline.network_runs()) what = "none (the network is off)";
+        else if (!have_gen) what = "none (no motion estimator)";
+        else if (k == 0) what = "zero (the first frame, a reset)";
+        else if (!ready) what = "zero (no estimate)";
+        else if (!feed) what = "zero (the estimate does not start from the network's last frame)";
+        else if (p > 0) what = "zero (a later pass of the shared mode)";
+        else what = "zero";
+        say("sequence fed %04d pass %d %s", n, p + 1, what.c_str());
+      }
+    }
+    if (o.sequence_dump_vectors && ready) {
+      // the estimate for this source, int16 pairs, as the estimator gives them
+      if (!vectors_reader.read_raw(gen.vectors.Get(), D3D12_RESOURCE_STATE_COMMON, gen.vec_height(),
+                                   gen.vec_width() * 4, raw, err))
+        return failed(err);
+      wchar_t name[40];
+      swprintf(name, 40, L"vectors-src-%04d.bin", n);
+      if (!write_file(path_join(o.selftest_outdir, name), raw, err)) return failed(err);
+    }
+    if (gen_on) {
+      if (!gen.keep(back, err)) return failed("keep: " + err);
+      if (ready) {
+        // drawn sixteen times over, so the card's clock is up by the last, whose time the cost
+        // line reports: a frame at a time with the CPU waiting between, the card idles and
+        // clocks down, and one cold draw measured two to three times its busy cost
+        for (int r = 0; r < 16; ++r) {
+          if (!gen.draw_made(back, mode, 0.5f, err)) return failed("draw: " + err);
+        }
+        const int at = mode == 0 ? (int)(k * stride) - stride / 2 : (int)(k * stride) + stride / 2;
+        if (!save_target(L"made-", at)) return failed(err);
+        // the vectors the picture was made from, int16 pairs, as the estimator gives them
+        if (!vectors_reader.read_raw(gen.vectors.Get(), D3D12_RESOURCE_STATE_COMMON, gen.vec_height(),
+                                     gen.vec_width() * 4, raw, err))
+          return failed(err);
+        {
+          wchar_t name[32];
+          swprintf(name, 32, L"vectors-%04d.bin", at);
+          if (!write_file(path_join(o.selftest_outdir, name), raw, err)) return failed(err);
+        }
+        ++made;
+      }
+    }
+    if (!gpu.flush(kWaitMs, err)) return failed(err);
+    if (have_gen) prep_ms += gen.last_prep_ms();
+    if (ready) {
+      if (gen_on) draw_ms += gen.last_draw_ms();
+      fine_gpu_ms += gen.last_estimate_ms();
+      coarse_gpu_ms += gen.last_coarse_estimate_ms();
+    }
+    const StageTimes times = pipeline.times();
+    if (times.ran_network) {
+      nr_gpu_ms += times.nr_ms;
+      ++nr_runs;
+    }
+    prev = cur;
+  }
+  say("sequence done: %d made pictures from %zu sources in %.1f s, in %s", made, sources.size(), now_s() - t0,
+      narrow(o.selftest_outdir).c_str());
+  const std::string network_cost = nr_runs > 0 ? strf(", the network %.3f ms", nr_gpu_ms / (double)nr_runs) : "";
+  if (made > 0) {
+    say("sequence cost a frame: the conversion %.3f ms, the estimate %.3f ms by the clock (%.3f fine + %.3f coarse "
+        "on the card), the warp %.3f ms%s",
+        prep_ms / (double)sources.size(), estimate_ms / (double)made, fine_gpu_ms / (double)made,
+        coarse_gpu_ms / (double)made, draw_ms / (double)made, network_cost.c_str());
+  } else {
+    // no made picture: the estimates alone, where there were any, and the network
+    say("sequence cost a frame: no made pictures, %d estimates%s%s", estimates,
+        estimates > 0 ? strf(", the conversion %.3f ms, the estimate %.3f ms by the clock (%.3f fine + %.3f coarse "
+                             "on the card)",
+                             prep_ms / (double)sources.size(), estimate_ms / (double)estimates,
+                             fine_gpu_ms / (double)estimates, coarse_gpu_ms / (double)estimates)
+                                .c_str()
+                      : "",
+        network_cost.c_str());
+  }
+  if (model_wants) say("sequence motion: %d of %zu sources handed the network the card's estimate", fed_frames, sources.size());
+  gen.shutdown();
+  return 0;
 }

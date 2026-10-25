@@ -1,6 +1,6 @@
 # DLSS 5 Neural Lens
 
-**Beta, version 0.9.0.** See [CHANGELOG.md](CHANGELOG.md). While the version starts with 0,
+**Beta, version 0.9.1.** See [CHANGELOG.md](CHANGELOG.md). While the version starts with 0,
 settings, the state file format and behaviour may change between releases.
 
 A floating see-through window for Windows. Drag it over anything on your desktop and the
@@ -118,7 +118,7 @@ What it fetches, and from where:
 | on an RTX 50 card, NVIDIA's 310.9.16 Neural Rendering model and its licence | NVIDIA's own package, which NVIDIA's RTX Remix names on GitHub, see [The Neural Rendering model](#the-neural-rendering-model) |
 | on an older card, or where that package cannot be had, the `310.8.SF-v2` Neural Rendering model | the RHI project's manifest; the model's builds are listed below |
 | `renodx-dlss5.addon64` 5.2.1 | the RHI repository |
-| DLSSNR-Cost-Scaler 1.0.6 | its release on GitHub |
+| DLSSNR-Cost-Scaler 1.0.6, whose release the stack setup keeps in the stack's `addons` folder for Reset everything | its release on GitHub |
 | `dlss5-feed.addon64` and `DLSS5_Feed.fx` | DLSS5-Feeder, the current release |
 | ReshadeMotionEstimation (CC BY-NC 4.0), VORT (MIT, its motion vector code CC BY-NC 4.0) and ReShade's two shader headers | their repositories |
 | `renodx-dlss5.addon64` 8.5.0-rc10, which the stack setup keeps in the stack's `addons` folder beside 5.2.1 for the choice in Settings, see [The Home menu add-on](#the-home-menu-add-on) | the RHI repository |
@@ -139,7 +139,8 @@ NR settings panel of a fullscreen lens on the fast engine, which writes the same
 keeps the values a pass from the second on has of its own in a section of the lens's own in the
 same file, apart from the intensity of passes 2 to 4, which goes into the add-on's section, see
 [Multiple passes](#multiple-passes). What you set stays, and a repair from the Start Menu, or an
-update with the stack box ticked, keeps what both sections hold.
+update with the stack box ticked, keeps what both sections hold. Reset everything on the Program
+page of Settings puts both back as a new install has them.
 
 If you already have NVIDIA's two DLLs, the Start Menu's stack setup entry has a field for each,
 and `neural_stack.py` takes `--dlssnr` and `--dlss` on the command line. The installer's own page
@@ -210,10 +211,10 @@ Scaler's `nvngx_dlssnr.dll` with the Cost Scaler's own scaling switched off, and
 itself. See [The fast engine](#the-fast-engine).
 
 What it shows is what Neural Rendering does to this image. A game hands DLSS depth and motion
-vectors from its engine. Here the Feed synthesises them from the picture alone, and the fast
-engine hands the model the picture with no depth and no motion vectors. So the lens is a preview
-of how the model treats the material, edges and fine detail in front of it, not of what an asset
-will look like in an engine with DLSS on.
+vectors from its engine. Here the Feed synthesises them from the picture alone. The fast engine
+hands the model no depth, and the card's own estimate of the motion as motion vectors unless its
+Look page is set to None. So the lens is a preview of how the model treats the material, edges
+and fine detail in front of it, not of what an asset will look like in an engine with DLSS on.
 
 ### The Neural Rendering model
 
@@ -326,13 +327,13 @@ lists for RTX 50 only, are here so you can identify them, and the setup does not
   comes back. `tray_minimise = 1` in the ini is the switch on.
 - **Maximise it** with the middle button. That is fullscreen, as described below, and Leave
   fullscreen in the lens menu brings the window back.
-- The **menu** at the left opens the ReShade overlay in place so you can adjust Neural Rendering
-  settings live, and also holds the pass controls and a Neural Rendering on and off toggle. The menu
-  button opens and closes it, and so does a click anywhere else, or Escape. While the overlay is
-  open the lens takes clicks and keys for it, and the title bar says that tweak mode is on. Press
-  Home, or choose Done tweaking in the menu, to close it and make the lens click-through again. A
-  fullscreen lens on the fast engine has a panel of the lens's own for these settings, described
-  below.
+- The **menu** at the left opens the ReShade overlay in place so you can adjust Neural Rendering settings
+  live, and also holds the pass controls and a Neural Rendering on and off toggle. The menu button opens
+  and closes it, and so does a click anywhere else, or Escape. While the overlay is open the lens takes
+  clicks and keys for it, and the title bar says that tweak mode is on. Press Home, or choose Done
+  tweaking in the menu, to close it and make the lens click-through again. A Home that opens the overlay
+  while tweak mode is off starts tweak mode too. A fullscreen lens on the fast engine has a panel of the
+  lens's own for these settings, described below.
 - **Save a before and after screenshot** from the menu. It writes three PNGs: the untouched
   content the lens captured, the neural rendered result, and the two joined side by side. Both
   come from the presenter at the same moment, the capture it holds and the picture it presented,
@@ -455,6 +456,23 @@ lists for RTX 50 only, are here so you can identify them, and the setup does not
   and says so only when there is one newer than this. Nothing is downloaded or installed by
   itself. The release page opens in the browser, and the installer there runs over this
   install. Check now does the same once. Off, the lens never contacts anything.
+- **Reset everything** is a button on the Program page of Settings, for when the picture looks wrong after a
+  change. It asks first, in a window of the lens's own where Cancel is the default and Escape cancels, and
+  only then puts every setting of the lens and of Neural Rendering back as a new install has them. That is
+  `neural-lens.ini`, with the theme, the hotkeys and the folders you chose, the window's place and size, the
+  whole of `ReShade.ini` with ReShade's own settings, `ReShadePreset.ini`, the Feed's `dlss5-feed.cfg` and
+  the Cost Scaler's `nvngx_dlssnr.ini`, whole where the stack setup of 0.9.1 or later kept the Cost Scaler's
+  release and else its four switches. The 5.2.1 add-on goes back in place, and the copies of the add-on's
+  section the stack keeps for a change of its build go. Your screenshots, your logs and a `themes.json` of
+  your own stay, and so do the parts of the stack, which are checked where they are and not downloaded again.
+  The profiles and their ties to programs stay as well, with none in use, unless you tick Remove the profiles
+  too in that window. The lens then closes, runs the self test, a small window at the top left of the main
+  monitor for about nine seconds, and opens again in the middle of the main monitor with a line on its title
+  bar that says what it did. Where the self test finds that Neural Rendering does not run, the lens offers
+  the stack setup as it opens. A data folder or a stack folder you chose elsewhere stays where it is and the
+  lens goes back to its own, the question names the folder it leaves, and your profiles and themes come with
+  the lens unless you remove the profiles. No hotkey or menu entry reaches the reset, and it cannot be
+  undone.
 - **Neural Rendering goes off and on** in every pass at once from the menu, and with a key. In a
   window the key is F6, the add-on's own. The add-on of the ReShade engine, which every windowed
   lens runs on, reads the physical key, so F6 pressed anywhere toggles it, and the lens follows.
@@ -726,9 +744,11 @@ the original at full size, plus what the model changed, is drawn straight into t
 ```
 
 Its window is click-through, always on top and out of the capture, like the presenter's. No
-ReShade and no add-on run in it. The model gets the picture with no depth and no motion vectors,
-and its settings are the add-on's own values in `ReShade.ini`, with the values each pass has of
-its own, see [Multiple passes](#multiple-passes). The lens's NR settings panel writes both.
+ReShade and no add-on run in it. The model gets the picture with no depth, and with the card's
+own motion estimate as its motion vectors unless the Look page's Motion vectors is set to None,
+see Motion vectors below. Its settings are the add-on's own values in `ReShade.ini`, with the
+values each pass has of its own, see [Multiple passes](#multiple-passes). The lens's NR settings
+panel writes both.
 
 Measured on an RTX 5090 with a 6144x2560 display at 120 Hz and a second monitor at 1920x1080 and
 60 Hz connected, fullscreen at 6144x2558 with one pass over a white square moving across noise.
@@ -841,17 +861,33 @@ uncovers is a guess, the nearest content stretched over it. Between shows the pi
 last two frames first and the frame's own picture half a frame later, so nothing is guessed and the edges
 of what moves are blended, and each frame shows half a frame later than it would. The on-screen readout's
 frame rate then gives the rate shown and, of it, the pictures made, as in 120 fps, 60 made. A move of the
-whole picture is given back exactly. Where something moves against its background, the block vectors show
-at its edges, a strip up to half the move wide, where the made picture holds the background or the thing
-twice. The estimator takes pictures up to 4096x4096, so a larger capture is estimated at half size, and it
-needs an even width and height. Measured on a test computer with an RTX 5090, the estimate takes 2 ms at
-3072x1280 and 5 ms at 4096x2506, on the video engine, and the made picture's draw 0.03 ms. A frame that
-arrives before the made picture is due takes its place. `framegen` in the ini holds the choice.
+whole picture is given back exactly. Where something moves against its background, a block holds two
+motions and its one vector is wrong at the edge, and a fast move can outrun the estimator. So wherever
+the pictures of the last two frames disagree under a block's vector by more than resampling and the
+picture's own grain leave, the made picture tries the vectors of the blocks around it, no motion, and
+those of up to three coarser estimates at half, a quarter and an eighth of the size, which reach further,
+and takes the one the pictures agree on best. Where none of them fits, the made picture still holds the
+background or the thing twice in a strip up to half the move wide at the edge. The estimator takes
+pictures up to 4096x4096, so a larger capture is estimated at half size, and it needs an even width and
+height. Measured on a test computer with an RTX 5090, the estimate takes 2 ms at 3072x1280 and 5 ms at
+4096x2506 on the video engine, and at 2560x1440 the coarser estimates add 0.83 ms there and the made
+picture's draw takes 0.23 to 0.30 ms on clean pictures, 0.40 to 0.42 ms on heavy grain and 0.59 to
+0.63 ms under a pan of 128 texels a frame. A frame that arrives before the made picture is due takes its
+place. Ahead's made picture is due halfway to the next frame the lens expects, going by the gaps between
+the frames it draws. When the network takes longer than a frame of the program, the lens draws only some
+of the program's frames, expects the next one later than the program sends it, and the program's next
+frame nearly always arrives first. On a test computer with an RTX 4070 SUPER on a 120 Hz monitor at
+3840x2160 with 3 passes, where the network took 29.3 to 30.6 ms a picture and the lens drew 31.1 to 32.6
+new pictures a second from a program at 60 frames a second, Ahead made pictures only now and then, the
+readout showing a made count for about 3 s in 25, and Between throughout, since it shows its made picture
+with each new frame. `framegen` in the ini holds the choice.
 
-**The Look page.** The fast engine can steady or reshape what the network changed before it draws
-the picture. Detail stability blends the network's change with that of the last few frames,
-following the motion the card's motion estimator finds, so fine detail holds still in motion
-instead of shimmering. With Adjust the look on, Tone and Detail scale the broad and the fine part of
+**The Look page.** The fast engine can tell the network how the picture moves, and can steady or
+reshape what the network changed before it draws the picture. Motion vectors, the page's first
+row, chooses what the network is told of the motion, Card or None, see Motion vectors below.
+Detail stability blends the network's change with that of the last few frames, following the
+motion the card's motion estimator finds, so fine detail holds still in motion instead of
+shimmering. With Adjust the look on, Tone and Detail scale the broad and the fine part of
 the change, which Detail radius splits by size, Halo and Halo beside dark things take back the dark
 halos the network can leave beside bright things and on the bright side of dark ones, Stabilize
 evens the change out from frame to frame, in place or along the motion, and Max brightening, Max
@@ -866,14 +902,49 @@ values are the add-on's own keys in its section of
 menu in a window, and 5.2.1 leaves them alone. That build writes Detail stability as Auto when it
 writes its keys, so once it has run in a window, a fullscreen lens has Detail stability on until
 the Look page sets it to Off. A profile carries the values with the rest of that section, and a
-profile saved before 0.9.0, which has none of them, loads with the look at its defaults. The fast
-engine reads these thirteen keys and no other of the add-on's look keys: `NRDetailStability`,
-`NRLookMode`, `NRLookTone`, `NRLookDetail`, `NRLookDetailRadius`, `NRLookHalo`,
-`NRLookHaloBrightSide`, `NRLookStabilize`, `NRLookStabilizeMs`, `NRLookStabilizeDetail`,
-`NRLookMaxBrighten`, `NRLookMaxDarken` and `NRLookMaxColour`. Keep blacks is `NRKeepBlacks` in the
-same section, the fast engine's own, which neither build of the add-on reads, and a profile and a
-switch of the build carry it with the rest. What the stage costs and what was measured is in
+profile saved before 0.9.0, which has none of them, loads with the look at its defaults, as one
+saved before 0.9.1 loads with Motion vectors at Card. The fast engine reads these thirteen keys
+and no other of the add-on's look keys: `NRDetailStability`, `NRLookMode`, `NRLookTone`,
+`NRLookDetail`, `NRLookDetailRadius`, `NRLookHalo`, `NRLookHaloBrightSide`, `NRLookStabilize`,
+`NRLookStabilizeMs`, `NRLookStabilizeDetail`, `NRLookMaxBrighten`, `NRLookMaxDarken` and
+`NRLookMaxColour`. Keep blacks is `NRKeepBlacks` and Motion vectors is `NRMotionSource` in the same
+section, the fast engine's own, which neither build of the add-on reads, and a profile and a
+switch of the build carry them with the rest. What the stage costs and what was measured is in
 [docs/NOTES.md](docs/NOTES.md), The Look stage.
+
+**Motion vectors.** The network is temporal. Each picture it makes builds on the one it made
+before, which it reads where the motion vectors say each part of the picture was a frame earlier.
+Motion vectors, the first row of the Look page, chooses what the fast engine tells it. Card, the
+default, hands it the card's own motion estimate, the one frame generation and Detail stability
+follow, one vector for each block of 8 by 8 texels, given to every texel of the size the network
+works at. The estimate runs on the card's video engine for each new picture, and the network
+waits for it. None tells it that nothing moved, as every version before 0.9.1 did, so wherever
+the picture moves the network builds on the wrong part of its last picture. The network of a
+windowed lens has motion vectors from the Feed, and that of a fullscreen lens had none, which
+showed as noise on anything that moved, so Card gives the fast engine's network motion vectors
+too. On a card without a motion estimator the engine can use, the row is greyed and the network
+gets no motion vectors. `NRMotionSource` in the add-on's section of `ReShade.ini` holds the
+choice, 1 for Card and 0 for None.
+
+Measured on a test computer with an RTX 5090 over sequences made from a still at 2560x1440 with
+known motion, each picture held against the network's own picture of that frame at rest. With Card
+the pictures of pans, a zoom and things moving across them came 41 to 77 percent nearer it at the
+Quality and Balanced steps, where with None the network's change faded by up to 14 percent while
+things moved, and scrolling text came 13 to 47 percent nearer at every size. But in motion the
+fine detail came out up to 17 percent softer than with None. In the 8 px along each edge of a
+moving square the error rose by up to 153 percent at those steps, and by up to 255 percent where
+the network works on a much smaller copy, 1066x504 of a 2560x1440 picture, since one vector a
+block cannot follow both the square and what lies behind it. On that copy the boiling, the error's
+change from frame to frame, also rose, by 15 percent in the median. Grain that was new on every
+frame was partly averaged away, with 21 percent less fine detail at Quality. None keeps the
+network's picture of 0.9.0 for material where the softer detail, an outline round moving things or
+the boiling shows. With the small FP8 network at Balanced, Card brought the four
+moving sequences it was run on 32 to 51 percent nearer, with less boiling and the fine detail kept.
+Live at 6144x2560 at Balanced, Card took 1.95 to 2.52 ms of the video engine for each new picture
+and 4 to 9 W more, and over a moving square a quarter of its pictures came a refresh later, where
+2.6 to 4.0 percent did with None. At Full on that picture, where the network sets the rate, Card
+showed 49 new pictures a second against 60. What was measured is in
+[docs/NOTES.md](docs/NOTES.md), Motion vectors for the network.
 
 ### Multiple passes
 
@@ -1069,7 +1140,8 @@ default. With the ReShade engine fullscreen at 6144x2526 on an RTX 5090, Half dr
 Full and Quarter 51 W less, at the same frame rate, and a 1400x1000 lens saved 8 W and 11 W. A
 change restarts the picture. With VORT as the estimator there is nothing to set, and the page
 leaves it out. `motion_detail` in the ini takes `full`, `half` or `quarter`. The fast engine
-uses no motion estimator, so the setting does nothing for it.
+takes its motion from the card's own motion estimator instead, so the setting does nothing for
+it.
 
 ### A game in front that keeps the card busy
 
@@ -1376,6 +1448,14 @@ see [Limits](#limits). The lens warns about it, unless the Picture page of Setti
 warning off. Switch HDR off for that monitor, or make the lens fullscreen on the fast engine,
 which shows such a monitor in HDR. Where fullscreen runs on the ReShade engine instead, the
 Fullscreen page of Settings says why, see the entry above.
+
+**The picture looks wrong after a change.** Reset everything on the Program page of Settings puts every
+setting of the lens and of Neural Rendering back as a new install has them, after asking, and keeps your
+screenshots, your logs and, unless you tick the box that removes them, your profiles. Nothing is
+downloaded. The lens runs the self test on its way back, and where Neural Rendering does not run even at
+the defaults, it offers the stack setup, which fetches the stack again. To undo one change instead, the
+button beside each slider of the NR settings panel puts that slider back at 1.00, and a profile saved
+before the change brings back what it holds.
 
 **The lens disappeared after you changed a folder in Settings.** The stack and data folders
 take effect at the next launch, so changing one relaunches the lens, and a relaunch that fails

@@ -34,6 +34,16 @@ constexpr DXGI_FORMAT kNrFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 
 // The most passes, and so features, one Nr holds, is kNrMaxPasses in common.h.
 
+// Motion vectors for one evaluate, see evaluate(): a texture of the work size, R16G16_FLOAT,
+// in NON_PIXEL_SHADER_RESOURCE, each texel where its content was in the frame the network
+// last evaluated, less where it is now, in work texels, x to the right and y down. That is
+// the runtime's own convention, measured on its 310.8 build by the motion probe
+// (_harnesses\nr_motion_probe), and the add-on of the stack names the same.
+struct NrMotion {
+  ID3D12Resource* field = nullptr;
+  UINT w = 0, h = 0;  // its size, which is the work size
+};
+
 class Nr {
  public:
   Nr();
@@ -66,11 +76,12 @@ class Nr {
   // switches the proxy on and writes that into the ini.
   //
   // Zero motion vectors and zero depth are part of this object. They are two textures of
-  // one texel each (R16G16_FLOAT and R32_FLOAT), cleared once, which every evaluate hands
-  // over with their subrects set to that one texel and the motion scale set to the work
-  // size. The network's output is the same, byte for byte, as with two zero textures of the
-  // work size, which the self test's reference pictures were made with, and the two of one
-  // texel serve every work size.
+  // one texel each (R16G16_FLOAT and R32_FLOAT), cleared once, which an evaluate hands over
+  // with their subrects set to that one texel and the motion scale set to the work size,
+  // unless it is given motion vectors of its own (NrMotion). The network's output is the
+  // same, byte for byte, as with two zero textures of the work size, which the self test's
+  // reference pictures were made with, and the two of one texel serve every work size. Depth
+  // is always the zero texel: the model was measured not to use it.
   //
   // false with err, which says which step failed and the runtime's result where there is
   // one: "nvngx_dlssnr.dll not found in ...", "the adapter is not an NVIDIA card",
@@ -92,6 +103,10 @@ class Nr {
   //           UNORDERED_ACCESS. Left in that state. It must not be the input.
   //   reset   true tells the network to drop its history: the first picture, after a pause,
   //           and whenever the new picture does not follow from the last one.
+  //   motion  the motion vectors from the frame this pass's feature last evaluated to this
+  //           one, see NrMotion, bound with their subrect the whole work size and a motion
+  //           scale of 1, so a vector is taken in work texels as it stands. Null: the zero
+  //           texel, as every evaluate had before, the same call byte for byte.
   //
   // AFTER THIS CALL THE LIST'S DESCRIPTOR HEAPS, ROOT SIGNATURES AND PIPELINE STATE ARE
   // UNDEFINED: the runtime sets its own and does not put the caller's back. Set every one
@@ -101,7 +116,7 @@ class Nr {
   // false with err when the runtime refuses or raises. The list may then hold part of the
   // runtime's commands: do not execute it, reset it.
   bool evaluate(ID3D12GraphicsCommandList* list, int pass, ID3D12Resource* input,
-                ID3D12Resource* output, bool reset, std::string& err);
+                ID3D12Resource* output, bool reset, const NrMotion* motion, std::string& err);
 
   // New settings, each pass's own, used from the next evaluate on. Nothing is created
   // again: the values a pass is steered by are read by the runtime at every evaluate. It

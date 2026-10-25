@@ -25,6 +25,14 @@ Its text wraps at a width that grows with the display's scaling, as the text
 of Windows' own boxes does, and a line the lens broke on purpose shows whole
 up to a limit.
 
+A dialog can carry a box under its text, off to begin with, with its words
+and under them what it does, see Dialog.check. The classic look draws a
+check button and a drawn look the box its NR panel's ties draw, see
+lens_look.small.BoxFace. Tab reaches it in Tk's own order, Down and Up move
+between the box and the buttons in the order the screen shows them, Space
+ticks it, and Enter on the box presses the default button. Ctrl+C copies the
+box as a line, [x] where it is ticked.
+
 The classic look shows it as the lens has always drawn its questions, a text
 and a row of buttons in the theme's colours with the default one in the
 accent, see Lens._ask in neural_lens.py. A drawn look draws it as the look's
@@ -39,7 +47,7 @@ the classic look and lens.log says so once.
 import tkinter as tk
 import tkinter.font as tkfont
 
-from lens_look import scale, text, tokens, widgets, win
+from lens_look import scale, small, text, tokens, widgets, win
 
 # The words on the buttons, as Windows' own boxes have them
 YES, NO, OK = "Yes", "No", "OK"
@@ -69,6 +77,13 @@ SIGN_SIZE = 24
 OPTIONS = ("icon", "parent", "default", "detail")
 # The line Windows' own boxes copy between the title, the text and the buttons
 RULE = "-" * 27
+# What a box under the text says of itself in the classic look: the type of
+# the words under it, and how far they stand in, so they start under the box's
+# words, past its square, in pixels at 100 percent
+BOX_WHY_FONT = ("Segoe UI", 9)
+BOX_INDENT = 20
+# How the box's line is copied, ticked and not, before its words
+BOX_LINES = {True: "[x]", False: "[ ]"}
 
 _family = []                    # the icon font this machine has, once looked for, None where it has neither
 
@@ -316,10 +331,20 @@ def sign_family(widget):
 
 
 class Dialog(object):
-    """One showing of the lens's dialog, see ask."""
+    """One showing of the lens's dialog, see ask.
+
+    check, where it is given, is a box under the text, as (its words, what
+    it does, a tk.BooleanVar the caller made on the dialog's parent, False to
+    begin with). The dialog changes the variable only through the box, and
+    the caller reads it once run has answered. The box is made after the text
+    and before the buttons, so Tab reaches it first, and ring holds it and
+    the buttons in the order the screen shows them, which Down and Up walk,
+    see move."""
 
     def __init__(self, title, text, buttons, parent=None, look=None, default=0, cancel=None, icon=None,
-                 detail=None, escape=True, form=None, place=None):
+                 detail=None, escape=True, form=None, place=None, check=None):
+        self.check = check
+        self.box, self.ring = None, []  # the box's widget that takes the keyboard, and what move walks
         self.title, self.text = str(title or ""), str(text or "")
         self.said, self.detail = self.text, (str(detail) if detail else None)
         if detail:
@@ -373,10 +398,12 @@ class Dialog(object):
         except tk.TclError:
             pass
         self.win, self.top, self.body, self.made, self.parts = None, None, None, [], []
+        self.box, self.ring = None, []
         say_fault(FAULT, "lens's dialog", self.look, exc)
 
     def bind_keys(self, d):
-        """The keys Windows' own boxes take, on the dialog's window d."""
+        """The keys Windows' own boxes take, on the dialog's window d, and
+        where the dialog has a box, Down and Up, see move."""
         for key in ("<Return>", "<KP_Enter>"):
             d.bind(key, self.enter)
         d.bind("<Escape>", lambda event: self.quit())
@@ -384,16 +411,20 @@ class Dialog(object):
             for k in (key, key.upper()):
                 d.bind("<Key-%s>" % k, lambda event, b=self.made[i]: self.press(b))
         d.bind("<<Copy>>", self.copy)   # Ctrl+C and Ctrl+Insert, as Tk names them on Windows
+        if self.box is not None:
+            d.bind("<Down>", lambda event: self.move(1))
+            d.bind("<Up>", lambda event: self.move(-1))
 
     def build_drawn(self):
         """The window as the look's dialog drawings draw it. Its text split
         into a head, paragraphs, a detail and paths, see text.split_message
         and HEAD, each in its own type and colour, see TYPE, at the right of
         the look's sign, see drawn_sign, a path in a field it can be selected
-        in, see path_field, and under them the buttons in the look's footer,
-        see footer. The text wraps as wide as the widest text the drawings
-        draw, and a line the lens broke on purpose shows whole up to a limit,
-        see wrap_of. A text too tall for the screen scrolls, see fit_drawn."""
+        in, see path_field, the box under them where the dialog has one, see
+        drawn_box, and under them the buttons in the look's footer, see
+        footer. The text wraps as wide as the widest text the drawings draw,
+        and a line the lens broke on purpose shows whole up to a limit, see
+        wrap_of. A text too tall for the screen scrolls, see fit_drawn."""
         root = self.parent if self.parent is not None else tk._default_root
         if root is None:
             raise RuntimeError("no Tk root to show the dialog over")
@@ -413,10 +444,12 @@ class Dialog(object):
         body = self.top = tk.Frame(d, bg=c["surface"], bd=0, highlightthickness=0)
         body.grid(row=0, column=0, sticky="nsew")
         sign = self.drawn_sign(body, look, s, above, side, below)
+        boxed = self.check is not None
         column = self.body = tk.Frame(body, bg=c["surface"], bd=0, highlightthickness=0)
         column.grid(row=0, column=1, sticky="nw",
                     padx=(0 if sign is not None else scale.px(side, s), scale.px(side, s)),
-                    pady=(scale.px(above + (m["top"] if sign is not None else 0), s), scale.px(below, s)))
+                    pady=(scale.px(above + (m["top"] if sign is not None else 0), s),
+                          0 if boxed else scale.px(below, s)))
         self.parts = text.split_message(self.said, self.detail, HEAD[kind][self.form]).parts
         before = None
         for row, part in enumerate(self.parts):
@@ -424,10 +457,48 @@ class Dialog(object):
             made.grid(row=row, column=0, sticky="we" if part.kind == "path" else "w",
                       pady=(scale.px(gap_before(m, part, before), s), 0))
             before = part
+        if boxed:
+            self.box = self.drawn_box(body, look, s, sign, side, below)
         commands = [lambda word=word: self.pick(word) for word in self.buttons]
-        _foot, self.made = footer(d, look, self.buttons, commands, self.default, self.form)
+        _foot, self.made = footer(d, look, self.buttons, commands, self.default, self.form, row=2 if boxed else 1)
+        if boxed:
+            self.ring = [self.box] + [self.made[i] for i in screen_order(kind, len(self.made))]
         self.bind_keys(d)
         self.fit_drawn(look, s)
+
+    def drawn_box(self, body, look, s, sign, side, below):
+        """The box of a dialog asked with check, in a drawn look: the box the
+        look's NR panel draws for its ties, with its words beside it, which
+        takes the keyboard, is lit while it has it and is ticked by Space and
+        by a click on it or on its words, see lens_look.small.BoxFace, and
+        under it what the box does, in the type and colour of the look's
+        detail, see TYPE. It goes on body's grid row under the text's column,
+        with the room under the text, and Folio's line beside a warning runs
+        beside it too. fit_drawn empties only the text's column, so the box
+        stays in view with the buttons. Returns the box's face."""
+        words, why, var = self.check
+        kind, c = look.kind, look.c
+        m = SIZES[kind]
+        holder = tk.Frame(body, bg=c["surface"], bd=0, highlightthickness=0)
+        holder.grid(row=1, column=1, sticky="nw",
+                    padx=(0 if sign is not None else scale.px(side, s), scale.px(side, s)),
+                    pady=(scale.px(m["para_gap"], s), scale.px(below, s)))
+        if kind == "folio" and sign is not None:
+            sign.grid_configure(rowspan=2)
+        # the check button the box draws, made and never shown, which keeps
+        # the words and the variable, as the note's Don't show this again does
+        model = tk.Checkbutton(holder, text=words, variable=var, takefocus=0)
+        face = small.BoxFace(holder, look, model, TYPE[kind]["text"][0], small.NOTE[kind]["box_gap"], c["surface"],
+                             keys=True)
+        face.grid(row=0, column=0, sticky="w")
+        if why:
+            role, colour = TYPE[kind]["detail"]
+            indent = face.words_at
+            tk.Label(holder, text=why, bg=c["surface"], fg=c[colour], font=look.font(role, widget=holder),
+                     justify="left", anchor="w", wraplength=max(1, scale.px(m["wrap"], s) - indent), bd=0,
+                     padx=0, pady=0).grid(row=1, column=0, sticky="w", padx=(indent, 0),
+                                          pady=(scale.px(m["detail_gap"], s), 0))
+        return face
 
     def drawn_part(self, column, part, look, s):
         """A part of the text, a label in the part's type and colour that
@@ -518,7 +589,8 @@ class Dialog(object):
 
     def build_classic(self):
         """The window as the lens has always drawn its questions, withdrawn as
-        it is made, with the sign, the text and the buttons."""
+        it is made, with the sign, the text, the box where the dialog has one,
+        see classic_box, and the buttons."""
         root = self.parent if self.parent is not None else tk._default_root
         if root is None:
             raise RuntimeError("no Tk root to show the dialog over")
@@ -539,16 +611,42 @@ class Dialog(object):
         self.body = tk.Label(top, text=self.text, bg=c["bg"], fg=c["fg"], justify="left", wraplength=self.wrap,
                              font=FONT)
         self.body.pack(side="left", anchor="nw")
+        if self.check is not None:
+            self.box = self.classic_box(d, c, s)
         last = len(self.buttons) - 1
         for i, word in enumerate(self.buttons):
             lead = i == self.default
             b = tk.Button(d, text=word, command=lambda word=word: self.pick(word), relief="flat",
                           bg=c["accent"] if lead else c["hover"], fg=c["field"] if lead else c["fg"],
                           activebackground=c["cap"], activeforeground=c["fg"])
-            b.grid(row=1, column=i, sticky="w", padx=(14 if i == 0 else 6, 14 if i == last else 0), pady=(0, 14))
+            b.grid(row=1 if self.box is None else 2, column=i, sticky="w",
+                   padx=(14 if i == 0 else 6, 14 if i == last else 0), pady=(0, 14))
             self.made.append(b)
+        if self.box is not None:
+            self.ring = [self.box] + list(self.made)
         self.bind_keys(d)
         self.fit(c, font, s)
+
+    def classic_box(self, d, c, s):
+        """The box of a dialog asked with check, in the classic look: a check
+        button with its words, as the classic Settings draws its switches,
+        with a ring in the accent while it has the keyboard, and under it
+        what the box does, in a smaller dim type, on the window's grid row 1
+        under the text, which fit replaces without it. Space ticks it, as Tk
+        has it for a check button. Returns the button."""
+        words, why, var = self.check
+        holder = tk.Frame(d, bg=c["bg"])
+        holder.grid(row=1, column=0, columnspan=len(self.buttons), sticky="we", padx=14, pady=(0, 12))
+        box = tk.Checkbutton(holder, text=words, variable=var, bg=c["bg"], fg=c["fg"], selectcolor=c["field"],
+                             activebackground=c["bg"], activeforeground=c["fg"], font=FONT, anchor="w",
+                             highlightthickness=1, highlightbackground=c["bg"], highlightcolor=c["accent"],
+                             takefocus=1)
+        box.pack(anchor="w")
+        if why:
+            indent = scale.px(BOX_INDENT, s)
+            tk.Label(holder, text=why, bg=c["bg"], fg=c["dim"], font=BOX_WHY_FONT, justify="left", anchor="w",
+                     wraplength=max(1, self.wrap - indent)).pack(anchor="w", padx=(indent, 0))
+        return box
 
     def wrap_width(self, measure, s):
         """The width in pixels the text wraps at at the scale s, WRAP scaled,
@@ -703,10 +801,38 @@ class Dialog(object):
         (got if any(got is b for b in self.made) else self.made[self.default]).invoke()
         return "break"
 
+    def move(self, step):
+        """Down, step 1, and Up, step -1, in a dialog with a box: the keyboard
+        to the next of the box and the buttons in the order the screen shows
+        them, see ring, round from the last to the first. From anything else
+        that has it, a path's field say, Down goes to the box and Up to the
+        last button. The keyboard moves inside the dialog alone."""
+        ring = self.ring
+        if not ring:
+            return "break"
+        try:
+            got = self.win.focus_get()
+        except (KeyError, tk.TclError):
+            got = None
+        at = next((i for i, w in enumerate(ring) if w is got), None)
+        ring[(at + step) % len(ring) if at is not None else (0 if step > 0 else -1)].focus_set()
+        return "break"
+
+    def ticked(self):
+        """Whether the box is ticked now, False for a dialog without one."""
+        try:
+            return bool(self.check[2].get()) if self.check is not None else False
+        except (tk.TclError, AttributeError, TypeError, ValueError):
+            return False
+
     def words(self):
         """The message as Windows' own boxes copy theirs, the title, the text
-        and the buttons' words between rules, with Windows' line ends."""
-        lines = [RULE, self.title, RULE, self.text, RULE, "".join("%s   " % b for b in self.buttons), RULE, ""]
+        and the buttons' words between rules, with Windows' line ends, and the
+        box where the dialog has one as a line after the text, see BOX_LINES."""
+        said = self.text
+        if self.check is not None:
+            said = "%s\n\n%s %s" % (said, BOX_LINES[self.ticked()], self.check[0])
+        lines = [RULE, self.title, RULE, said, RULE, "".join("%s   " % b for b in self.buttons), RULE, ""]
         return "\n".join(lines).replace("\r\n", "\n").replace("\n", "\r\n")
 
     def copy(self, event=None):
@@ -781,7 +907,7 @@ class Dialog(object):
 
 
 def ask(title, text, buttons, parent=None, look=None, default=0, cancel=None, icon=None, detail=None,
-        escape=True, form=None, place=None):
+        escape=True, form=None, place=None, check=None):
     """The lens's dialog with this title, text and buttons, see Dialog, and the
     words of the button pressed, or cancel where Escape is pressed or the
     window is closed. default is the index of the button Enter presses to
@@ -792,8 +918,10 @@ def ask(title, text, buttons, parent=None, look=None, default=0, cancel=None, ic
     answer for them. form is ask for a question Lens._ask asks, whose first
     paragraph a drawn look draws as its head, see FORMS, and place is what
     places the window where it is not to be placed over its parent, as
-    Lens._place_over_lens places Lens._ask's over the lens."""
-    return Dialog(title, text, buttons, parent, look, default, cancel, icon, detail, escape, form, place).run()
+    Lens._place_over_lens places Lens._ask's over the lens. check is a box
+    under the text, as (its words, what it does, its variable), see Dialog."""
+    return Dialog(title, text, buttons, parent, look, default, cancel, icon, detail, escape, form, place,
+                  check).run()
 
 
 class Messages(object):

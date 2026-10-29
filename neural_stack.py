@@ -124,7 +124,7 @@ import winreg
 import zipfile
 import zlib
 
-__version__ = "0.9.1"
+__version__ = "0.9.2"
 
 FROZEN = getattr(sys, "frozen", False)
 # Everything lives in the lens's own folder, the one the installer put it in or
@@ -270,8 +270,8 @@ PRESET_DONE = "model_preset_written"
 # switches the proxy on for fullscreen and off when windowed, so it starts off.
 # Its hotkeys are polled globally, and a desktop program must not answer
 # Ctrl+Alt+PageUp in every window. Its depth aware resolve works from the depth
-# the Feed synthesises for content that has none, and every measurement of the
-# proxy in the lens was taken with it off.
+# the Feed hands on, ReShade's depth buffer, which is flat in the presenter, and
+# every measurement of the proxy in the lens was taken with it off.
 COST_SCALER_SETTINGS = {"EnableProxy": "0", "EnableHotkeys": "0",
                         "EnableDepthAwareResolve": "0", "EnableGovernor": "0"}
 

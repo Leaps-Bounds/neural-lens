@@ -54,6 +54,7 @@
 #include <objbase.h>
 #include <wincodec.h>
 
+#include "flow.h"
 #include "framegen.h"
 #include "model_motion.h"
 
@@ -1479,6 +1480,90 @@ std::wstring npy_name(const wchar_t* stem, int n) {
 
 namespace {
 
+// A .npy file as the research's optical flow probe wrote its own: version 1.0, the header dict
+// with descr, fortran_order False and the shape, padded with spaces so the data starts on a
+// multiple of 64 bytes, then the data. So the flow and the luma the sequence mode writes compare
+// whole with the probe's files.
+bool save_npy(const std::wstring& path, const char* descr, std::initializer_list<size_t> shape, const void* data,
+              size_t bytes, std::string& err) {
+  std::string dict = std::string("{'descr': '") + descr + "', 'fortran_order': False, 'shape': (";
+  int k = 0;
+  for (const size_t s : shape) dict += (k++ ? ", " : "") + std::to_string(s);
+  if (shape.size() == 1) dict += ",";
+  dict += "), }";
+  while ((10 + dict.size() + 1) % 64 != 0) dict += ' ';
+  dict += '\n';
+  std::vector<uint8_t> out;
+  out.reserve(10 + dict.size() + bytes);
+  const char magic[] = "\x93NUMPY";
+  out.insert(out.end(), magic, magic + 6);
+  out.push_back(1);
+  out.push_back(0);
+  out.push_back((uint8_t)(dict.size() & 0xff));
+  out.push_back((uint8_t)(dict.size() >> 8));
+  out.insert(out.end(), dict.begin(), dict.end());
+  const uint8_t* p = static_cast<const uint8_t*>(data);
+  out.insert(out.end(), p, p + bytes);
+  return write_file(path, out, err);
+}
+
+// A luma for --flow-luma-file, as --sequence-dump luma and the probe's --save-luma write it:
+// version 1, 'descr' '|u1', 'fortran_order' False and 'shape' (h, w), the session's padded size,
+// then the bytes, top row first. Anything else, a missing file included, fails the run with the
+// file named.
+bool load_npy_luma(const std::wstring& path, UINT w, UINT h, std::vector<uint8_t>& bytes, std::string& err) {
+  const std::string name = "--flow-luma-file: " + narrow(path);
+  FILE* f = _wfopen(path.c_str(), L"rb");
+  if (!f) {
+    err = name + " cannot be read";
+    return false;
+  }
+  uint8_t pre[10] = {};
+  if (fread(pre, 1, 10, f) != 10 || memcmp(pre, "\x93NUMPY", 6) != 0 || pre[6] != 1) {
+    fclose(f);
+    err = name + " is not a version 1 .npy file";
+    return false;
+  }
+  const size_t header_len = (size_t)pre[8] | ((size_t)pre[9] << 8);
+  std::string header(header_len, '\0');
+  if (fread(&header[0], 1, header_len, f) != header_len) {
+    fclose(f);
+    err = name + ": the header is short";
+    return false;
+  }
+  const auto value_of = [&](const char* key) -> std::string {
+    const size_t at = header.find(key);
+    if (at == std::string::npos) return std::string();
+    size_t from = at + strlen(key);
+    while (from < header.size() && (header[from] == ':' || header[from] == ' ')) ++from;
+    return header.substr(from);
+  };
+  const std::string descr = value_of("'descr'");
+  const std::string order = value_of("'fortran_order'");
+  const std::string shape = value_of("'shape'");
+  unsigned hh = 0, ww = 0;
+  char close = 0;
+  if (descr.compare(0, 5, "'|u1'") != 0 || order.compare(0, 5, "False") != 0 ||
+      sscanf_s(shape.c_str(), "(%u, %u%c", &hh, &ww, &close, 1u) != 3 || close != ')') {
+    fclose(f);
+    err = name + " is not uint8 ('|u1') in C order with a shape of two: " + header;
+    return false;
+  }
+  if (hh != h || ww != w) {
+    fclose(f);
+    err = name + strf(" has the shape (%u, %u), and the unit wants (%u, %u)", hh, ww, h, w);
+    return false;
+  }
+  bytes.resize((size_t)w * h);
+  bool ok = fread(bytes.data(), 1, bytes.size(), f) == bytes.size();
+  uint8_t more = 0;
+  const bool longer = ok && fread(&more, 1, 1, f) == 1;
+  fclose(f);
+  if (!ok) err = name + ": the data is short";
+  if (longer) err = name + ": the file is longer than its shape";
+  return ok && !longer;
+}
+
 // The sequence mode's research switches for the network's motion vectors, from the comma list
 // of --sequence-lab, each word whole. The words for frame generation (nocoarse, levels1,
 // levels2, fixedgate) are looked up by run_sequence() itself, as they always were.
@@ -1488,6 +1573,7 @@ struct MotionLab {
   float cx = 0.0f, cy = 0.0f; // minus current; mvzero the same with zeros
   bool all_passes = false;    // mvallpasses: every pass handed the vectors in the shared mode
   bool no_estimator = false;  // noestimator: the estimator refused, as on a card without one
+  bool no_flow = false;       // noflow refuses the optical flow unit, as on a card without one
   std::string words;          // the switches taken, for the first line
 };
 
@@ -1515,6 +1601,8 @@ MotionLab motion_lab(const std::string& list) {
       lab.all_passes = true;
     } else if (word == "noestimator") {
       lab.no_estimator = true;
+    } else if (word == "noflow") {
+      lab.no_flow = true;
     } else {
       taken = false;
     }
@@ -1563,16 +1651,23 @@ ModelMotion estimate_for_network(const FrameGen& gen, const MotionLab& lab) {
 //      frame generation goes on estimating
 //   J  a joined frame, LENS_FAST_JOIN, which wants no estimate for the network
 //   Z  a new frame while NRMotionSource says none and nothing else wants the estimate
-// Frame generation is off but where H says otherwise, and the Look stage's filter off. What
-// each draw hands the network, in order: card or zero.
-std::string motion_case(const char* script) {
+//   U  a new frame whose optical flow fails, with Edges cut
+//   V  a new frame with Edges cut on a card whose optical flow unit is refused
+// Frame generation is off but where H says otherwise, and the Look stage's filter off. With
+// edges false NRMotionSource says Card, with edges true Edges cut, and the optical flow unit
+// then runs on every new frame whose estimate the network is to be handed, after the
+// estimate, and forgets with the estimator. What each draw hands the network, in order: cut
+// (the estimate with the edges cut), card or zero.
+std::string motion_case(const char* script, bool edges) {
   MotionPair pair;
-  int have = 0;  // FrameGen's frames since it last forgot, 2 at most, see FrameGen::estimate
+  int have = 0;   // FrameGen's frames since it last forgot, 2 at most, see FrameGen::estimate
+  int fhave = 0;  // the optical flow unit's, the same way, see Flow::submit
   std::string out;
   for (const char* c = script; *c; ++c) {
     const char e = *c;
     if (e == 'F') {
       have = 0;
+      fhave = 0;
       continue;
     }
     if (!out.empty()) out += " ";
@@ -1585,6 +1680,7 @@ std::string motion_case(const char* script) {
     const bool network = e != 'H';
     const bool model_wants = network && e != 'Z' && e != 'J';  // as estimate_motion() in main.cpp
     bool ready = false;
+    bool estimated = false;
     if (motion_wanted(e == 'H' ? 1 : 0, false, model_wants)) {
       if (e == 'X') {
         pair.estimated(false, false);  // the estimate returns before the frames move on
@@ -1592,12 +1688,23 @@ std::string motion_case(const char* script) {
         ready = have >= 1;
         have = std::min(have + 1, 2);
         pair.estimated(true, ready);
+        estimated = true;
+      }
+    }
+    if (edges && model_wants && estimated && e != 'V') {
+      if (e == 'U') {
+        pair.flowed(false, false);  // the flow fails before the unit's frames move on
+      } else {
+        const bool flow_ready = fhave >= 1;
+        fhave = std::min(fhave + 1, 2);
+        pair.flowed(true, flow_ready);
       }
     }
     // a render that resets reads no history, see Pipeline::set_model_motion
     const bool fed = feed_model(pair, model_wants, e == 'J', ready) && e != 'R';
+    const bool cut = fed && edges && pair.cut_ok();
     pair.drew(network);
-    out += fed ? "card" : "zero";
+    out += cut ? "cut" : fed ? "card" : "zero";
   }
   return out;
 }
@@ -1614,7 +1721,15 @@ int run_motion_cases() {
       {"failed estimate", "NNXNN"}, {"hold", "NNHHRN"},           {"key none to card", "ZZFNN"},
       {"joined", "NNJJNN"},         {"reset", "NNRN"},
   };
-  for (const Case& c : cases) say("motion case %s %s: %s", c.name, c.script, motion_case(c.script).c_str());
+  for (const Case& c : cases) say("motion case %s %s: %s", c.name, c.script, motion_case(c.script, false).c_str());
+  // the same with Edges cut, where the optical flow unit's pair decides the cut, see model_motion.h
+  const Case edge_cases[] = {
+      {"edges first frames", "NNN"},     {"edges settle", "NNSSN"},     {"edges forget", "NNFNN"},
+      {"edges failed estimate", "NNXNN"}, {"edges failed flow", "NNUNN"}, {"edges refused", "VVV"},
+  };
+  for (const Case& c : edge_cases) {
+    say("motion case %s %s: %s", c.name, c.script, motion_case(c.script, true).c_str());
+  }
   return exit_code::ok;
 }
 
@@ -1753,7 +1868,8 @@ int run_sequence(const Options& o) {
   // ---- what wants the motion estimate, as the loop has it (model_motion.h): frame generation,
   // the Look stage's filter, and the network where NRMotionSource says the card's estimate
   const bool look_wants = pass_settings.look.wants_motion();
-  const bool source_card = pass_settings.look.motion_source == kMotionCard;
+  const bool source_card = takes_card_estimate(pass_settings.look.motion_source);
+  const bool source_edges = pass_settings.look.motion_source == kMotionCardEdges;
   const bool model_wants = source_card && pipeline.network_runs();
   FrameGen gen;
   gen.lab_levels = o.sequence_lab.find("nocoarse") != std::string::npos ? 0
@@ -1781,10 +1897,39 @@ int run_sequence(const Options& o) {
   if (have_gen && !vectors_reader.init(gpu, gen.vectors.Get(), err)) return failed(err);
   bool field_reader_made = false;
   std::vector<uint8_t> raw;
+  // the optical flow unit for --motion edges where the network is handed the estimate, made
+  // after the estimator, at whose picture it takes the luma, see flow.h. Refused, the run goes
+  // on with the card's estimate whole, as the loop does. --sequence-lab noflow refuses it as on
+  // a card without one, as LENS_FAST_NO_FLOW=1 does in the loop
+  Flow flow;
+  bool have_flow = false;
+  std::string no_flow;  // why there is none where one was wanted
+  if (source_edges && model_wants && have_gen) {
+    if (hdr) flow.sdr_white = (float)o.sequence_white;
+    if (lab.no_flow) {
+      no_flow = "the optical flow unit is switched off for a test";
+    } else if (flow.init(gpu, W, H, gen.me_width(), gen.me_height(), err)) {
+      have_flow = true;
+    } else {
+      no_flow = err;
+    }
+    for (const std::string& line : flow.report()) note("sequence: flow: %s", line.c_str());
+  }
+  const bool flow_file = !o.sequence_flow_luma.empty();  // --flow-luma-file
+  if ((flow_file || o.sequence_dump_flow || o.sequence_dump_luma || o.sequence_dump_zones) && !have_flow) {
+    return failed(no_flow.empty() ? std::string("--sequence-dump flow, luma or zones and --flow-luma-file need the "
+                                                "optical flow unit, which runs with --motion edges and the network on")
+                                  : "--sequence-dump flow, luma or zones and --flow-luma-file need the optical flow "
+                                    "unit, which is unavailable, " + no_flow);
+  }
   const std::string motion_text =
       !source_card ? std::string("motion none")
       : (!have_gen && !no_estimator.empty()) ? "motion none, no motion estimator (" + no_estimator + ")"
-                                             : std::string("motion card");
+      : have_flow ? strf("motion edges, the flow at %ux%u in %ux%u cells", flow.me_w, flow.me_h, flow.crop_w,
+                         flow.crop_h)
+      : !no_flow.empty() ? "motion card, no optical flow (" + no_flow + ")"
+      : source_edges     ? std::string("motion edges")
+                         : std::string("motion card");
   const std::string estimator_text =
       have_gen ? strf("the estimator at %ux%u in %ux%u blocks, the coarser ones %s", gen.me_width(), gen.me_height(),
                       gen.vec_width(), gen.vec_height(),
@@ -1799,11 +1944,23 @@ int run_sequence(const Options& o) {
     note("sequence: framegen: %s, so no motion estimate", no_estimator.c_str());
     say("framegen unavailable %s", no_estimator.c_str());
   }
+  if (!no_flow.empty()) {
+    note("sequence: edges: %s, so the network gets the card's estimate whole", no_flow.c_str());
+    say("edges unavailable %s", no_flow.c_str());
+  }
+  std::vector<uint8_t> file_luma, flow_raw;   // --flow-luma-file's bytes, and the unit's readbacks
+  std::vector<float> flow_f;                  // a flow for its dump
+  std::vector<double> flow_ms, copy_in_ms, execute_ms, copy_out_ms, luma_ms;  // the unit's cost, a frame each
+  std::vector<double> zone_ms;                // the edge detector's three passes, a frame each
+  std::vector<double> cut_ms;                 // the cut, a frame each where it ran
+  Reader zone_reader;                         // the zone for its dump, made at the first
+  bool zone_reader_made = false;
 
   // ---- the frames, in order, as the loop takes a capture's: every source is new to it
   ComPtr<ID3D12Resource> prev, cur;
   MotionPair pair;
   int made = 0, estimates = 0, fed_frames = 0;
+  int cut_frames = 0;  // renders handed the field with the edges cut, a zone of one texel or more
   double prep_ms = 0.0, estimate_ms = 0.0, draw_ms = 0.0;  // the cost, summed over the frames
   double fine_gpu_ms = 0.0, coarse_gpu_ms = 0.0;           // the estimates by the encode queue's clock
   double nr_gpu_ms = 0.0;                                  // the network's passes, with the
@@ -1818,6 +1975,18 @@ int run_sequence(const Options& o) {
     if (have_gen) {
       if (!gen.estimate(cur.Get(), ready, read_value, err)) return failed("estimate: " + err);
       pair.estimated(true, ready);
+    }
+    if (have_flow) {
+      // the optical flow unit on the same frame after the estimator's conversion, the luma list
+      // on the queue and the unit's work behind it, nothing waited for, see flow.h. With
+      // --flow-luma-file the file's luma takes the luma pass's place
+      if (flow_file && !load_npy_luma(path_join(o.sequence_flow_luma, npy_name(L"luma-", n)), flow.pad_w,
+                                      flow.pad_h, file_luma, err))
+        return failed(err);
+      UINT64 flow_read = 0;
+      if (!flow.submit(cur.Get(), flow_file ? file_luma.data() : nullptr, flow_read, err))
+        return failed("flow: " + err);
+      pair.flowed(true, flow.ready());
     }
     if (ready) {
       ++estimates;
@@ -1836,6 +2005,14 @@ int run_sequence(const Options& o) {
     // the motion for the render, as the loop's estimate_motion() hands it over: the queue waits
     // for the estimate before the render reads it
     const bool feed = feed_model(pair, model_wants, false, ready);
+    // the edge detector, where the network is handed the estimate and the unit's flow spans the
+    // same two frames (cut_ok, model_motion.h), after the queue's wait for the flow and before
+    // its wait for the estimate, see edges.h. Its zone is cut into the field after the resolve
+    const bool detected = have_flow && feed && pair.cut_ok();
+    if (detected) {
+      if (!flow.wait_on_queue(err)) return failed("flow: " + err);
+      if (!pipeline.detect_edges(edge_flow_of(flow), err)) return failed("edges: " + err);
+    }
     const bool look_motion = ready && look_wants;
     if ((feed || look_motion) && !gen.wait_estimate_on_queue(err)) return failed(err);
     if (look_motion) {
@@ -1844,10 +2021,15 @@ int run_sequence(const Options& o) {
     } else {
       pipeline.set_motion(nullptr, 0, 0, 1.0f, 0.0f);
     }
-    if (feed) pipeline.set_model_motion(estimate_for_network(gen, lab));
+    if (feed) {
+      ModelMotion mm = estimate_for_network(gen, lab);
+      mm.cut = detected;
+      pipeline.set_model_motion(mm);
+    }
     if (!pipeline.render(cur.Get(), back, k == 0, false, err)) return failed(err);
     pair.drew(pipeline.network_runs());
     if (pipeline.motion_fed(0)) ++fed_frames;
+    const bool cut = pipeline.motion_fed(0) && pipeline.motion_cut();
     if (o.sequence_save_nr && !save_target(L"nr-", n)) return failed(err);
     if (o.sequence_dump_fed) {
       // what each pass was handed, and the field itself where it was
@@ -1879,6 +2061,16 @@ int run_sequence(const Options& o) {
                           fw, fh, fw, fh, mm.constant ? 0.0 : 0.25 * fw / mm.me_w * mm.factor,
                           mm.constant ? 0.0 : 0.25 * fh / mm.me_h * mm.factor, sx / (double)count,
                           sy / (double)count, 100.0 * (double)zero / (double)count);
+        // the cut, by the detector's counts, whose list came before the render's and is done
+        // with the field's readback
+        if (cut) {
+          EdgeCounts ec;
+          if (!pipeline.edge_counts(ec)) return failed("edges: the detector's counts are not there after the render");
+          field_text = (ec.guarded ? std::string(" (guarded)") : strf(", edges cut, zone %u texels", ec.zoned)) +
+                       field_text;
+        } else if (have_flow) {
+          field_text = " (the flow does not span the same two frames)" + field_text;
+        }
       }
       for (int p = 0; p < o.passes; ++p) {
         std::string what;
@@ -1926,7 +2118,71 @@ int run_sequence(const Options& o) {
         ++made;
       }
     }
+    // the queue waits for the unit's frame too, so its readbacks and times follow the flush
+    if (have_flow && !flow.wait_on_queue(err)) return failed("flow: " + err);
     if (!gpu.flush(kWaitMs, err)) return failed(err);
+    if (have_flow) {
+      if (o.sequence_dump_luma) {
+        // the luma the unit was given, as the probe's --save-luma writes it
+        if (!flow.read_luma(flow_raw, err) ||
+            !save_npy(path_join(o.selftest_outdir, npy_name(L"luma-", n)), "|u1", {flow.pad_h, flow.pad_w},
+                      flow_raw.data(), flow_raw.size(), err))
+          return failed("flow: " + err);
+      }
+      if (flow.ready() && o.sequence_dump_flow) {
+        // the int16 pairs over 32 into float32, over the cells of the picture alone, as the
+        // probe's flow-N.npy
+        if (!flow.read_flow(flow_raw, err)) return failed("flow: " + err);
+        const int16_t* pairs = (const int16_t*)flow_raw.data();
+        flow_f.resize((size_t)flow.crop_w * flow.crop_h * 2);
+        for (UINT y = 0; y < flow.crop_h; ++y) {
+          for (UINT x = 0; x < flow.crop_w; ++x) {
+            const int16_t* p = pairs + ((size_t)y * flow.cells_w + x) * 2;
+            flow_f[((size_t)y * flow.crop_w + x) * 2 + 0] = (float)p[0] / 32.0f;
+            flow_f[((size_t)y * flow.crop_w + x) * 2 + 1] = (float)p[1] / 32.0f;
+          }
+        }
+        if (!save_npy(path_join(o.selftest_outdir, npy_name(L"flow-", n)), "<f4", {flow.crop_h, flow.crop_w, 2},
+                      flow_f.data(), flow_f.size() * 4, err))
+          return failed("flow: " + err);
+      }
+      const FlowTimes ft = flow.times();
+      if (ft.luma_valid) luma_ms.push_back(ft.luma_ms);
+      if (flow.ready() && ft.unit_valid) {
+        flow_ms.push_back(ft.copy_in_ms + ft.execute_ms + ft.copy_out_ms);
+        copy_in_ms.push_back(ft.copy_in_ms);
+        execute_ms.push_back(ft.execute_ms);
+        copy_out_ms.push_back(ft.copy_out_ms);
+      }
+    }
+    if (detected) {
+      // what the edge detector found, its list done with the flush
+      EdgeCounts ec;
+      if (!pipeline.edge_counts(ec)) return failed("edges: the detector's counts are not there after the flush");
+      zone_ms.push_back(ec.ms);
+      if (cut) {
+        if (!ec.guarded && ec.zoned > 0) ++cut_frames;
+        double ms = 0.0;
+        if (!pipeline.cut_ms(ms)) return failed("edges: the cut's time is not there after the flush");
+        cut_ms.push_back(ms);
+      }
+      if (o.sequence_dump_zones) {
+        // the zone, 1 inside and 0 elsewhere, as bool, work_h rows of work_w
+        UINT zw = 0, zh = 0;
+        ID3D12Resource* zone = pipeline.zone_texture(zw, zh);
+        if (!zone || zw != ec.w || zh != ec.h) return failed("edges: no zone to read");
+        if (!zone_reader_made) {
+          if (!zone_reader.init(gpu, zone, err)) return failed(err);
+          zone_reader_made = true;
+        }
+        if (!zone_reader.read_raw(zone, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, zh, zw, raw, err) ||
+            !save_npy(path_join(o.selftest_outdir, npy_name(L"zone-", n)), "|b1", {zh, zw}, raw.data(), raw.size(),
+                      err))
+          return failed("edges: " + err);
+        say("sequence zone %04d count %u of %u, limit %u, guarded %s, zoned %u", n, ec.marked, ec.interior, ec.limit,
+            ec.guarded ? "yes" : "no", ec.zoned);
+      }
+    }
     if (have_gen) prep_ms += gen.last_prep_ms();
     if (ready) {
       if (gen_on) draw_ms += gen.last_draw_ms();
@@ -1942,7 +2198,23 @@ int run_sequence(const Options& o) {
   }
   say("sequence done: %d made pictures from %zu sources in %.1f s, in %s", made, sources.size(), now_s() - t0,
       narrow(o.selftest_outdir).c_str());
-  const std::string network_cost = nr_runs > 0 ? strf(", the network %.3f ms", nr_gpu_ms / (double)nr_runs) : "";
+  // the optical flow unit's cost as medians over the frames, its own work on its queue for the
+  // frames it compared and the luma pass for every frame, and the edge detector's for the
+  // frames it ran on
+  const auto median = [](std::vector<double> v) {
+    if (v.empty()) return 0.0;
+    std::sort(v.begin(), v.end());
+    return v.size() % 2 ? v[v.size() / 2] : 0.5 * (v[v.size() / 2 - 1] + v[v.size() / 2]);
+  };
+  const std::string flow_cost =
+      (flow_ms.empty() ? std::string()
+                       : strf(", the flow %.3f ms (copy in %.3f, execute %.3f, copy out %.3f), the luma %.3f ms",
+                              median(flow_ms), median(copy_in_ms), median(execute_ms), median(copy_out_ms),
+                              median(luma_ms))) +
+      (zone_ms.empty() ? std::string() : strf(", the zone %.3f ms", median(zone_ms))) +
+      (cut_ms.empty() ? std::string() : strf(", the cut %.3f ms", median(cut_ms)));
+  const std::string network_cost =
+      (nr_runs > 0 ? strf(", the network %.3f ms", nr_gpu_ms / (double)nr_runs) : std::string()) + flow_cost;
   if (made > 0) {
     say("sequence cost a frame: the conversion %.3f ms, the estimate %.3f ms by the clock (%.3f fine + %.3f coarse "
         "on the card), the warp %.3f ms%s",
@@ -1959,7 +2231,12 @@ int run_sequence(const Options& o) {
                       : "",
         network_cost.c_str());
   }
-  if (model_wants) say("sequence motion: %d of %zu sources handed the network the card's estimate", fed_frames, sources.size());
+  if (model_wants) {
+    // with the unit, how many of them had the edges cut, a zone of one texel or more
+    say("sequence motion: %d of %zu sources handed the network the card's estimate%s", fed_frames, sources.size(),
+        have_flow ? strf(", %d of them with the edges cut", cut_frames).c_str() : "");
+  }
+  flow.shutdown();
   gen.shutdown();
   return 0;
 }

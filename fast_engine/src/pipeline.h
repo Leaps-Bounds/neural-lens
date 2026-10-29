@@ -70,6 +70,7 @@
 #pragma once
 
 #include "common.h"
+#include "edges.h"
 #include "gpu.h"
 
 // Somewhere to draw the finished picture: a swapchain back buffer (window.h) or, in the
@@ -102,6 +103,9 @@ struct ModelMotion {
   bool constant = false;              // one vector everywhere, (cx, cy) in work texels, the
   float cx = 0.0f, cy = 0.0f;         // grid unread: mvconst and mvzero
   bool all_passes = false;            // every pass handed it in the shared mode: mvallpasses
+  // With cut the field is written as zero vectors over the zone of the last detect_edges(),
+  // right after its resolve, the cut at moving edges (Edges cut, see edges.h)
+  bool cut = false;
 };
 
 struct PipelineDesc {
@@ -371,12 +375,38 @@ class Pipeline {
   // first such render at a work size, 14.7 MB at 2560x1440, and kept with that size's
   // textures. Every pass is handed the field, except in the shared mode, where passes 2 and
   // up get zeros, since their history is the same frame's pass before.
+  //
+  // With motion.cut the render also writes zero vectors over the zone right after the
+  // resolve, see edges.h, where a detect_edges() has run since the last render, so the zone
+  // is of the frame being drawn and at the work size in use. Without one, or where the render
+  // resolves no field, nothing is cut.
   void set_model_motion(const ModelMotion& motion);
   // Of the last render() or render_joined(), whether the given pass was handed the field,
   // and the field itself with its size for a test to read back (NON_PIXEL_SHADER_RESOURCE,
   // which a reader returns it to). Null before the first such render.
   bool motion_fed(int pass) const;
   ID3D12Resource* motion_field(UINT& w, UINT& h) const;
+  // Of the last render() or render_joined(), whether the field was cut, see set_model_motion().
+  bool motion_cut() const;
+  // The GPU time of the last cut in ms, true once the GPU has finished the list it was
+  // recorded in. false before the first.
+  bool cut_ms(double& ms) const;
+
+  // The edge detector of the cut at moving edges (edges.h) on the optical flow of the frame being
+  // drawn and the frame before, in a list of its own, executed on the queue and not waited for.
+  // The caller has had the queue wait for the flow. Two such lists take turns, and a list is
+  // recorded again only once the GPU has finished the last one recorded in its place. The zone
+  // and the two textures it is made through are kept with the work size's textures, made at the
+  // first detect at a work size, 3 bytes a work texel. false with err when they cannot be made or
+  // the list fails.
+  bool detect_edges(const EdgeFlow& flow, std::string& err);
+  // What the last detect_edges() found, true once the GPU has finished its list. false before the
+  // first and while it is still on the card.
+  bool edge_counts(EdgeCounts& counts) const;
+  // The zone of the last detect_edges() at the work size in use, R8_UINT, 1 inside it and 0
+  // elsewhere, in NON_PIXEL_SHADER_RESOURCE, which a reader returns it to, for a test to read
+  // back. Null before the first at this work size.
+  ID3D12Resource* zone_texture(UINT& w, UINT& h) const;
   // The same values for every pass. The preset, the shared state and the strength stay as
   // they are. A change of the strength alone keeps the history, since the network is given
   // nothing new.

@@ -45,7 +45,7 @@
 #include <vector>
 
 // Named in the ready line, so a log says which presenter ran.
-#define LENS_FAST_VERSION "0.9.1-fast"
+#define LENS_FAST_VERSION "0.9.2-fast"
 
 // What the process returns. The lens only looks at whether it is still running, the numbers
 // are for a person reading a log.
@@ -275,9 +275,10 @@ struct Options {
   int framegen = 0;          // --framegen off|ahead|between as 0, 1, 2, see framegen.h
   bool framegen_given = false;  // --framegen was given, so off means off in the sequence mode,
                              // where no --framegen has always run between
-  int motion = -1;           // --motion card|none as kMotionCard, kMotionNone: the model's motion
-                             // source in place of NRMotionSource, in every mode, for tests. -1,
-                             // not given: the file's. The lens never passes it
+  int motion = -1;           // --motion card|none|edges as kMotionCard, kMotionNone and kMotionCardEdges,
+                             // the model's motion source in place of NRMotionSource, in every mode,
+                             // for tests. -1 when not given, and then the file's. The lens never
+                             // passes it
   bool settle = true;        // false with --no-settle: a picture that has come to rest is
                              // not put through the network again, see main.cpp
   double lifetime_s = 0.0;   // --lifetime S: leave after S seconds whatever happens, 0 never
@@ -309,6 +310,17 @@ struct Options {
                              // vectors-src-N.bin, with or without frame generation
   bool sequence_dump_fed = false;      // --sequence-dump fed: the field the model was handed as
                              // fed-N.bin, and a line for each source and pass
+  bool sequence_dump_flow = false;     // --sequence-dump flow, with --motion edges, the optical flow
+                             // unit's flow for each source after the first as flow-N.npy, see flow.h
+  bool sequence_dump_luma = false;     // --sequence-dump luma, with --motion edges, the luma the unit
+                             // was given for each source as luma-N.npy
+  bool sequence_dump_zones = false;    // --sequence-dump zones, with --motion edges, the edge detector's
+                             // zone as zone-N.npy for each source it ran on, and a line, see edges.h
+  std::wstring sequence_flow_luma;     // --flow-luma-file DIR, absolute, with --sequence and --motion
+                             // edges, a test. The unit is given DIR\luma-N.npy for source N in
+                             // place of the luma pass's
+  bool flow_info = false;    // --flow-info, print what the engine finds of the optical flow unit and
+                             // leave, see run_flow_info() in flow.h
   bool motion_cases = false; // --motion-cases: print model_motion.h's cases and leave
   std::vector<int> switches; // --switches LIST, with --selftest. The quality steps the test
                              // switches through at its end, in order, as in 5,4,3,2,1,0,4

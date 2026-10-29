@@ -132,9 +132,13 @@
 //                                 with the same "framegen unavailable" line, so the network
 //                                 gets zero vectors and frame generation stays off, see
 //                                 ensure_estimator()
+//   LENS_FAST_NO_FLOW=1           the optical flow unit is refused as on a card without one,
+//                                 with the same "edges unavailable" line, so Edges cut hands
+//                                 the network the card's estimate whole, see ensure_flow()
 #include "capture.h"
 #include "capturetest.h"
 #include "common.h"
+#include "flow.h"
 #include "framegen.h"
 #include "gpu.h"
 #include "model_motion.h"
@@ -482,6 +486,14 @@ struct Profile {
   int same = 0;               // of the frames drawn so, the ones found the same as the last
   double est_ms = 0.0;        // the fine motion estimates' time on the video engine, see
   int ests = 0;               // read_estimate_time()
+  double flow_ms = 0.0;       // the optical flow unit's time with its two copies, for the frames
+  int flows = 0;              // it compared, see read_edges()
+  double luma_ms = 0.0;       // and on the shader cores, its luma pass, the edge detector and
+  int lumas = 0;              // the cut, each for the frames it ran on
+  double zone_ms = 0.0;
+  int zones = 0;
+  double cut_ms = 0.0;
+  int cuts = 0;
 };
 
 // Every present is followed to the screen. DXGI's frame statistics say which refresh showed
@@ -759,6 +771,18 @@ struct State {
   MotionPair pair;               // which frames the last estimate lies between, and the network's last
   int motion_fed = 0;            // this second: runs of the network handed the card's estimate
   bool est_unread = false;       // an estimate was submitted whose time the profile has not read
+
+  // ---- the cut at moving edges, Edges cut, see flow.h, edges.h and model_motion.h
+  Flow flow;                     // the card's optical flow unit, made at the first need, see ensure_flow()
+  bool flow_made = false;        // flow.init() succeeded
+  bool flow_refused = false;     // it failed, or it was given up in the middle of a run, and it is not
+  std::string flow_why;          // tried again. Edges cut runs as Card from then on, for this reason
+  bool flow_unread = false;      // a submit whose times have not been read, see read_edges()
+  bool flow_executed = false;    // and whether it compared the frame with the one before
+  bool edges_unread = false;     // a detect whose counts have not been read
+  bool cut_handed = false;       // the render after it ran the network on a field with the cut
+  int cut_fed = 0;               // runs of the network this second handed a field with the edges cut
+  int guarded = 0;               // frames this second whose zone the guard emptied
 
   // ---- the screenshot's writer
   HANDLE shot_thread = nullptr;  // the last one started, kept so the way out can wait for it
@@ -1091,6 +1115,7 @@ void drop_frames(State& s) {
   if (!s.gpu.flush(3000, err)) die(s, "wait for the GPU: " + err);
   resolve_joined(s);  // every joined draw is done now, and its answer is about frames that go
   s.pipeline.drop_frames();
+  s.flow.forget();  // its last frame goes with them, so the next one is only taken
   s.have = false;
   s.have_cur = false;
   s.changed_run = 0;
@@ -1190,6 +1215,7 @@ void watch_colour(State& s) {
 void do_pause(State& s) {
   if (s.paused) return;
   s.gen.forget();
+  s.flow.forget();
   s.gen_armed = false;
   s.paused = true;
   step("pause");
@@ -1225,6 +1251,7 @@ void do_resume(State& s) {
 void recapture(State& s) {
   s.want_recapture = false;
   s.gen.forget();
+  s.flow.forget();
   s.gen_armed = false;
   if (s.paused || !s.capturing) return;  // "resume" starts it with the limit as it is then
   s.refresh_hz = s.window.refresh_hz();
@@ -1263,6 +1290,7 @@ void stop_capture(State& s) {
 // its history.
 void move_crop(State& s, int x, int y) {
   s.gen.forget();
+  s.flow.forget();
   s.gen_armed = false;
   const long long dx = std::llabs((long long)x - s.crop_x);
   const long long dy = std::llabs((long long)y - s.crop_y);
@@ -1289,6 +1317,7 @@ void want_shot(State& s, const std::wstring& base) {
 // screen goes through render once more and the change shows at once, over a still too.
 void switch_network(State& s, bool on) {
   s.gen.forget();
+  s.flow.forget();
   s.gen_armed = false;
   if (!s.network) return;  // LENS_FAST_NO_NETWORK=1: there is none to switch
   if (on == s.pipeline.nr_on()) return;
@@ -1316,12 +1345,19 @@ void switch_settle(State& s, bool on) {
 // reload changes the source, see model_motion.h.
 void note_motion(const State& s) {
   const char* why = s.o.motion >= 0 ? "--motion" : "NRMotionSource";
-  if (s.settings.look.motion_source != kMotionCard) {
+  const int source = s.settings.look.motion_source;
+  if (!takes_card_estimate(source)) {
     note("loop: the network gets no motion vectors, as %s says", why);
   } else if (!s.network) {
     note("loop: there is no network to hand the card's motion estimate to");
   } else if (s.gen_refused) {
     note("loop: the network gets no motion vectors, since the card has no motion estimator the engine can use");
+  } else if (source == kMotionCardEdges && s.flow_refused) {
+    note("loop: the network gets the card's motion estimate whole, since the optical flow unit is unavailable (%s)",
+         s.flow_why.c_str());
+  } else if (source == kMotionCardEdges) {
+    note("loop: the network gets the card's motion estimate with the edges cut by the optical flow unit, as %s says",
+         why);
   } else {
     note("loop: the network gets the card's motion estimate as its motion vectors, as %s says", why);
   }
@@ -1335,6 +1371,7 @@ void note_motion(const State& s) {
 // the pictures go on, see switch_quality().
 void reload_settings(State& s) {
   s.gen.forget();
+  s.flow.forget();
   s.gen_armed = false;
   NrPasses fresh;
   std::string err;
@@ -1346,7 +1383,8 @@ void reload_settings(State& s) {
   // the look's values are not part of same_passes(), since a change of them alone remakes
   // nothing: the pipeline takes them live, see Pipeline::set_settings, and the picture is
   // drawn afresh with them. The motion's source is one of them: the estimator is made at the
-  // next new frame that wants it, see estimate_motion()
+  // next new frame that wants it, see estimate_motion(), and for Edges cut the optical flow
+  // unit after it, see ensure_flow(), which forgot its frames above as the estimator did
   const bool look_changed = !same_look(fresh.look, s.settings.look);
   const bool motion_changed = fresh.look.motion_source != s.settings.look.motion_source;
   if (same_passes(fresh, s.settings, s.o.passes) && !look_changed) return;
@@ -1670,6 +1708,101 @@ void read_estimate_time(State& s) {
   }
 }
 
+// The optical flow unit for Edges cut, made at the start or at the first new frame that wants
+// it once the estimator is made, whose picture it takes the luma at, see flow.h. A card or
+// driver without one the engine can use leaves Edges cut running as Card, with a line for the
+// lens, said once, and give_up_flow() does the same for a unit that fails in the middle of a
+// run. LENS_FAST_NO_FLOW=1 refuses it the same way, for a test. While the pipeline makes a
+// network on its own thread (a quality switch or a remake) the unit waits for a frame after
+// it, since its check of the modules the Vulkan setup brings in would take a module that
+// thread loads for a layer.
+bool ensure_flow(State& s) {
+  if (s.flow_refused) return false;  // refused, or given up in the middle of a run, see give_up_flow()
+  if (s.flow_made) return true;
+  if (!s.gen_ready || s.switching) return false;
+  std::string err;
+  const double t0 = now_s();
+  bool made = false;
+  if (env_text(L"LENS_FAST_NO_FLOW") == L"1") {
+    err = "the optical flow unit is switched off for a test";
+  } else {
+    s.flow.sdr_white = (float)sdr_white_units(s);
+    made = s.flow.init(s.gpu, (UINT)s.o.width, (UINT)s.o.height, s.gen.me_width(), s.gen.me_height(), err);
+    for (const std::string& line : s.flow.report()) note("loop: flow: %s", line.c_str());
+  }
+  if (!made) {
+    note("loop: edges: %s, so the network gets the card's motion estimate whole", err.c_str());
+    say("edges unavailable %s", err.c_str());
+    s.flow_refused = true;
+    s.flow_why = err;
+    return false;
+  }
+  s.flow_made = true;
+  note("loop: edges: the optical flow unit works at %ux%u in %ux%u cells, made in %.1f ms", s.flow.me_w,
+       s.flow.me_h, s.flow.crop_w, s.flow.crop_h, (now_s() - t0) * 1000.0);
+  return true;
+}
+
+// The unit failed in the middle of a run, a Vulkan error, a device lost or a wait that timed
+// out, or it was handed a frame of a size or format it was not made for. Where it had begun the
+// frame it has signalled its fence from the CPU, so no queue waits for ever (Flow::stop). It is
+// given up, and ensure_flow() answers false from then on, so the line is said once, as for a
+// refusal, and Edges cut runs as Card from the next frame. The unit's parts stay until the
+// engine leaves.
+void give_up_flow(State& s, const std::string& err) {
+  note("loop: edges: %s, so the network gets the card's motion estimate whole from now on", err.c_str());
+  say("edges unavailable %s", err.c_str());
+  s.flow_refused = true;
+  s.flow_why = err;
+  s.flow_unread = false;
+}
+
+// What the optical flow unit and the edge detector did for the last new frame, into the
+// second's figures for the stats line. That is the frames the guard emptied, the runs of the
+// network handed a field with the edges cut, and for the profile the unit's time and the
+// shader cores' times of the luma pass, the detector and the cut. A part the card has not
+// finished yet is read at the next call. final drops it all the same, since the frame about to
+// be drawn puts its own work in its place.
+void read_edges(State& s, bool final) {
+  Profile& p = s.profile;
+  if (s.flow_unread) {
+    const FlowTimes t = s.flow.times();
+    if (t.luma_valid && (t.unit_valid || !s.flow_executed)) {
+      p.luma_ms += t.luma_ms;
+      ++p.lumas;
+      if (s.flow_executed) {
+        p.flow_ms += t.copy_in_ms + t.execute_ms + t.copy_out_ms;
+        ++p.flows;
+      }
+      s.flow_unread = false;
+    } else if (final) {
+      s.flow_unread = false;
+    }
+  }
+  if (s.edges_unread) {
+    EdgeCounts ec;
+    double cut_ms = 0.0;
+    const bool counted = s.pipeline.edge_counts(ec);
+    const bool cut_timed = !s.cut_handed || s.pipeline.cut_ms(cut_ms);
+    if (counted && cut_timed) {
+      if (ec.guarded) {
+        ++s.guarded;
+      } else if (s.cut_handed && ec.zoned > 0) {
+        ++s.cut_fed;
+      }
+      p.zone_ms += ec.ms;
+      ++p.zones;
+      if (s.cut_handed) {
+        p.cut_ms += cut_ms;
+        ++p.cuts;
+      }
+      s.edges_unread = false;
+    } else if (final) {
+      s.edges_unread = false;
+    }
+  }
+}
+
 // The card's last estimate as the network's motion vectors, see Pipeline::set_model_motion.
 ModelMotion estimate_for_network(const FrameGen& gen) {
   ModelMotion m;
@@ -1688,11 +1821,18 @@ ModelMotion estimate_for_network(const FrameGen& gen) {
 // network reads it in that list. Nothing when none of the three wants it. joined: the frame
 // goes as a joined draw, whose network gets zero vectors and so wants no estimate, see
 // model_motion.h. A new frame of either kind, so the frames are counted here.
+//
+// With Edges cut, in this order after the estimate's prep list (see flow.h and edges.h): the
+// optical flow unit's luma list on the queue and its work on its own queue, the queue's wait
+// for its flow and the edge detector's list where the cut applies to this frame, and only then
+// the queue's wait for the estimate. So the unit and the detector run while the video engine
+// still estimates, and nothing more waits on the CPU.
 void estimate_motion(State& s, bool joined) {
   s.gen_estimated = false;
   s.pair.new_frame();
-  const bool model_wants =
-      !joined && s.settings.look.motion_source == kMotionCard && s.pipeline.network_runs();
+  read_edges(s, true);  // the last frame's, before this one's work takes its place
+  const int source = s.settings.look.motion_source;
+  const bool model_wants = !joined && takes_card_estimate(source) && s.pipeline.network_runs();
   const bool wanted = motion_wanted(s.framegen, s.settings.look.wants_motion(), model_wants);
   if (!wanted || !ensure_estimator(s)) {
     s.pipeline.set_motion(nullptr, 0, 0, 1.0f, 0.0f);
@@ -1715,8 +1855,39 @@ void estimate_motion(State& s, bool joined) {
   s.capture.note_read(s.cur, read_value);  // the conversion reads the frame
   s.gen_estimated = ready;
   if (ready) s.est_unread = true;
+  // the optical flow unit on the same frame, for Edges cut
+  const bool edges = model_wants && source == kMotionCardEdges && ensure_flow(s);
+  if (edges) {
+    step("flow");
+    s.flow.sdr_white = (float)sdr_white_units(s);
+    UINT64 flow_read = 0;
+    const bool ok = s.flow.submit(s.cur.texture, nullptr, flow_read, err);
+    if (ok) {
+      s.capture.note_read(s.cur, flow_read);  // the luma pass reads the frame
+      s.flow_unread = true;
+      s.flow_executed = s.flow.ready();
+    } else {
+      give_up_flow(s, err);
+    }
+    s.pair.flowed(ok, ok && s.flow.ready());
+  }
   const bool look = ready && s.settings.look.wants_motion();
   const bool feed = feed_model(s.pair, model_wants, joined, ready);
+  // the edge detector where the cut applies to this frame, its flow spanning the estimate's
+  // two frames
+  bool cut = edges && feed && s.pair.cut_ok();
+  if (cut) {
+    step("edges");
+    if (!s.flow.wait_on_queue(err)) die(s, "flow: " + err);
+    if (s.pipeline.detect_edges(edge_flow_of(s.flow), err)) {
+      s.edges_unread = true;
+    } else {
+      std::string alive;
+      if (!s.gpu.alive(alive)) die(s, "edges: " + err);
+      note("loop: edges: %s, this frame gets the card's motion estimate whole", err.c_str());
+      cut = false;
+    }
+  }
   if ((look || feed) && !s.gen.wait_estimate_on_queue(err)) die(s, "framegen: " + err);
   if (look) {
     s.pipeline.set_motion(s.gen.vectors_texture(), s.gen.vec_width(), s.gen.vec_height(),
@@ -1724,7 +1895,11 @@ void estimate_motion(State& s, bool joined) {
   } else {
     s.pipeline.set_motion(nullptr, 0, 0, 1.0f, 0.0f);
   }
-  if (feed) s.pipeline.set_model_motion(estimate_for_network(s.gen));
+  if (feed) {
+    ModelMotion mm = estimate_for_network(s.gen);
+    mm.cut = cut;
+    s.pipeline.set_model_motion(mm);
+  }
 }
 
 // "framegen off|ahead|between" and --framegen, see framegen.h. The estimator is made at the
@@ -1736,6 +1911,7 @@ void set_framegen(State& s, int mode) {
   s.framegen = mode;
   s.gen_armed = false;
   s.gen.forget();
+  s.flow.forget();
   note("loop: framegen %s", framegen_name(mode));
 }
 
@@ -2352,6 +2528,9 @@ void draw(State& s, Draw how) {
     s.pair.drew(ran_network);
     if (s.pipeline.motion_fed(0)) ++s.motion_fed;
   }
+  // whether the new frame's network ran on a field with the edges cut, which read_edges()
+  // counts once the detector's counts are in
+  if (how == Draw::New || how == Draw::Joined) s.cut_handed = s.pipeline.motion_fed(0) && s.pipeline.motion_cut();
 
   // Frame generation, see framegen.h: the finished picture is copied before the present, the
   // motion having been estimated before the render, see estimate_motion(). For "between" the
@@ -2688,6 +2867,7 @@ void report(State& s, double now) {
   // the answers and the times of what the GPU has finished go into this second's line
   resolve_joined(s);
   read_stage_times(s, false);
+  read_edges(s, false);
 
   // The median of the second, the upper one of an even count, as the Python loop took it.
   // "nan" is spelled out, since the lens reads the number with Python's float(), which does
@@ -2736,6 +2916,16 @@ void report(State& s, double now) {
   } else {
     extra = delay;
   }
+  // With the profile, after cut= at the end of the line: guard, the frames whose zone the edge
+  // detector's guard emptied, flow, the optical flow unit's time with its two copies, a mean
+  // over the frames it compared, and edge, the shader cores' times of its luma pass, the
+  // detector and the cut, each a mean over the frames it ran on, added together, see
+  // read_edges()
+  const auto mean = [](double sum, int n) { return n > 0 ? sum / n : 0.0; };
+  const std::string edges_text =
+      s.o.profile ? strf(" guard=%d flow=%.2f edge=%.2f", s.guarded, mean(p.flow_ms, p.flows),
+                         mean(p.luma_ms, p.lumas) + mean(p.zone_ms, p.zones) + mean(p.cut_ms, p.cuts))
+                  : std::string();
   p = Profile();  // a draw still on the GPU is read in the next second
   // shared: whether the passes run through the first pass's feature, as on the ready line,
   // so the lens learns the state a reload gave, once the features were made again for it
@@ -2754,6 +2944,9 @@ void report(State& s, double now) {
   // their motion vectors, see model_motion.h. 0 with NRMotionSource at 0, on a card without a
   // motion estimator, and when nothing moved
   extra += strf(" motion=%d", s.motion_fed);
+  // cut counts those runs that were handed a field with the edges cut, a zone of one texel or
+  // more, see edges.h. 0 but with Edges cut
+  extra += strf(" cut=%d", s.cut_fed) + edges_text;
   const std::string line = strf("stats new=%d arrived=%u repeated=%d dropped=%u skipped=%d meter=%s%s", s.fresh,
                                 c.arrived, s.repeated, c.dropped, s.skipped, meter.c_str(), extra.c_str());
   say("%s", line.c_str());
@@ -2763,6 +2956,7 @@ void report(State& s, double now) {
   s.fresh = s.repeated = s.skipped = s.late = s.settled = s.left = 0;
   s.generated = s.gen_dropped = 0;
   s.motion_fed = 0;
+  s.cut_fed = s.guarded = 0;
   s.t_report = now;
   // It follows a change of the display's mode, and under a limit the capture's interval
   // and the limit's allowances follow with it.
@@ -2830,6 +3024,7 @@ void report_paused(State& s, double now) {
   s.fresh = s.repeated = s.skipped = s.late = s.settled = s.left = 0;
   s.generated = s.gen_dropped = 0;
   s.motion_fed = 0;
+  s.cut_fed = s.guarded = 0;
   s.t_report = now;
 }
 
@@ -2997,6 +3192,8 @@ void turn(State& s) {
   if (s.gpu.flush(3000, err)) {
     s.pipeline.shutdown();
     s.gen.shutdown();
+    // after the pipeline, whose detect lists read its flow buffer, and before the device goes
+    s.flow.shutdown();
     s.capture.destroy();
     s.window.destroy();
   } else {
@@ -3233,8 +3430,10 @@ void start(State& s) {
   if (!start_capture(s, err)) die(s, "capture: " + err);
   if (o.framegen > 0) set_framegen(s, o.framegen);
   // The estimator is made now when the network is to be handed its estimate, so the first
-  // picture that moves does not stand still while it is made, see estimate_motion()
-  if (s.network && s.settings.look.motion_source == kMotionCard) ensure_estimator(s);
+  // picture that moves does not stand still while it is made, see estimate_motion(), and with
+  // Edges cut the optical flow unit after it, see ensure_flow()
+  if (s.network && takes_card_estimate(s.settings.look.motion_source)) ensure_estimator(s);
+  if (s.network && s.settings.look.motion_source == kMotionCardEdges && s.gen_ready) ensure_flow(s);
   note_motion(s);
 
   const int passes = s.network ? o.passes : 0;
@@ -3279,6 +3478,13 @@ int wmain(int argc, wchar_t** argv) {
     return exit_code::ok;
   }
   if (o.motion_cases) return run_motion_cases();
+  // --flow-info has had the Vulkan loader and the driver's DLLs loaded, so it leaves the way the
+  // engine does
+  if (o.flow_info) {
+    const int code = run_flow_info(o);
+    fflush(nullptr);
+    leave_now(code);
+  }
   // The two tests may have had the runtime or the capture loaded, so they leave the way the
   // engine does, see leave_now(). The streams are flushed first for whatever they wrote
   // through the C runtime.

@@ -33,6 +33,8 @@ rem
 rem Flags: /std:c++20 /O2 /MT /EHsc /W3. The C runtime is linked statically because the
 rem installed lens ships no MSVC runtime DLLs. A module that needs a system library the list
 rem below does not have names it in its own source with #pragma comment(lib, "name.lib").
+rem The Vulkan headers come from third_party\vulkan\include, The Khronos Group's files
+rem unchanged, see third_party\vulkan\README.txt. No Vulkan library is linked.
 rem
 rem The compiler comes from the vcvars64.bat of a Visual Studio with the workload "Desktop
 rem development with C++". The first of these that exists is used:
@@ -74,7 +76,7 @@ if errorlevel 1 goto :old_sdk
 
 setlocal EnableDelayedExpansion
 
-set "CFLAGS=/nologo /std:c++20 /O2 /MT /EHsc /W3 /utf-8 /MP /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS /Isrc /Ibuild\shaders"
+set "CFLAGS=/nologo /std:c++20 /O2 /MT /EHsc /W3 /utf-8 /MP /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS /Isrc /Ibuild\shaders /Ithird_party\vulkan\include"
 rem kernel32 and user32 come before windowsapp so the classic imports stay with the classic
 rem DLLs: windowsapp.lib, which C++/WinRT needs, would otherwise answer for them first
 set "LIBS=kernel32.lib user32.lib gdi32.lib advapi32.lib ole32.lib d3d12.lib dxgi.lib d3d11.lib dcomp.lib windowscodecs.lib windowsapp.lib"

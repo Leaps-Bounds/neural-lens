@@ -26,6 +26,13 @@
 //     submitted before its list waits for the capture's copy
 //   - in the shared mode, passes 2 and up, whose history is the same frame's pass before
 //   - NRMotionSource at 0, and a card without a motion estimator
+//
+// With NRMotionSource at 2, Edges cut, a render handed the estimate is also handed the cut,
+// zero vectors within 16 work texels of the edges the optical flow unit finds (edges.h), where
+// the unit's flow spans the same two frames as the estimate (cut_ok). A render whose flow does
+// not, or whose frame went over the guard, gets the estimate whole. That is the unit's first
+// frame after it was made or forgot, a frame whose flow failed and the frame after it, and
+// every frame once the unit was refused or given up.
 #pragma once
 
 // Whether the motion estimator runs for a new frame: frame generation is on, the Look stage's
@@ -35,19 +42,24 @@ inline bool motion_wanted(int framegen, bool look_wants, bool model_wants) {
   return framegen > 0 || look_wants || model_wants;
 }
 
-// Which frames the last estimate lies between, and which frame the network last evaluated.
-// Frames are numbered by serial, one up for every new frame, as the loop draws it.
+// Which frames the last estimate lies between, which frames the optical flow unit's last flow
+// lies between, and which frame the network last evaluated. Frames are numbered by serial,
+// one up for every new frame, as the loop draws it.
 struct MotionPair {
-  unsigned long long serial = 0;    // the frame being drawn
-  unsigned long long est_last = 0;  // the frame the estimator last converted, 0 unknown
-  unsigned long long est_from = 0;  // the frames the estimate for this frame lies between,
-  unsigned long long est_to = 0;    // 0 when this frame has none
-  unsigned long long nr_hist = 0;   // the frame the network last evaluated, 0 none
+  unsigned long long serial = 0;     // the frame being drawn
+  unsigned long long est_last = 0;   // the frame the estimator last converted, 0 unknown
+  unsigned long long est_from = 0;   // the frames the estimate for this frame lies between,
+  unsigned long long est_to = 0;     // 0 when this frame has none
+  unsigned long long flow_last = 0;  // the frame the optical flow unit last took, 0 unknown
+  unsigned long long flow_from = 0;  // the frames the flow for this frame lies between, 0
+  unsigned long long flow_to = 0;    // when this frame has none
+  unsigned long long nr_hist = 0;    // the frame the network last evaluated, 0 none
 
   // A new frame is about to be drawn, as new or joined.
   void new_frame() {
     ++serial;
     est_from = est_to = 0;
+    flow_from = flow_to = 0;
   }
   // FrameGen::estimate() for this frame: ok false when it failed, ready true when it
   // estimated the motion from the frame it converted before.
@@ -62,8 +74,23 @@ struct MotionPair {
     }
     est_last = serial;
   }
+  // Flow::submit() for this frame, the mirror of estimated(). ok is false when it failed, and
+  // ready true when the unit compared the frame with the one it took before.
+  void flowed(bool ok, bool ready) {
+    if (!ok) {
+      flow_last = 0;
+      return;
+    }
+    if (ready) {
+      flow_from = flow_last;
+      flow_to = serial;
+    }
+    flow_last = serial;
+  }
   // This frame's estimate starts from the frame the network last evaluated.
   bool pair_ok() const { return est_to == serial && est_from != 0 && est_from == nr_hist; }
+  // And the unit's flow spans the same two frames, so the edges it finds are the estimate's.
+  bool cut_ok() const { return pair_ok() && flow_to == serial && flow_from == est_from; }
   // A draw has been made of the frame being drawn, the network run in it or not: new,
   // joined, settle and again alike, since all of them run on this frame.
   void drew(bool ran_network) {

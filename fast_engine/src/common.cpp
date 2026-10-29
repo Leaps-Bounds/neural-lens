@@ -198,17 +198,19 @@ const char kUsage[] =
     "                [--crop X Y] [--title T] [--exclude] [--ready] [--max-fps N]\n"
     "                [--data DIR] [--passes N] [--quality N] [--present hwnd|dcomp]\n"
     "                [--framegen off|ahead|between] [--no-settle] [--lifetime S]\n"
-    "                [--work-size W H | --work-scale S | --work-max W H] [--motion card|none]\n"
+    "                [--work-size W H | --work-scale S | --work-max W H]\n"
+    "                [--motion card|none|edges]\n"
     "  lens-fast.exe --stack DIR --selftest IMAGE OUTDIR [--passes N] [--quality N]\n"
     "                [--work-size W H | --work-scale S | --work-max W H] [--data DIR]\n"
     "                [--switches LIST] [--switch-frames N] [--switch-rest S]\n"
     "  lens-fast.exe --stack DIR --sequence DIR OUTDIR --framegen off|ahead|between\n"
     "                [--sequence-stride N] [--sequence-nr] [--quality N] [--data DIR]\n"
     "                [--sequence-save nr] [--sequence-settle K] [--sequence-dump LIST]\n"
-    "                [--motion card|none]\n"
+    "                [--motion card|none|edges] [--flow-luma-file DIR]\n"
     "  lens-fast.exe --at X Y --size W H --capturetest SECONDS [--crop X Y] [--max-fps N]\n"
     "  lens-fast.exe --steps W H\n"
     "  lens-fast.exe --motion-cases\n"
+    "  lens-fast.exe --flow-info [--at X Y --size W H]\n"
     "  lens-fast.exe --help\n"
     "\n"
     "  --source monitor:<n>  monitor capture. n counts from 1 and is only repeated in\n"
@@ -245,10 +247,13 @@ const char kUsage[] =
     "                        frame of it, see framegen.h. Off unless given\n"
     "  --no-settle           do not run the network again on a picture that has come to\n"
     "                        rest (it runs up to 4 more times, see settle below)\n"
-    "  --motion card|none    for tests, where the network's motion vectors come from, in\n"
+    "  --motion card|none|edges\n"
+    "                        for tests, where the network's motion vectors come from, in\n"
     "                        place of NRMotionSource in the stack's ReShade.ini. card is\n"
-    "                        the card's own motion estimate and none is zero vectors. The\n"
-    "                        lens never passes it\n"
+    "                        the card's own motion estimate, edges the same with the\n"
+    "                        motion left out near the edges of moving things that the\n"
+    "                        card's optical flow unit finds, see flow.h and edges.h, and\n"
+    "                        none is zero vectors. The lens never passes it\n"
     "  --lifetime S          leave after S seconds whatever happens, for tests\n"
     "  --selftest IMAGE OUTDIR\n"
     "                        run IMAGE through the pipeline with no window and no\n"
@@ -275,12 +280,25 @@ const char kUsage[] =
     "                        reset, rendered K times at rest with zero vectors and written as\n"
     "                        settled-N, then 8 more times and written as settled2-N. Nothing\n"
     "                        is estimated and no picture is made\n"
-    "  --sequence-dump LIST  with --sequence, one or both of these with a comma between\n"
+    "  --sequence-dump LIST  with --sequence, one or more of these with commas between\n"
     "                          vectors  each source's motion estimate as vectors-src-N.bin,\n"
     "                                   int16 pairs, one a block, rows tight\n"
     "                          fed      the vectors the network was handed as fed-N.bin,\n"
     "                                   float16 pairs, one a work texel, rows tight, and a\n"
     "                                   line for each source and pass saying what it got\n"
+    "                          flow     with --motion edges, the optical flow unit's flow for\n"
+    "                                   each source after the first as flow-N.npy, float32,\n"
+    "                                   cells down by cells across by 2, one a block of 4 by 4\n"
+    "                                   texels of the motion estimator's picture, in its texels\n"
+    "                          luma     with --motion edges, the luma the unit was given for\n"
+    "                                   each source as luma-N.npy, uint8, the estimator's\n"
+    "                                   picture padded to multiples of 8\n"
+    "                          zones    with --motion edges, the edge detector's zone for each\n"
+    "                                   source it ran on as zone-N.npy, bool, the work size,\n"
+    "                                   and a line for each with its count of marked texels\n"
+    "                                   16 or more from the picture's edge, the guard's limit\n"
+    "                                   on it, whether the guard emptied the zone and the\n"
+    "                                   zone's texels\n"
     "  --sequence-lab LIST   with --sequence, research switches, a comma list: nocoarse\n"
     "                        (no coarser estimates), levels1, levels2 (one or two of the three),\n"
     "                        fixedgate (the warp's gate at six levels whatever the noise),\n"
@@ -288,8 +306,13 @@ const char kUsage[] =
     "                        round), mvscale:S (each one times S), mvconst:DX:DY (one vector\n"
     "                        everywhere, in work texels), mvzero (zeros handed the way the\n"
     "                        estimate is), mvallpasses (every pass handed them in the shared\n"
-    "                        mode, where only the first is) and noestimator (no motion\n"
-    "                        estimator)\n"
+    "                        mode, where only the first is), noestimator (no motion\n"
+    "                        estimator) and noflow (no optical flow unit, so --motion edges\n"
+    "                        runs as card)\n"
+    "  --flow-luma-file DIR  with --sequence and --motion edges, for tests, the optical flow\n"
+    "                        unit is given DIR\\luma-N.npy for source N in place of its own\n"
+    "                        luma of the frame, as --sequence-dump luma writes it. A missing\n"
+    "                        or wrong file fails the run\n"
     "  --switches LIST       with --selftest, at the end switch through these quality\n"
     "                        steps in order, as in 5,3,2,1,0,4, and keep a picture of each\n"
     "  --switch-frames N     frames drawn at each of them (421). Under 100 no picture is\n"
@@ -300,8 +323,14 @@ const char kUsage[] =
     "  --steps W H           print the six steps' work sizes for a W x H picture and\n"
     "                        leave. It may be given several times\n"
     "  --motion-cases        print, for a few scripted runs of frames, which renders hand\n"
-    "                        the network the card's motion estimate and which zeros, one\n"
-    "                        line a case, and leave\n"
+    "                        the network the card's motion estimate, which hand it the\n"
+    "                        estimate with the edges cut under --motion edges and which\n"
+    "                        zeros, one line a case, and leave\n"
+    "  --flow-info           print what the engine finds of the card's optical flow unit on\n"
+    "                        the monitor under --at and --size, or on the main monitor: the\n"
+    "                        Vulkan loader, the modules it brought in, the device and the\n"
+    "                        unit, with two blank frames through it, and leave, 0 when the\n"
+    "                        unit can be used and 2 when not\n"
     "  --help                this text\n"
     "An option it does not know is ignored with a note on stderr.\n"
     "\n"
@@ -324,10 +353,10 @@ const char kUsage[] =
     "               together by the strength, once the last pass has run, since the\n"
     "               network itself does no more above an intensity of 1. NRMotionSource\n"
     "               in [RenoDX.DLSS5] says where the network's motion vectors come from,\n"
-    "               1 the card's own motion estimate and 0 none, and a change of it is\n"
-    "               taken from the next new frame on. The start reads the same. A new\n"
-    "               preset or shared state makes the features again, as quality does,\n"
-    "               while the pictures go on\n"
+    "               1 the card's own motion estimate, 2 the same with the edges cut and\n"
+    "               0 none, and a change of it is taken from the next new frame on. The\n"
+    "               start reads the same. A new preset or shared state makes the features\n"
+    "               again, as quality does, while the pictures go on\n"
     "  settle 1|0   on by default. When a picture that changed over 1/32 of its area or\n"
     "               more has stood still for 150 ms, the network runs on it up to 4\n"
     "               more times, so a still picture reaches the network's settled state.\n"
@@ -363,7 +392,7 @@ const char kUsage[] =
     "                        they were made, in the state named, which the stats line\n"
     "                        keeps saying. A reload that changes the state asks again\n"
     "  stats new=N arrived=N repeated=N dropped=N skipped=N meter=MS delay=MS shared=on|off\n"
-    "        network=MS generated=N preset=N look=L motion=N\n"
+    "        network=MS generated=N preset=N look=L motion=N cut=N\n"
     "                        once a second. meter is the time in ms from a captured\n"
     "                        frame's timestamp to the present call, negative because the\n"
     "                        timestamp is a refresh still to come. delay is the time in\n"
@@ -377,10 +406,18 @@ const char kUsage[] =
     "                        use were made with, 0 without a network. look is 1 while\n"
     "                        the Look stage changes the network's picture. motion is the\n"
     "                        network's runs in the second that were handed the card's\n"
-    "                        motion estimate, 0 where it gets none or nothing moved. With\n"
+    "                        motion estimate, 0 where it gets none or nothing moved. cut\n"
+    "                        is those of them that had the edges cut, with a zone of one\n"
+    "                        texel or more, which only Edges cut gives. With\n"
     "                        LENS_PRESENTER_PROFILE=1 more pairs come before shared, the\n"
     "                        last of them est, the motion estimate's time in ms on the\n"
-    "                        card's video engine, 0 where none was made or none timed\n"
+    "                        card's video engine, 0 where none was made or none timed,\n"
+    "                        and three come after cut, guard, the frames whose zone the\n"
+    "                        guard emptied, flow, the optical flow unit's time in ms with\n"
+    "                        its two copies, the mean over the frames it compared, and\n"
+    "                        edge, the time in ms of the luma, the edge detector and the\n"
+    "                        cut on the card's shader cores, each the mean over the frames\n"
+    "                        it ran on, added together, 0 where none ran\n"
     "  paused | resumed | shot done ... | shot failed REASON\n"
     "  probe n=N median=M max=X | capture lost REASON | engine failed REASON\n";
 
@@ -634,12 +671,13 @@ bool read_nr_passes(const std::wstring& stack_dir, NrPasses& out, std::string& e
     k.detail_stability = stability >= 0 && stability <= 2 ? stability : 1;
     k.keep_blacks = (int)section_number(addon, L"NRKeepBlacks", 0.0f) != 0 ? 1 : 0;
     // the source of the model's motion vectors, the engine's own key like NRKeepBlacks, read
-    // always: cut to a whole number as the lens's choices are, and anything but 0 or 1 is the
-    // default, see look_settings.h
+    // always, cut to a whole number as the lens's choices are, and anything but 0, 1 or 2 is
+    // the default, see look_settings.h
     {
       const float value = section_number(addon, L"NRMotionSource", (float)kMotionSourceDefault);
-      const int source = value > -2.0f && value < 2.0f ? (int)value : -1;
-      k.motion_source = source == kMotionNone || source == kMotionCard ? source : kMotionSourceDefault;
+      const int source = value > -2.0f && value < 3.0f ? (int)value : -1;
+      k.motion_source =
+          source == kMotionNone || source == kMotionCard || source == kMotionCardEdges ? source : kMotionSourceDefault;
     }
     if ((int)section_number(addon, L"NRLookMode", 0.0f) != 0) {
       k.tone = std::clamp(section_number(addon, L"NRLookTone", 1.0f), 0.0f, 2.0f);
@@ -930,12 +968,18 @@ bool parse_options(int argc, wchar_t** argv, Options& out, std::string& err) {
       if (!values(1)) return false;
       if (_wcsicmp(v[0].c_str(), L"card") == 0) o.motion = kMotionCard;
       else if (_wcsicmp(v[0].c_str(), L"none") == 0) o.motion = kMotionNone;
+      else if (_wcsicmp(v[0].c_str(), L"edges") == 0) o.motion = kMotionCardEdges;
       else {
-        err = "--motion needs card or none";
+        err = "--motion needs card, none or edges";
         return false;
       }
     } else if (a == L"--motion-cases") {
       o.motion_cases = true;
+    } else if (a == L"--flow-info") {
+      o.flow_info = true;
+    } else if (a == L"--flow-luma-file") {
+      if (!values(1)) return false;
+      o.sequence_flow_luma = absolute(v[0]);
     } else if (a == L"--no-settle") {
       o.settle = false;
     } else if (a == L"--lifetime") {
@@ -993,18 +1037,21 @@ bool parse_options(int argc, wchar_t** argv, Options& out, std::string& err) {
       o.sequence_settle = (int)n;
     } else if (a == L"--sequence-dump") {
       if (!values(1)) return false;
-      // a comma list of vectors and fed
+      // a comma list of vectors, fed, flow, luma and zones
       bool good = !v[0].empty();
       for (size_t at = 0; good && at <= v[0].size();) {
         const size_t comma = std::min(v[0].find(L',', at), v[0].size());
         const std::wstring word = v[0].substr(at, comma - at);
         if (_wcsicmp(word.c_str(), L"vectors") == 0) o.sequence_dump_vectors = true;
         else if (_wcsicmp(word.c_str(), L"fed") == 0) o.sequence_dump_fed = true;
+        else if (_wcsicmp(word.c_str(), L"flow") == 0) o.sequence_dump_flow = true;
+        else if (_wcsicmp(word.c_str(), L"luma") == 0) o.sequence_dump_luma = true;
+        else if (_wcsicmp(word.c_str(), L"zones") == 0) o.sequence_dump_zones = true;
         else good = false;
         at = comma + 1;
       }
       if (!good) {
-        err = "--sequence-dump needs vectors, fed or both with a comma between";
+        err = "--sequence-dump needs one or more of vectors, fed, flow, luma and zones with commas between";
         return false;
       }
     } else if (a == L"--capturetest") {
@@ -1028,8 +1075,8 @@ bool parse_options(int argc, wchar_t** argv, Options& out, std::string& err) {
     }
   }
 
-  // --steps and --motion-cases only print, and nothing else is required or checked
-  if (!o.steps_for.empty() || o.motion_cases) return true;
+  // --steps, --motion-cases and --flow-info only print, and nothing else is required or checked
+  if (!o.steps_for.empty() || o.motion_cases || o.flow_info) return true;
 
   if (o.data_dir.empty()) {
     wchar_t temp[MAX_PATH + 2] = {};
@@ -1055,6 +1102,10 @@ bool parse_options(int argc, wchar_t** argv, Options& out, std::string& err) {
     }
   }
 
+  if (!o.sequence_flow_luma.empty() && !o.sequence) {
+    err = "--flow-luma-file needs --sequence";
+    return false;
+  }
   if (o.selftest) {
     if (o.stack_dir.empty()) {
       err = "--selftest needs --stack DIR";

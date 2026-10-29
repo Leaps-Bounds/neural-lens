@@ -3,6 +3,40 @@
 Versions follow semantic versioning. While the major version is 0 the project is beta, and
 settings, the state file format and behaviour may change between releases.
 
+## 0.9.2, 2026-10-29
+
+Motion vectors on the Look page has a third choice, Edges cut, which hands the network the card's
+motion estimate with the motion left out along the edges of things that move against their
+background, where Card leaves an outline round them. Motion vectors is None unless Card or
+Edges cut is chosen.
+
+- **Edges cut.** The fast engine finds the edges of moving things with the card's optical flow
+  unit, through Vulkan in its own process, and tells the network that nothing moved within 16
+  texels of each one, at the size the network works at, and a frame where more than 4 percent of
+  the picture is edge gets the card's estimate whole. Measured on a test computer with an RTX 5090
+  over sequences made from a still at 2560x1440, at Quality and on a 1066x504 copy, every figure of
+  the 8 px along a moving edge where Card was worse than None came back to None's, within 3 percent
+  or the network's own unrest at rest, with the error over the frame from 4.53 percent below to
+  7.79 percent above Card's, and on pans, a zoom and scrolling text the error stayed from
+  1.75 percent below to 1.21 percent above Card's. The unit takes 1.4 ms a new picture at 2560x1440
+  beside the motion estimate, and live at 6144x2560 at Balanced the lens showed as many new
+  pictures a second as with Card, with 5 to 9 W more. On a card or driver whose optical flow unit
+  the engine cannot use, Edges cut runs as Card and the choice is greyed.
+- **Motion vectors is None unless chosen.** Where the add-on's section of `ReShade.ini` holds no
+  `NRMotionSource`, as after a new install or Reset everything, the fast engine tells the network
+  that nothing moved, as every version before 0.9.1 did. 0.9.1 handed it the card's motion estimate
+  there, as Card. So a lens updated from 0.9.1 without the key runs None until Card or Edges cut
+  is chosen on the Look page, and a profile saved with no choice, before 0.9.1 or in 0.9.1 at its
+  default, loads with None. A choice written before is kept.
+- **The explanations in plain words.** 58 of the 127 explanations the lens can show, in Settings
+  and on the NR settings panel with its Look page, now say in plain words what a setting does and
+  when to use it, with nothing of how it works inside. Motion vectors says to try it when moving
+  things look noisy, that Card softens fine detail in motion and that Edges cut also removes the
+  outline Card can leave against the background.
+- **What the Feed hands DLSS.** The README now says that the Feed makes the motion vectors from the
+  picture and hands on ReShade's depth buffer, which is flat in the presenter, and that the fast
+  engine's network has no motion vectors under None.
+
 ## 0.9.1, 2026-10-27
 
 Frame generation that holds the edges of moving things and fast motion better, and finds motion in

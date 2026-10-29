@@ -383,7 +383,9 @@ def segment_items(ctx, width, height, word, chosen, greyed, lit, size="settings"
     """One choice of a strip, width by height, its words in the look's case
     already. Slate's chosen segment is raised in the well and ringed in the
     accent while its row is lit, Folio's is ink with the paper's colour on it,
-    and Industrial's is amber. Greyed, the chosen one keeps a quieter mark."""
+    and Industrial's is amber. Greyed, the chosen one keeps a quieter mark,
+    and one that is not chosen shows greyed beside a live one, as one choice
+    of a strip can be greyed alone."""
     m = strip_sizes(ctx.kind, size)
     plain, bold = ctx.font("control", False, m["size"]), ctx.font("control", True, m["size"])
     items = []
@@ -415,7 +417,7 @@ def segment_items(ctx, width, height, word, chosen, greyed, lit, size="settings"
                   ctx.c("muted") if greyed else ctx.c("strong"))
         else:
             rect(items, 0, 0, width, height, ctx.c("well"))
-            words(items, middle[0], middle[1], word, plain, ctx.c("muted"))
+            words(items, middle[0], middle[1], word, plain, ctx.shade("greyed_text") if greyed else ctx.c("muted"))
     return items, [(0, 0, width, height, ("invoke",))], (width, height)
 
 

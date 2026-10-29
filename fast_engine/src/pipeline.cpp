@@ -7,7 +7,8 @@
 //                  with the frame before, in one pass over the frame
 //   mvec_cs        before the first pass, the card's motion estimate as the network's motion
 //                  vectors, one a work texel, see set_model_motion(). Only for a render that
-//                  hands the network the estimate
+//                  hands the network the estimate. With Edges cut the edge detector's cut
+//                  follows it, see edges.h
 //   scale_cs       after the last pass, with the strength above 1, the change the passes
 //                  made together scaled in place on that pass's output, see NrPasses in
 //                  common.h. Never at a strength of 1
@@ -25,7 +26,8 @@
 // recorded from it. That is what makes it safe to reset its allocator and to write its
 // descriptors. Each context has tables of its own for the ingest and the conversion as
 // well, since a joined list names two frames until it is done, and a region of its own in
-// the flag's readback buffer, read once the list is done, see take_flag().
+// the flag's readback buffer, read once the list is done, see take_flag(). The edge
+// detector's lists (detect_edges) take turns on two contexts of their own in the same way.
 //
 // Resource states between calls, which every function here restores:
 //   the network's input    NON_PIXEL_SHADER_RESOURCE, as Nr::evaluate wants it
@@ -35,11 +37,14 @@
 //   frames and targets     COMMON (PRESENT), they are someone else's
 //   the converted frames   COMMON, as the frames they stand in for
 //   the estimator's vectors  COMMON, they are frame generation's
+//   the optical flow       COMMON, it is the optical flow unit's, see flow.h
+//   the edge detector's textures  NON_PIXEL_SHADER_RESOURCE, see edges.h
 //
 // The work size. Everything that depends on it is one WorkSet: the network's input and
-// output textures, its motion vectors and the downscale's weights. A new work size gets a
-// second set, made while the first is in use, and the two change places between two
-// pictures, when the GPU has finished every list that named the old one (commit_work).
+// output textures, its motion vectors, the edge detector's textures and the downscale's
+// weights. A new work size gets a second set, made while the first is in use, and the two
+// change places between two pictures, when the GPU has finished every list that named the
+// old one (commit_work).
 #include "pipeline.h"
 
 #include "look.h"
@@ -76,6 +81,8 @@ constexpr DXGI_FORMAT kConvertedFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 constexpr int kDrawContexts = 3;
 // The times queue holds four draws for each context at most, see Pipeline::keep_times().
 static_assert(Pipeline::kTimesKept == 4 * kDrawContexts);
+// The cut at moving edges has a table and timestamps of its own for each draw context.
+static_assert(kDrawContexts <= Edges::kCutContexts);
 // Who records an ingest: the ingest context, whose list is waited for, and each draw
 // context for a joined list, which is not. Table 0 is the ingest context's and table 1 + i
 // the draw context i's, for the ingest's descriptors, the conversion's and the flag's region.
@@ -205,6 +212,9 @@ struct WorkSet {
   ComPtr<ID3D12Resource> mvec;     // the network's motion vectors, kFieldFormat at the work size,
                                    // made at the first render that hands them over, see
                                    // Pipeline::set_model_motion. None while none is handed over
+  // The edge detector's textures, R8_UINT at the work size, see edges.h: the marked texels, the
+  // largest mark across and the zone. Made at the first detect at this size, see make_zones()
+  ComPtr<ID3D12Resource> edge_mark, edge_across, zone;
   ComPtr<ID3D12Resource> weights;  // the downscale's weights, see area_weights()
   UINT taps_x = 1, taps_y = 1;
   UINT weight_count = 1;
@@ -359,6 +369,7 @@ struct Pipeline::Impl {
   bool settings_pending = false;  // nr has not been given them yet, see set_settings()
 
   Look look;                 // the Look stage, see look.h, on the last pass's output after the strength
+  Edges edges;               // the edge detector, see edges.h and detect_edges()
   ComPtr<ID3D12RootSignature> ingest_root, draw_root, draw_hdr_root, convert_root, scale_root, mvec_root;
   ComPtr<ID3D12PipelineState> ingest_pso, draw_pso, draw_hdr_pso, convert_pso, scale_pso, mvec_pso;
   // The card's motion estimate for the next render alone, see set_model_motion(), and what the
@@ -367,6 +378,14 @@ struct Pipeline::Impl {
   bool model_motion_set = false;
   bool fed[kNrMaxPasses] = {};
   bool field_refused_said = false;  // the field could not be made, said once
+  // The cut at moving edges, see edges.h. zone_fresh says a detect_edges() has run since the
+  // last render, at the work size in use, so its zone is of the frame the next render draws.
+  // cut_done says the last render cut its field. cut_index and cut_fence are the draw context
+  // and the fence value of the last render that did, for its time
+  bool zone_fresh = false;
+  bool cut_done = false;
+  int cut_index = -1;
+  UINT64 cut_fence = 0;
   ComPtr<ID3D12DescriptorHeap> heap;
   UINT heap_step = 0;
   HdrAbove hdr_above = HdrAbove::Fade;  // see set_hdr_above()
@@ -420,6 +439,10 @@ struct Pipeline::Impl {
   Context ingest;
   Context draw[kDrawContexts];
   int next_draw = 0;
+  // The edge detector's lists, taking turns as the draws do, and which of them was recorded last
+  Context detect[Edges::kContexts];
+  int next_detect = 0;
+  int last_detect = -1;
   UINT64 draw_sequence = 0;            // the last draw's number, see last_draw_sequence()
   GpuTimer timer;
   double last_ingest_ms = 0.0;
@@ -774,6 +797,10 @@ struct Pipeline::Impl {
     model_motion = ModelMotion();
     model_motion_set = false;
     for (bool& f : fed) f = false;
+    // the zone is this render's only where a detect ran since the last render
+    cut_done = false;
+    if (!zone_fresh) out.cut = false;
+    zone_fresh = false;
     if (!set) return false;
     return out.constant || (out.vectors && out.vec_w > 0 && out.vec_h > 0 && out.me_w > 0 && out.me_h > 0);
   }
@@ -794,6 +821,25 @@ struct Pipeline::Impl {
     }
     note("pipeline: the network's motion vectors are a field of %ux%u in R16G16_FLOAT, %.1f MiB", work.w, work.h,
          (double)work.w * work.h * 4.0 / 1048576.0);
+    return true;
+  }
+
+  // The work set's three textures for the edge detector, made at the first detect at this size.
+  bool make_zones(std::string& err) {
+    if (work.edge_mark && work.edge_across && work.zone) return true;
+    const D3D12_RESOURCE_FLAGS uav = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    const D3D12_RESOURCE_STATES kRead = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    if (!gpu->make_texture(DXGI_FORMAT_R8_UINT, work.w, work.h, uav, kRead, L"edge marks", work.edge_mark, err) ||
+        !gpu->make_texture(DXGI_FORMAT_R8_UINT, work.w, work.h, uav, kRead, L"edge marks across", work.edge_across,
+                           err) ||
+        !gpu->make_texture(DXGI_FORMAT_R8_UINT, work.w, work.h, uav, kRead, L"edge zone", work.zone, err)) {
+      work.edge_mark.Reset();
+      work.edge_across.Reset();
+      work.zone.Reset();
+      return false;
+    }
+    note("pipeline: the edge detector's three textures of %ux%u in R8_UINT, %.1f MiB", work.w, work.h,
+         (double)work.w * work.h * 3.0 / 1048576.0);
     return true;
   }
 
@@ -844,10 +890,11 @@ struct Pipeline::Impl {
   // wrote. With the strength above 1 the last pass is followed by the scale shader on its
   // output, so the composite sees the change the passes made together scaled. drop tells the
   // network to forget its history. motion, when not null, is the card's estimate for this
-  // render, see set_model_motion(): resolved into the field before the first pass, once, and
-  // handed to the passes, unless drop, which reads no history. index is the draw context
-  // whose table the resolve takes. false with err from the runtime: the list may then hold
-  // part of its commands, so the caller closes it and never runs it.
+  // render, see set_model_motion(). It is resolved into the field before the first pass, once,
+  // cut where motion->cut says so, and handed to the passes, unless drop, which reads no
+  // history. index is the draw context whose tables the resolve and the cut take. false with
+  // err from the runtime, and the list may then hold part of its commands, so the caller
+  // closes it and never runs it.
   bool record_passes(ID3D12GraphicsCommandList* l, int index, bool drop, const ModelMotion* motion,
                      std::string& err) {
     const D3D12_RESOURCE_STATES kRead = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
@@ -860,6 +907,11 @@ struct Pipeline::Impl {
     const NrMotion* later = nullptr;
     if (motion && !drop && make_field()) {
       record_field(l, index, *motion);
+      // the cut at moving edges, on the zone the last detect made, see edges.h
+      if (motion->cut && work.zone) {
+        edges.record_cut(l, index, work.zone.Get(), work.mvec.Get(), work.w, work.h);
+        cut_done = true;
+      }
       field.field = work.mvec.Get();
       field.w = work.w;
       field.h = work.h;
@@ -1468,6 +1520,12 @@ bool Pipeline::init(Gpu& gpu, const PipelineDesc& desc, std::string& err) {
     }
   }
 
+  // ---- the edge detector's shaders, heap and counts, see edges.h
+  if (!m.edges.init(gpu, err)) {
+    shutdown();
+    return false;
+  }
+
   // ---- the Look stage's shaders and heap, see look.h
   if (!m.look.init(gpu, err)) {
     shutdown();
@@ -1560,6 +1618,12 @@ bool Pipeline::init(Gpu& gpu, const PipelineDesc& desc, std::string& err) {
   }
   for (int i = 0; i < kDrawContexts; ++i) {
     if (!gpu.make_list(m.draw[i].allocator, m.draw[i].list, L"draw", err)) {
+      shutdown();
+      return false;
+    }
+  }
+  for (int i = 0; i < Edges::kContexts; ++i) {
+    if (!gpu.make_list(m.detect[i].allocator, m.detect[i].list, L"edge detect", err)) {
       shutdown();
       return false;
     }
@@ -1788,6 +1852,10 @@ bool Pipeline::render_joined(ID3D12Resource* cur, ID3D12Resource* prev, ID3D12Fe
     m.conv_slot = was_conv_slot;
     return false;
   }
+  if (m.cut_done) {
+    m.cut_index = index;
+    m.cut_fence = c.fence;
+  }
   c.flag_unread = true;
   if (evaluate) m.reset_next = false;
   m.native = cur8;
@@ -1877,6 +1945,10 @@ bool Pipeline::render(ID3D12Resource* cur, const Target& target, bool reset, boo
   c.compared = false;
   c.token = 0;
   if (!m.compose(index, frame, target, residual, keep_copy, err)) return false;
+  if (m.cut_done) {
+    m.cut_index = index;
+    m.cut_fence = c.fence;
+  }
   m.native = frame;
   m.drawn_residual = residual;
   // Off hold, the ingest before this render wrote a new input, and the textures hold a pair
@@ -2166,6 +2238,58 @@ ID3D12Resource* Pipeline::motion_field(UINT& w, UINT& h) const {
   return impl_->work.mvec.Get();
 }
 
+bool Pipeline::motion_cut() const { return impl_ && impl_->cut_done; }
+
+bool Pipeline::cut_ms(double& ms) const {
+  ms = 0.0;
+  if (!impl_ || impl_->cut_index < 0 || !impl_->gpu->fence) return false;
+  const Impl& m = *impl_;
+  if (m.gpu->fence->GetCompletedValue() < m.cut_fence) return false;
+  ms = m.edges.cut_ms(m.cut_index);
+  return true;
+}
+
+bool Pipeline::detect_edges(const EdgeFlow& flow, std::string& err) {
+  if (!impl_) {
+    err = "the pipeline is not set up";
+    return false;
+  }
+  Impl& m = *impl_;
+  if (!flow.flow || flow.cells_w < 1 || flow.cells_h < 1 || flow.crop_w < 1 || flow.crop_h < 1 ||
+      flow.crop_w > flow.cells_w || flow.crop_h > flow.cells_h || flow.me_w < 1 || flow.me_h < 1) {
+    err = "no optical flow to find the edges in";
+    return false;
+  }
+  if (!m.make_zones(err)) return false;
+  const int index = m.next_detect;
+  Context& c = m.detect[index];
+  if (!m.begin(c, err)) return false;
+  m.edges.record(c.list.Get(), index, flow, m.work.edge_mark.Get(), m.work.edge_across.Get(), m.work.zone.Get(),
+                 m.work.w, m.work.h);
+  if (!m.gpu->execute(c.list.Get(), c.fence, err)) return false;
+  c.used = true;
+  m.last_detect = index;
+  m.next_detect = (index + 1) % Edges::kContexts;
+  m.zone_fresh = true;
+  return true;
+}
+
+bool Pipeline::edge_counts(EdgeCounts& counts) const {
+  if (!impl_ || impl_->last_detect < 0 || !impl_->gpu->fence) return false;
+  const Impl& m = *impl_;
+  if (m.gpu->fence->GetCompletedValue() < m.detect[m.last_detect].fence) return false;
+  counts = m.edges.counts(m.last_detect);
+  return true;
+}
+
+ID3D12Resource* Pipeline::zone_texture(UINT& w, UINT& h) const {
+  w = h = 0;
+  if (!impl_ || !impl_->work.zone) return nullptr;
+  w = impl_->work.w;
+  h = impl_->work.h;
+  return impl_->work.zone.Get();
+}
+
 bool Pipeline::network_needs_remake() const { return impl_ && impl_->network && impl_->nr.needs_remake(); }
 
 bool Pipeline::shared_network() const { return impl_ && impl_->network && impl_->nr.shared(); }
@@ -2274,6 +2398,7 @@ bool Pipeline::commit_work(std::string& err) {
   m.desc.work_h = m.work.h;
   m.write_work_descriptors();
   m.look.forget();  // its textures follow the new size at the next render, see look.h
+  m.zone_fresh = false;  // a zone of the old size is no zone of the new one
   // The new features have no history, and the new textures hold nothing yet. Until the next
   // render a repaint is the native frame alone.
   m.reset_next = true;

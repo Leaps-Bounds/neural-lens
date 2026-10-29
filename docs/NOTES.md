@@ -249,9 +249,9 @@ network again and it could not, see Each pass's values, and, as its last line wh
 `engine failed REASON`. Its stats line carries the presenter's pairs and then `shared=on|off`
 and `network=MS`, the network's GPU time a picture as the mean over the second's runs, `nan`
 where it did not run, see The quality steps for what the lens does with it, then `generated=N`,
-see Frame generation, `preset=N`, see NVIDIA's model package, `look=L`, see The Look stage, and
-`motion=N`, see Motion vectors for the network. The lens finds its window by its process id and
-its class, `NeuralLensFast`.
+see Frame generation, `preset=N`, see NVIDIA's model package, `look=L`, see The Look stage,
+`motion=N`, see Motion vectors for the network, and `cut=N`, see The cut at moving edges. The lens
+finds its window by its process id and its class, `NeuralLensFast`.
 
 No ReShade and no add-on run in it. It loads the stack's `nvngx_dlssnr.dll`, which is the Cost
 Scaler's proxy, by its full path, and through it NVIDIA's model, and creates and evaluates NGX
@@ -1540,22 +1540,23 @@ from level 1 up were darkened on average. The Blender still has no such pixels.
 The model is temporal. At each evaluate it takes the picture it made last as its history and reads it
 where the motion vectors say each texel's content was, so zero vectors tell it that nothing moved, see
 `fast_engine\src\model_motion.h`. `NRMotionSource` in the add-on's section chooses what it is handed,
-the engine's own key like `NRKeepBlacks`, which neither build of the add-on reads. At 0 every evaluate
-hands it the 1x1 zero texture with the motion scale at the work size, the call of every version before,
-byte for byte. At 1, the default, it gets the card's motion estimate, the one frame generation and the
-Look stage take, see Frame generation. The estimator gives one vector a block of 8x8 texels of its
-picture, in quarter texels, from where the block's content is now to where it was in the frame before,
-x to the right and y down, which is the runtime's own convention. Before the first pass
+the engine's own key like `NRKeepBlacks`, which neither build of the add-on reads. At 0, the default,
+every evaluate hands it the 1x1 zero texture with the motion scale at the work size, the call of every
+version before 0.9.1, byte for byte. At 1 it gets the card's motion estimate, the one frame generation
+and the Look stage take, see Frame generation. At 2 it gets the same estimate with the motion left out
+along the edges of moving things, see The cut at moving edges. The estimator gives one vector a block of
+8x8 texels of its picture, in quarter texels, from where the block's content is now to where it was in
+the frame before, x to the right and y down, which is the runtime's own convention. Before the first pass
 `shaders\mvec_cs.hlsl` resolves the vectors into a texture of the work size, R16G16_FLOAT, each work
 texel taking the vector of the block its centre falls in, found in whole numbers, and turning it into
 work texels, 0.25 times the work size over the estimator's on each axis by itself. The texture is bound
 with its subrect the whole work size and a motion scale of 1, and depth stays the zero texel. It takes
 8.8 MiB at 2560x896 and 14.1 MiB at 2560x1440, made at the first such render at a work size and kept
 with that size's textures. The key is read always and taken live at a reload, from the next new frame.
-A value with a fraction is cut to a whole number, and anything but 0 or 1 is the default. The Look
-page's Motion vectors row writes it as Card or None, the Profiles page of Settings names it, and a
-profile and a switch of the Home menu add-on's build carry it with the rest of the section, so a
-profile saved before it loads with Card.
+A value with a fraction is cut to a whole number, and anything but 0, 1 or 2 is the default. The Look
+page's Motion vectors row writes it as Card, Edges cut or None, the Profiles page of Settings names it,
+and a profile and a switch of the Home menu add-on's build carry it with the rest of the section, so a
+profile saved without it, before 0.9.1 or in 0.9.1 at its default, loads with None.
 
 The estimate is handed over only where it runs from the frame the network last evaluated to the frame
 it evaluates now. Every other render gets the zero texel: a render that resets the network, a settle or
@@ -1669,13 +1670,243 @@ the square kept its fine detail to the digit, a variance of the Laplacian of 287
 the white square changed by 1.28 and 1.35 levels of 255 on average with the card's estimate, against
 0.17 and 0.28 with zero vectors.
 
-Card is the default, so that the fast engine's network gets motion vectors as the ReShade engine's gets
-them from the Feed in a window. The card's estimate brought the moving pictures nearer their settled
-pictures in the median at every size, grain aside, but with the large network the fine detail came out
-softer in motion at every size, the edges of moving squares worse at every size of the 2560x1440
-picture, and the boil higher on the much smaller copy and on grain. None keeps the network's picture of
-0.9.0 for material where that shows. Games, the look by eye, other cards, 3840x2160 and
-HDR on screen were not measured, see What is not measured.
+None is the default, which keeps the network's picture of 0.9.0, and Card and Edges cut give the fast
+engine's network motion vectors as the ReShade engine's gets them from the Feed in a window. The card's
+estimate brought the moving pictures nearer their settled pictures in the median at every size, grain
+aside, but with the large network the fine detail came out softer in motion at every size, the edges of
+moving squares worse at every size of the 2560x1440 picture, and the boil higher on the much smaller
+copy and on grain. Games, the look by eye, other cards, 3840x2160 and HDR on screen were not measured,
+see What is not measured.
+
+### The cut at moving edges
+
+`NRMotionSource` at 2, Edges cut on the Look page, hands the network the card's motion estimate as 1 does,
+with the vectors set to zero within 16 work texels of the edges of things that move against their
+background, see `fast_engine\src\flow.h` and `fast_engine\src\edges.h`. The estimate holds one vector a
+block of 8x8 texels of its picture, the motion of the moving thing or that of its background and not both,
+so along such an edge the network reads its history from the wrong place, which the error maps show as an
+outline, see Motion vectors for the network. Only the network's field is cut. Frame generation and the Look
+stage take the estimate as before.
+
+The edges are found by the card's optical flow unit, which D3D12 does not reach and Vulkan reaches through
+the extension `VK_NV_optical_flow`, in the engine's own process. Before anything of Vulkan the engine sets
+the loader's layer filter in its own environment, `VK_LOADER_LAYERS_DISABLE` at `~all~`, and clears
+`VK_LOADER_LAYERS_ENABLE`, `VK_LOADER_LAYERS_ALLOW` and `VK_INSTANCE_LAYERS`, each of which could let a
+layer back in. Overlays and capture programs register implicit layers, which the loader would otherwise put
+into every program that uses Vulkan, this one included. The engine then loads `vulkan-1.dll` from the
+Windows system folder by its full path, takes `vkGetInstanceProcAddr` from it and every other function
+through that and `vkGetDeviceProcAddr`, with no import library, and refuses a loader older than 1.3.234,
+the release that brought the filter. It lists its own modules before the loader comes in and again once
+the device is made, and every module that came in must lie under the Windows folder, as the loader and the
+driver's own modules do. Any other is a layer that got past the filter, so the unit is refused and gives
+back the device, the instance and the loader. On a test computer with an RTX 5090, whose system registers
+implicit layers of ReShade, the lens's own among them, of overlays, of capture programs and of the driver,
+the loader's own log said that the filter disabled every one of them and that neither the instance nor the
+device had a layer in its chain, and every module that came in lay under the Windows folder.
+
+The Vulkan device is the one whose LUID is the D3D12 adapter's, so the unit runs on the card the network
+runs on. It must be NVIDIA's, at Vulkan 1.3 or later, with `VK_NV_optical_flow`,
+`VK_KHR_external_memory_win32` and `VK_KHR_external_semaphore_win32`, and the unit takes one queue of the
+first family with the optical flow unit, copies and timestamps. The session takes the luma of each frame
+at the motion estimator's size, the capture halved until both sides fit 4096, so 2560x1440 for a 2560x1440
+picture and 3072x1280 for 6144x2560, padded to multiples of 8 with the last column and row repeated. It
+gives one vector a block of 4x4 pixels, in 32nds of a pixel, at the medium performance level with temporal
+hints off, forward only and with no cost map, and from its second frame on it compares each frame with the
+one before.
+
+The luma is a compute pass of the engine's own, `shaders\flowluma_cs.hlsl`. It brings an 8-bit frame to the
+estimator's size by the exact area filter of the network's input, rounds each channel to a level and takes
+the BT.709 luma in whole numbers, (2126 R + 7152 G + 722 B + 5000) / 10000, less one on 769 of the 3368
+colours whose luma lies exactly on a half, where the test program the cut was measured with, which is not
+part of this repository, summed in double precision and landed just below the half. The engine finds those
+colours when the unit starts, by that program's own line. So the unit gets that program's luma byte for
+byte, which held on all 2^24 colours and on every frame tried. The estimator's NV12 luma is a float sum
+that differs from it on some colours the test frames hold, so it is not used. A 16-bit frame gets the
+same filter on its linear values, then the estimator's knee at the SDR white and 255 times its BT.709
+luma rounded. On a 16-bit square moving across a pan the zones lay on the square's outline on every
+frame after the first, covering 91.8 to 100 percent of it, together with parts of the background, and
+the pictures were not judged.
+
+The luma and the flow travel through two buffers on a shared D3D12 heap, and two shared D3D12 fences order
+the work, one signalled once a frame's luma is written and one once its flow is in its buffer. Vulkan
+imports the buffers as buffers and the fences as timeline semaphores, and the session's images stay
+Vulkan's own. For each frame the unit's queue waits for the luma's fence, copies the luma into the session's
+input, runs the unit, copies the flow into the flow buffer and signals the flow's fence, taking both buffers
+from the external queue family and giving them back. Nothing goes through the CPU.
+
+For each new frame, after the conversion for the estimator, the engine records the luma pass on its own
+queue, has that queue signal the luma's fence and submits the unit's work, with nothing waited for on the
+CPU, so the unit and the video engine work at the same time. Where the frame is to be cut, the queue waits on
+the card for the flow's fence and runs the detector, then waits for the estimate as it does with Card, and
+the render resolves the estimate into the network's field and cuts it before the first pass. Only work
+submitted after that wait waits for the flow, so where the flow takes longer than the estimate the render
+waits that much longer. For the unit the CPU waits only before the luma pass, until the unit has finished
+the frame before, since the session's images are bound by a call on the CPU, and for 2000 ms at most. At
+120 Hz a new frame comes 8 ms or more after the last and the unit took 1.4 to 1.6 ms, so that wait ends at
+once nearly always.
+
+The detector is three compute passes on the engine's queue, `shaders\edge_mark_cs.hlsl` and
+`shaders\edge_grow_cs.hlsl` twice. A cell of the flow is marked where its vector differs from one of its
+four neighbours' by more than 2 pixels across or down, on the raw values by more than 64, which is the same
+test. Each work texel takes the cell under its centre, found in whole numbers as `shaders\mvec_cs.hlsl` finds
+its block, and the marked texels inside the interior, the work picture less its outer 16 texels, are counted.
+Where they are more than 4 percent of the interior the guard leaves the zone empty and the render gets the
+estimate whole. The test is in whole numbers, the count above the interior's texels over 25, which is the
+same as the share in percent above 4 for any count. At 2560x1440 the interior holds 3,559,424 texels and the
+limit is 142,376, and on the copy at 1066x504 488,048 and 19,521. Otherwise the zone is every texel within 16
+texels of a marked one across and down, a square of 33 by 33, grown across and then down, kept inside the
+interior. The cut, `shaders\edge_cut_cs.hlsl`, runs in the render right after `shaders\mvec_cs.hlsl` has
+resolved the estimate into the network's field, writes the constant (0, 0) on the zone, whose bits are those
+of +0.0, and leaves every other texel as the resolve wrote it. The resolve is Card's, unchanged.
+
+A render is cut where it is handed the estimate and the unit's flow lies between the same two frames as the
+estimate. Every render that gets zero vectors with Card still gets them, with no cut. A render handed the
+estimate whose flow does not lie between those frames gets the estimate whole, as a guarded one does. That
+is the unit's first frame after it was made or forgot its frames, and a frame whose flow failed and the frame
+after it. The unit forgets its frames wherever the estimator does, and at a new capture format, as when
+Windows HDR is switched. After a new work size the network resets, with no field and no cut, and the zone's
+textures are made at the first detect at that size. In the shared mode the cut field goes where the field
+goes, to the first pass. In the sequence mode, where every frame is new, the zone of each frame is made from
+that frame and the one before alone, as in the measurements below.
+
+The unit is made where Edges cut is chosen and the network runs, at the start or at the first new frame after
+a reload chooses it, once the motion estimator is made, whose size it takes, and it stays until the engine
+leaves. It is not made while the pipeline makes a network on its own thread, for a quality switch or a
+remake, since its check of the modules would count one that thread loads, and those frames get the estimate
+whole. With Card or None no part of it is made and `vulkan-1.dll` is never loaded. Where the engine cannot
+use the unit it says `edges unavailable REASON` once on its stdout, the network gets the estimate whole as
+with Card, and the lens greys Edges cut alone, with its own explanation, Left and Right stepping over it,
+until a new engine starts. The reasons are no Vulkan loader, a loader older than 1.3.234, no Vulkan device on
+the engine's adapter, a driver without `VK_NV_optical_flow` or another of the unit's needs, a session
+refused, D3D12 buffers or fences that cannot be shared with Vulkan, a Vulkan layer in the engine, and the
+switches for tests. A failure in the middle of a run, a Vulkan error, a lost device or the CPU's wait running
+out, has the CPU signal the flow's fence so that no queue waits for ever, gives the unit up with the same
+line, and the engine runs as Card from the next frame.
+
+The stats line ends in `cut=N`, the network's runs in the second that were handed a field with a zone of one
+texel or more, 0 with Card or None. With `LENS_PRESENTER_PROFILE=1` three pairs follow it, `guard=N`, the
+frames whose zone the guard emptied, `flow=MS`, the unit's time with its two copies, the mean over the frames
+it compared, and `edge=MS`, the times of the luma pass, the detector and the cut on the shader cores, each
+the mean over the frames it ran on, added together. The note at the start and at a reload says what the
+network gets, the estimate with the edges cut, or the estimate whole and why.
+
+How it was chosen. Zeroing the card's vectors within 16 work texels of the known edge of the moving thing
+took the outline away on all 8 pairs of the edge set below. Of five cuts the engine can make from the
+picture alone, the forward flow's 2 px step with the frame guard at 4 percent passed all 8 edge pairs and all
+8 pairs where nothing should change. The union of two cuts passed them too, the same step with the guard at
+2 percent and a cut where the card's own vectors step by half a work texel near a disagreement of the two
+flow directions, each guarded on its own, and it needs both flow directions and the card's step test as
+well. On its own, with the guard at 2 percent, the 2 px step failed the textured square on the 1066x504 copy,
+on the frames its guard emptied and on the whole frames after them, and the half-texel cut, like a cut on the
+card's own steps of a work texel with no guard, left part of the outline on 2 pairs.
+
+Measured on a test computer with an RTX 5090 through the sequence mode, with the 310.9.16 build of the model,
+its large network at preset 1 and one pass, every frame a new source, over sequences made from the README's
+Blender still, each picture held against the network's settled picture of its frame as under Motion vectors
+for the network. The edge set is a flat square at two speeds and a textured one moving across a pan, and
+still panels over a pan. The set where nothing should change is a pan, a fast pan, a zoom and scrolling
+text. Each ran at 2560x1440 at Quality and with the network on a copy at 1066x504. An edge pair passes where
+every figure of the bands along the moving edges, 8 px wide and 16 round the panels, their mean error and its
+99th percentile, is at most None's plus 3 percent of None's or plus the network's own unrest at rest,
+whichever is larger, with the error over the frame at most 1.10 times Card's, the fine detail at least 0.97
+times Card's and the boil at most 1.03 times Card's. A pair where nothing should change passes where the
+error over the frame is at most 1.03 times Card's, with the fine detail and the boil as above. The rules were
+fixed before any run. Every pair passed. Edges cut against Card in percent, with Card's band figures over
+None's limit, the share of the network's field the cut set to zero in percent, the mean from the second frame
+on with the most in brackets, and the frames the guard emptied:
+
+```
+                               Card's band     error   fine detail   boil    field cut        guarded
+                               figures over
+                               None's limit
+Quality, flat square           5 of 8          +0.22   +0.48         +0.49   2.707 (7.054)    0
+Quality, faster flat square    2 of 8          +0.37   +0.34         +0.19   2.831 (7.162)    0
+Quality, textured square       2 of 8          +2.41   +0.10         +1.21   6.148 (14.535)   0
+Quality, panels over a pan     0 of 2          -0.84   +0.71         -0.14   4.589 (8.402)    0
+1066x504, flat square          8 of 8          -4.53   +0.64         -3.33   6.116 (16.800)   0
+1066x504, faster flat square   8 of 8          -3.96   +0.38         -1.07   6.247 (16.922)   0
+1066x504, textured square      4 of 8          +7.79   +0.32         -1.59   11.434 (26.380)  0
+1066x504, panels over a pan    0 of 2          +1.17   +0.05         +0.30   7.417 (15.018)   0
+Quality, pan                                   +0.71   -0.15         +0.46   0.590 (3.010)    0
+Quality, fast pan                              -1.65   +0.15         -0.12   5.614 (16.367)   8
+Quality, zoom                                  +0.74   +0.00         +0.58   0.840 (1.687)    1
+Quality, scrolling text                        +0.00   +0.00         +0.00   0.000 (0.000)    31
+1066x504, pan                                  +0.67   +0.01         +0.68   1.352 (6.045)    0
+1066x504, fast pan                             -1.75   +0.06         -0.71   7.206 (25.601)   8
+1066x504, zoom                                 +1.21   -0.01         +0.74   3.173 (40.079)   0
+1066x504, scrolling text                       +0.00   +0.00         +0.00   0.000 (0.000)    31
+```
+
+With Edges cut no band figure of any pair was over None's limit, so all 29 of Card's that were came within
+it, with a median of 96 percent of Card's excess over None taken away at Quality and 101 percent at 1066x504.
+On the scrolling text the guard emptied every zone, so its pictures were Card's byte for byte. Of the edge
+pairs the textured square on the 1066x504 copy came nearest the limit of the error over the frame, 7.79
+percent above Card's against 10, most of it, 6.52 points, far from the edge, where zeroing at the known edge
+cost 4.66 of its own 6.36, and of the other pairs the zoom on that copy, 1.21 percent above Card's against 3.
+The engine gives these figures itself. The unit's flows equal the test program's bit for bit
+on every frame of the 8 sequences at 2560x1440 and of a 6144x2560 pan at 3072x1280, the zones equal the
+measured ones on all 490 frames of the 16 pairs, with the same counts and the same frames guarded, and the
+field handed to the network equals the measured field bit for bit on all 490. Scored from the engine's own
+pictures, every figure above came out the same. With Card and None the engine drew the pictures, estimates
+and fields of the engine of 0.9.1 byte for byte on the pairs held against it, and the self test, which makes
+no estimate, held its baselines byte for byte with each of the three and with none given.
+
+The cost, by the engine's own timestamps in the sequence mode with one engine on the card, in ms, the median
+of the runs' medians, or of their means for the estimate and the network. At 2560x1440 at Quality the work,
+the estimator and the unit are at 2560x1440, the flow in 640x360 cells, over 8 runs, one for each sequence
+above. At 6144x2560 at Balanced, over 2 runs of a pan by whole pixels, the work is at 2560x896 and the
+estimator and the unit at 3072x1280, the flow in 768x320 cells. The flow is the unit's time with its two
+copies, the luma, the zone and the cut are the shader cores' and the estimate is the video engine's:
+
+```
+                                    flow    copy in   execute   copy out   luma    zone    cut     estimate   network
+2560x1440 at Quality, Card                                                                         1.967      3.935
+2560x1440 at Quality, Edges cut     1.405   0.047     1.289     0.053      0.047   0.092   0.005   1.968      3.946
+6144x2560 at Balanced, Card                                                                        2.490      3.357
+6144x2560 at Balanced, Edges cut    1.563   0.045     1.426     0.064      0.074   0.061   0.005   2.199      3.267
+```
+
+A sequence at a time at 2560x1440 the estimate with Edges cut lay from 0.010 ms below to 0.011 ms above Card's.
+At 6144x2560 it was 0.29 ms below Card's, 2.191 and 2.207 against 2.472 and 2.507.
+
+Live, on the same computer with one monitor at 6144x2560 and 120 Hz, fullscreen at Balanced, 2560x896, with
+one pass of the large network, over the square and the scrolling noise of Motion vectors for the network, at
+120 steps a second unless the row says 60, in rows of a minute after 10 s with the two arms taking turns. The
+medians over each arm's seconds, of two rows each and of one at 60 steps, the card's power in W as the median
+of its samples, its video memory in MiB as the highest sample, the times in ms, cut the network's runs in a
+second handed a zone, and later the percent of new pictures shown a refresh or more after their frame's own:
+
+```
+                          new a second   power   memory   network   estimate   flow    edge   cut    delay   later
+square, Card              116            224.9   5102     3.20      1.95                             0       16.18
+square, Edges cut         116            231.4   5333     3.225     2.01       1.43    0.24   88.5   0       23.76
+scroll, Card              120            231.6   5102     3.68      2.06                             8.3     99.83
+scroll, Edges cut         120            240.6   5333     3.665     2.14       1.575   0.14   6.5    8.3     99.98
+square at 60, Card        58             136.2   5042     3.37      2.51                             0       40.71
+square at 60, Edges cut   58             141.2   5273     3.17      2.17       1.57    0.18   58     0       7.89
+```
+
+Edges cut drew 5.0 to 9.0 W more and held 231 MiB more video memory, with as many new pictures a second and
+the same median delay, and the guard emptied no frame. Over the square at 120 steps a second 23.76 percent of
+its pictures were shown a refresh later against 16.18 with Card, the estimate taking 0.06 ms longer, and at
+60 steps, one row each, 7.89 percent against 40.71, the estimate taking 0.34 ms less. Over the square 69 and
+72 percent of the network's runs were handed a zone, at 120 and at 60 steps, and over the scrolling noise,
+which moves as one, 12 percent, 1,772 of 14,394.
+
+What is not settled. No game was run with it, and every figure of the picture is of synthetic sequences. How
+the forward flow steps on game scenes, with busy textures, particles, many moving things, transparency and
+text, was not measured. A frame over the guard hands the network the card's estimate whole, so the outline
+comes back on that frame and the network carries that frame's error into the frames after it, as the guard
+at 2 percent showed on the textured square. How often a game frame goes over 4 percent was not measured, and
+the stats line's `guard=` counts such frames. The guard bounds the marked texels before the zone grows, not
+the zone, which took 44 percent of the interior on the zoom's first zoned frame on the 1066x504 copy, and on
+one frame of that zoom the 496 px window with the most zone had an error of 0.333 levels against Card's 0.255,
+though over the frame the error was 1.21 percent above Card's. The guard emptied every zone of the scrolling
+text, so a cut on scrolling text was not tested, and the zones over the scrolling noise live were not judged.
+How much of an error figure is the network carrying an earlier cut into later frames was not measured apart.
+HDR ran only as the 16-bit square above. The small FP8 network, other guards, widths and steps, other sizes,
+other cards and the unit beside a game were not run, and why the estimate took less time beside the unit in
+some runs and more in others was not measured.
 
 ### How the lens chooses the engine and falls back
 
@@ -1733,10 +1964,11 @@ draws:
   engine does under `LENS_FAST_JOIN` below, and `same` those of them that were found the same as the
   frame before once the list was done, each a run of the network for nothing. For a joined picture
   `wake` runs to the start of its list's recording and `iwall` is that recording and its submission,
-  with no wait in it. `est`, the last of them, is the fine motion estimate's time on the card's video
-  engine with its resolve, 0 where none was made or the encode queue takes no timestamps, see
-  Motion vectors for the network. `meter`, `delay`, `flip`, `ahead`, `grid` and `lead` are medians
-  over the second, and the other times means.
+  with no wait in it. `est`, the last of them before `shared`, is the fine motion estimate's time on
+  the card's video engine with its resolve, 0 where none was made or the encode queue takes no
+  timestamps, see Motion vectors for the network. `meter`, `delay`, `flip`, `ahead`, `grid` and
+  `lead` are medians over the second, and the other times means. Three more come after `cut` at the
+  end of the line, `guard`, `flow` and `edge`, see The cut at moving edges.
 - `LENS_FAST_JOIN=N` has the ingest and the render of a new frame go to the card as one list,
   presented at once, once N frames in a row were found changed, where otherwise every frame's ingest
   is waited for before its render is submitted. The comparison's answer then comes back a turn
@@ -1806,6 +2038,9 @@ draws:
 - `LENS_FAST_NO_ESTIMATOR=1` refuses the motion estimator as a card without one does, with the
   same `framegen unavailable` line, so the network gets zero vectors and frame generation stays
   off, see Motion vectors for the network.
+- `LENS_FAST_NO_FLOW=1` refuses the optical flow unit as a card without one does, with the same
+  `edges unavailable` line, so Edges cut hands the network the card's estimate whole, see The cut
+  at moving edges.
 - `LENS_FAST_QUEUE_PRIORITY=high` asks for the engine's D3D12 queue at high priority, and
   `realtime` for one at global realtime priority. A refusal falls back to a normal queue, and a
   note says which the engine has.
@@ -1872,14 +2107,31 @@ estimate as `vectors-src-N.bin`, int16 pairs a block, and the vectors the networ
 `fed-N.bin`, float16 pairs a work texel, with a line for each source and pass saying what it got. The
 research switches for the network's vectors are `mvneg`, each vector turned round, `mvscale:S`, each one
 times S, `mvconst:DX:DY`, one vector everywhere in work texels, `mvzero`, zeros handed the way the
-estimate is, `mvallpasses`, every pass handed the vectors in the shared mode, and `noestimator`, no
-motion estimator.
+estimate is, `mvallpasses`, every pass handed the vectors in the shared mode, `noestimator`, no
+motion estimator, and `noflow`, no optical flow unit, so that `--motion edges` runs as `card`.
 
-**The network's motion vectors in tests.** `--motion card` or `--motion none` takes the place of
-`NRMotionSource` in the loop, the self test and the sequence mode, and the lens never passes it. The
-self test makes no motion estimator, so with either it held its baselines byte for byte. `--motion-cases`
-prints, for a few scripted runs of frames, which renders hand the network the card's estimate and which
-zeros, and leaves.
+With `--motion edges` three more words of `--sequence-dump` write the cut's steps. `flow` writes the
+unit's flow for each source after the first as `flow-N.npy`, float32, cells down by cells across by 2, in
+pixels of the estimator's picture, `luma` the luma the unit was given as `luma-N.npy`, uint8, the
+estimator's picture padded to multiples of 8, and `zones` the zone as `zone-N.npy`, bool, at the work
+size, with a line for each giving the marked texels inside the interior, the guard's limit, whether the
+guard emptied the zone and the zone's texels. `--flow-luma-file DIR` gives the unit `DIR\luma-N.npy` in
+place of its own luma, as `luma` writes it, and fails the run on a missing or wrong file. The first line
+then gives the flow's size and cells, or why there is no unit, a source's line says
+`card, edges cut, zone Z texels` or `card (guarded)`, the cost line adds the unit's time with its copy in,
+its run and its copy out, the luma, the zone and the cut, medians over the frames, and the last line counts
+the sources handed the estimate with the edges cut.
+
+**The network's motion vectors in tests.** `--motion card`, `--motion edges` or `--motion none` takes the
+place of `NRMotionSource` in the loop, the self test and the sequence mode, and the lens never passes it.
+The self test makes no motion estimator, so with each of them it held its baselines byte for byte.
+`--motion-cases` prints, for a few scripted runs of frames, which renders hand the network the card's
+estimate, which the estimate with the edges cut under `--motion edges` and which zeros, and leaves.
+`lens-fast.exe --flow-info` prints what the engine finds of the card's optical flow unit for the monitor
+under `--at` and `--size`, or for the main monitor, and leaves with 0 where the unit can be used and 2
+where not. It gives the layer filter, the loader, the modules the Vulkan setup brought in with their
+paths, the devices, the queue, the unit's properties, the answers about sharing, two blank frames through
+the unit and a session at 2560x1440 and at 3072x1280.
 
 ### What is not measured
 
@@ -1939,6 +2191,12 @@ zeros, and leaves.
   on screen, under a game that keeps the card busy, where the conversion for the estimator is one
   more job on the card, with more than two passes, over a cut on screen, and the video engine's own
   power apart from the card's.
+- **The cut at moving edges beyond the test sequences and backdrops.** Edges cut was measured on
+  sequences made from one still at 2560x1440 and on screen over a moving square and scrolling noise,
+  with the large network at one pass, not over a game or by eye. How often a game frame goes over the
+  guard, a cut on scrolling text, the zones over the scrolling noise, HDR beyond one 16-bit sequence,
+  the small FP8 network, other guards, widths and steps, other sizes, other cards and the unit beside a
+  game were not measured, see The cut at moving edges.
 
 ## Global hotkeys
 
@@ -2900,9 +3158,9 @@ and again within a second of a change.
 
 The setup writes the proxy's own ini with four changes. It sets `EnableProxy = 0`, since the lens
 decides, and `EnableHotkeys = 0`, since its hotkeys are polled globally and a desktop program must
-not answer Ctrl+Alt+PageUp in every window. It also sets `EnableDepthAwareResolve = 0`, which
-works from the depth the Feed synthesises and was off for every measurement below, and
-`EnableGovernor = 0`, its default.
+not answer Ctrl+Alt+PageUp in every window. It also sets `EnableDepthAwareResolve = 0`, off for
+every measurement below, whose resolve works from the depth the Feed hands on, ReShade's depth
+buffer, flat in the presenter, and `EnableGovernor = 0`, its default.
 
 The fast engine calls the model through the proxy as well, with the proxy switched off by an ini
 of its own, and does the scaling itself, see The fast engine. Everything below is the proxy under
@@ -4284,9 +4542,9 @@ different case or an older build. VORT is fetched as well and can be chosen inst
 ## Settings
 
 Each setting in the dialog is one short label, and one helper, `Hints`, gives what a setting does
-for the whole dialog. An explanation says what its setting does and no more. It names no card and
-gives no watts, milliseconds or frame rates, and the measurements behind the settings are in the
-README and in this file.
+for the whole dialog. An explanation says what its setting does and when to use it, and no more. It
+names no card and gives no watts, milliseconds or frame rates, and the measurements behind the
+settings are in the README and in this file.
 
 In each theme Settings is drawn as the theme's design draws it, see [Looks and
 themes](#looks-and-themes). Slate, Graphite and Paper list the pages on a rail down the left, and

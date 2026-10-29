@@ -8,16 +8,23 @@
 // Where the motion vectors the model is handed come from, NRMotionSource in the same section:
 // the fast engine's own key, like NRKeepBlacks, which neither build of the add-on reads. A
 // number, as the section's other choices are: a value with a fraction is cut to a whole number
-// (0.9 is 0), and anything but these two, or no number at all, is the default.
+// (0.9 is 0), and anything but these three, or no number at all, is the default.
 constexpr int kMotionNone = 0;  // zero vectors, which is what the engine handed the model before
 constexpr int kMotionCard = 1;  // the card's own motion estimate, see framegen.h and model_motion.h
-// Card is the default. It gives the fast engine's network motion vectors, as the Feed gives the
-// ReShade engine's in a window, and brings a moving picture nearer the network's own picture at
-// rest. None hands it zero vectors, as every version before 0.9.1 did, for a picture where the
-// card's estimate softens fine detail in motion, marks the edges of things that move against
-// their background or, where the work size is much smaller than the picture, boils more. See
-// docs/NOTES.md, Motion vectors for the network. The lens's LOOK_DEFAULTS says the same.
-constexpr int kMotionSourceDefault = kMotionCard;
+// Edges cut, the card's estimate with the motion left out within 16 work texels of the edges
+// where the card's optical flow steps, see flow.h, edges.h and docs/NOTES.md, The cut at moving
+// edges. On a card without an optical flow unit the engine can use it runs as Card
+constexpr int kMotionCardEdges = 2;
+// None is the default, so the network is handed zero vectors, as every version before 0.9.1
+// handed it, until Card or Edges cut is chosen on the Look page. The card's estimate brings a
+// moving picture nearer the network's own picture at rest but softens fine detail in motion
+// and, where the work size is much smaller than the picture, boils more, and Card marks the
+// edges of things that move against their background, where Edges cut leaves the motion out.
+// See docs/NOTES.md, Motion vectors for the network and The cut at moving edges. The lens's
+// LOOK_DEFAULTS says the same.
+constexpr int kMotionSourceDefault = kMotionNone;
+// Whether the network is handed the card's motion estimate, as Card and Edges cut both do.
+inline bool takes_card_estimate(int source) { return source == kMotionCard || source == kMotionCardEdges; }
 
 struct NrLook {
   float tone = 1.0f;             // NRLookTone, 0 to 2: the broad band's gain
@@ -39,7 +46,7 @@ struct NrLook {
                                  // (composite_ps.hlsl), since the model lifts such pixels by a
                                  // level or two and nothing else there. Read always, like
                                  // detail stability
-  int motion_source = kMotionSourceDefault;  // NRMotionSource: kMotionNone or kMotionCard, see above.
+  int motion_source = kMotionSourceDefault;  // NRMotionSource: kMotionNone, kMotionCard or kMotionCardEdges, see above.
                                  // Not the stage's own work either: it is what the network
                                  // itself is told of the motion, so none of the four tests
                                  // below looks at it and look= on the stats line does not change with

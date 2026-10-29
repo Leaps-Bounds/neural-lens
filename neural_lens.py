@@ -654,8 +654,8 @@ def _home_addon_named(word):
 HOME_ADDON = _home_addon_named(_INI.get("addon"))
 HOME_ADDON_LABEL = "Home menu add-on"
 HOME_ADDON_BESIDE = "a change restarts the ReShade engine"
-HOME_ADDON_WHY = ("Which build of the add-on the ReShade engine runs, with its own Home menu. Settings both "
-                  "builds have carry over.")
+HOME_ADDON_WHY = ("Which version of the Home menu add-on the ReShade engine runs. Settings both versions have "
+                  "carry over.")
 HOME_ADDON_CHOICES = (
     ("5.2.1", "5.2.1", "The default."),
     ("8.5", "8.5.0-rc10", "More settings, a release candidate and the last public build. It shows its own "
@@ -1141,9 +1141,8 @@ SHARED_KEY = "SharedNetwork"
 SHARED_LABEL = "Runs through pass 1's network"
 SHARED_FOLLOW_NOTE = "follows pass 2"
 SHARED_FAILED_NOTE = "not in effect, the fast engine could not make its network again"
-SHARED_WHY = ("This pass runs through pass 1's network, with its history, instead of a network of its own. The "
-              "change comes out stronger. Passes 3 and 4 do the same.")
-SHARED_FOLLOW_WHY = "This pass runs through pass 1's network when pass 2 does, as set on the tab of pass 2."
+SHARED_WHY = "Turn it on for a stronger change than separate passes give. Passes 3 and 4 do the same."
+SHARED_FOLLOW_WHY = "This pass follows pass 2. Set it on the tab of pass 2."
 # The other two keys of the lens's section that are not a pass's value: the
 # strength, the lens's own scaling of the network's change. The network itself
 # does no more above an intensity of 1, on either engine, so an intensity above
@@ -1165,9 +1164,8 @@ STRENGTH_KEY = "Strength"
 STRENGTH_SWITCH_LABEL = "Scale the change"
 STRENGTH_LABEL = "Strength"
 STRENGTH_LEAST, STRENGTH_MOST = 1.0, 2.0
-STRENGTH_SWITCH_WHY = ("Multiplies the change the network makes, all passes together, by the strength below, "
-                       "which shows while this is on. The network itself does no more above an intensity of 1.")
-STRENGTH_WHY = "How many times the network's change the picture gets, from 1, the change as the network made it, to 2."
+STRENGTH_SWITCH_WHY = "Turn it on for a stronger picture than Intensity can give, then set Strength below."
+STRENGTH_WHY = "How many times stronger the change gets, from 1, as Neural Rendering made it, to 2."
 
 
 def _shared_on(own=None):
@@ -1647,7 +1645,7 @@ def _write_proxy(enabled, scale):
 # process's id, so two lenses at once, one per monitor say, never pick up each
 # other's presenter.
 TITLE = "LensNR %d" % os.getpid()
-__version__ = "0.9.1"        # beta; see CHANGELOG.md
+__version__ = "0.9.2"        # beta; see CHANGELOG.md
 
 DATA_DIR = (os.environ.get("NEURAL_LENS_DATA") or _INI.get("data_dir")
             or os.path.join(_script_dir(), "data"))
@@ -2237,11 +2235,11 @@ FRAMEGEN = str(_INI.get("framegen", "off")).strip().lower()
 if FRAMEGEN not in FRAMEGEN_MODES:
     FRAMEGEN = "off"
 FRAMEGEN_LABEL = "Frame generation"
-FRAMEGEN_WHY = "Pictures made between a program's frames, up to twice its rate."
+FRAMEGEN_WHY = "Extra pictures between a program's frames, for smoother motion when it runs slower than the screen."
 FRAMEGEN_CHOICES = (
     ("off", "Off", "None made."),
-    ("ahead", "Ahead", "The last frame carried half a frame on. No delay."),
-    ("between", "Between", "Halfway between the last two frames. Half a frame late."),
+    ("ahead", "Ahead", "Guesses ahead from the last frame, with no delay."),
+    ("between", "Between", "Fills in between the last two frames, so each frame shows a little later."),
 )
 FRAMEGEN_NONE_WHY = ("This card has no motion estimator the fast engine can use, so it makes no pictures between "
                      "frames.")
@@ -2274,13 +2272,13 @@ FAST_QUALITY_NAMES = ("Lowest power", "Low power", "Performance", "Balanced", "Q
 FAST_QUALITY_FULL = 5
 # What the step does, for Settings and the NR settings panel, in two short
 # sentences that fit the smallest part either shows them in with a line to
-# spare. Like every text in Settings it says what the setting does and no more:
+# spare. Like every text in Settings it says what the setting does and when to use it, and no more:
 # the step a picture starts at, the sizes each step works at and what Full costs
 # on a large screen are in README.md, and the watts of each step and the
 # pictures it was measured over in docs/NOTES.md, Frames a second and power at
 # each step.
-FAST_QUALITY_WORDS = ("A lower step runs the network on a smaller copy of the picture, which saves power and loses "
-                      "some fine detail. Full runs it at full size, the strongest change and the slowest run.")
+FAST_QUALITY_WORDS = ("A lower step saves power and loses some fine detail. Full gives the strongest change and "
+                      "runs slowest.")
 # Said on the notice when the fast engine answers a step the lens told it with
 # another step, see Lens.check_quality: the step asked for and the step it runs
 QUALITY_REFUSED_WORDS = "The fast engine could not run the %s step, so it runs at %s."
@@ -2362,11 +2360,10 @@ MODEL_LARGE, MODEL_SMALL = "1", "2"
 MODEL_NAMES = {MODEL_LARGE: "Large", MODEL_SMALL: "Small, FP8"}
 MODEL_SAID = {MODEL_LARGE: "the large network", MODEL_SMALL: "the small FP8 network"}
 MODEL_LABEL = "Model"
-MODEL_WHY = ("Which of the two networks in NVIDIA's model draws the picture. Large is the network every earlier model "
-             "ran, NVIDIA's preset A. Small is NVIDIA's newer network, preset B, with fewer weights at 8-bit "
-             "precision.")
-MODEL_ONE_WHY = ("The model in this stack holds the large network alone. On a card NVIDIA made the small FP8 network "
-                 "for, the stack setup fetches NVIDIA's own model, which holds both.")
+MODEL_WHY = ("Large is the default. Small is NVIDIA's newer, lighter version, which gives a similar picture for "
+             "less work on the card.")
+MODEL_ONE_WHY = ("Only Large is installed, so Small is greyed. On a card NVIDIA made Small for, the stack setup "
+                 "fetches a model with both.")
 # Settings says how a change applies as well, as its other explanations do
 MODEL_SETTINGS_WHY = MODEL_WHY + " On the ReShade engine a change restarts the picture."
 # what the on-screen readout's quality step adds while the small network runs,
@@ -2449,7 +2446,9 @@ def _profile_model(p):
 # they are, since the network lifts them by about a level, see docs/NOTES.md,
 # The Look stage. Above them, Motion vectors says what the network is told of
 # the picture's motion: Card hands it the card's own motion estimate, the one
-# frame generation uses, and None tells it that nothing moved, see
+# frame generation uses, Edges cut the same estimate with the motion left out
+# along the edges of things that move, see fast_engine\src\edges.h, and None
+# tells it that nothing moved, see
 # fast_engine\src\model_motion.h. The values are LOOK_KEYS, keys in the add-on's
 # section of ReShade.ini: the add-on's own, which the 8.5.0-rc10 build of the
 # Home menu add-on edits in a window and 5.2.1 leaves alone, and Keep blacks,
@@ -2470,10 +2469,13 @@ LOOK_KEYS = ("NRMotionSource", "NRDetailStability", "NRKeepBlacks", "NRLookMode"
 LOOK_STABILITY_KEY, LOOK_MODE_KEY, LOOK_STABILIZE_KEY = "NRDetailStability", "NRLookMode", "NRLookStabilize"
 LOOK_KEEP_KEY = "NRKeepBlacks"
 LOOK_MOTION_KEY = "NRMotionSource"
+# Edges cut's value, whose button alone is greyed where the engine cannot use
+# the card's optical flow unit, see edges_refused
+LOOK_MOTION_EDGES = "2"
 # the three choices, each value as the engine reads it and its name on the
 # panel. Auto and Always run the same filter in the fast engine, where nothing
 # is upscaled, and only the 8.5.0-rc10 build in a window tells them apart
-LOOK_MOTION_NAMES = {"1": "Card", "0": "None"}
+LOOK_MOTION_NAMES = {"1": "Card", LOOK_MOTION_EDGES: "Edges cut", "0": "None"}
 LOOK_STABILITY_NAMES = {"0": "Auto", "1": "Off", "2": "Always"}
 LOOK_STABILIZE_NAMES = {"0": "Off", "1": "In place", "2": "Along the motion"}
 LOOK_CHOICES = {LOOK_MOTION_KEY: LOOK_MOTION_NAMES, LOOK_STABILITY_KEY: LOOK_STABILITY_NAMES,
@@ -2500,7 +2502,7 @@ LOOK_LABELS = dict([(LOOK_MOTION_KEY, "Motion vectors"), (LOOK_STABILITY_KEY, "D
                    + [(s[0], s[1]) for s in LOOK_SLIDERS])
 # what the engine runs with a key missing, which the page shows then. Motion
 # vectors' is the engine's kMotionSourceDefault, see look_settings.h
-LOOK_DEFAULTS = dict([(LOOK_MOTION_KEY, "1"), (LOOK_STABILITY_KEY, "1"), (LOOK_KEEP_KEY, False),
+LOOK_DEFAULTS = dict([(LOOK_MOTION_KEY, "0"), (LOOK_STABILITY_KEY, "1"), (LOOK_KEEP_KEY, False),
                       (LOOK_MODE_KEY, False), (LOOK_STABILIZE_KEY, "0"), ("NRLookStabilizeDetail", False)]
                      + [(s[0], s[4]) for s in LOOK_SLIDERS])
 # the rows Adjust the look greys while it is off, every one after it, and of
@@ -2522,49 +2524,40 @@ LOOK_ARROW, LOOK_BACK_ARROW = "›", "‹"
 LOOK_LINE = "%s closes it, Escape goes back"
 LOOK_LINE_ESC = "Escape goes back"
 # What each row of the page does, as the panel's other rows have it, see
-# PANEL_WHY, what the setting does and no more. The engine's cost and what was
+# PANEL_WHY, what the setting does and when to use it, and no more. The engine's cost and what was
 # measured are in docs/NOTES.md, The Look stage, and for Motion vectors, Motion
 # vectors for the network.
-LOOK_ROW_WHY = ("Enter or a click opens the Look page, which can tell the network how the picture moves, steady "
-                "its change over frames, keep pure blacks black, or reshape the change. The words beside it say "
-                "what it does to the picture now.")
+LOOK_ROW_WHY = ("Enter or a click opens the Look page, which can follow how the picture moves, steady fine detail, "
+                "keep pure blacks black or fine-tune the picture. The words beside it say what it does now.")
 # Motion vectors' explanation where the engine that runs has said it cannot use
 # the card's motion estimator, see framegen_refused: the row is greyed then,
 # since the network is told that nothing moved whatever the row says, see
 # _panel_motion_look
-MOTION_NONE_WHY = ("This card has no motion estimator the fast engine can use, so the network is told that nothing "
-                   "moved.")
+MOTION_NONE_WHY = "This card has no motion estimator the fast engine can use, so Motion vectors runs as None."
+# Edges cut's own explanation where the engine that runs has said it cannot
+# use the card's optical flow unit, see edges_refused. Its button alone is
+# greyed then, since the engine hands the network the card's motion estimate
+# whole, as Card does, see _panel_motion_look
+EDGES_NONE_WHY = "This card has no optical flow unit the fast engine can use, so Edges cut runs as Card."
 LOOK_WHY = {
-    "NRMotionSource": "Tells the network how the picture moved since the last frame, so what it built up moves with "
-                      "the picture. Card takes the motion from the card's own motion estimator and can soften fine "
-                      "detail in motion. None tells it that nothing moved.",
-    "NRDetailStability": "Blends the network's change with that of the last few frames, following what moves, so "
-                         "fine detail holds still instead of shimmering. Auto and Always both turn it on, and "
-                         "Stabilize takes its place while on.",
-    "NRKeepBlacks": "Keeps pixels that are pure black as they are, since the network lifts them a little. All "
-                    "but the darkest shades stay as the network made them.",
-    "NRLookMode": "Turns on the settings below, which reshape the network's change. Off, they are greyed and do "
-                  "nothing.",
-    "NRLookTone": "Scales the broad part of the network's change, the light and shade it adds over larger areas.",
-    "NRLookDetail": "Scales the fine part of the network's change, the texture and small shapes it adds.",
-    "NRLookDetailRadius": "How large a shape can be and still count as fine, as a share of the picture's height. "
-                          "Tone and Detail split the change there.",
-    "NRLookHalo": "Takes back the dark rim the network can leave beside bright things, and leaves other darkening "
-                  "alone.",
-    "NRLookHaloBrightSide": "Takes back the soft dark band the network can leave on the bright side of dark "
-                            "things.",
-    "NRLookStabilize": "Evens out the broad part of the change from frame to frame. In place suits a still view, "
-                       "and Along the motion follows what moves. Either can make a change of light arrive a "
-                       "little late.",
-    "NRLookStabilizeMs": "How far back Stabilize looks, while it is on. Longer is calmer, and slower to show a "
-                         "change of light.",
-    "NRLookStabilizeDetail": "Has Stabilize even out the fine part of the change as well, while it is on.",
-    "NRLookMaxBrighten": "Limits how far the network may brighten any part of the picture, easing in near the "
-                         "limit. None sets no limit.",
-    "NRLookMaxDarken": "Limits how far the network may darken any part of the picture, easing in near the limit. "
-                       "None sets no limit.",
-    "NRLookMaxColour": "Limits how far the network may shift any colour, easing in near the limit. None sets no "
-                       "limit.",
+    "NRMotionSource": "Try it when moving things look noisy. Card softens fine detail in motion, and Edges cut "
+                      "also removes the outline Card can leave against the background.",
+    "NRDetailStability": "Calms fine detail that shimmers. Auto and Always both turn it on, and Stabilize takes its "
+                         "place while on.",
+    "NRKeepBlacks": "Keeps pure black from turning slightly grey, as on the black bars around a video.",
+    "NRLookMode": "Turns on the settings below, to fine-tune what Neural Rendering does to the picture.",
+    "NRLookTone": "How much light and shade Neural Rendering adds over larger areas.",
+    "NRLookDetail": "How much texture and small detail Neural Rendering adds.",
+    "NRLookDetailRadius": "How large a shape can be and still count as Detail, with Tone taking the rest.",
+    "NRLookHalo": "Raise it to take away a dark rim that can show beside bright things.",
+    "NRLookHaloBrightSide": "Raise it to take away a soft dark band that can show beside dark things.",
+    "NRLookStabilize": "Calms flicker in light and shade. In place suits a still view and Along the motion a moving "
+                       "one, and either can make a change of light show a little late.",
+    "NRLookStabilizeMs": "Longer is calmer, and slower to show a change of light.",
+    "NRLookStabilizeDetail": "Has Stabilize calm fine detail too.",
+    "NRLookMaxBrighten": "Limits how far Neural Rendering may brighten the picture. None sets no limit.",
+    "NRLookMaxDarken": "Limits how far Neural Rendering may darken the picture. None sets no limit.",
+    "NRLookMaxColour": "Limits how far Neural Rendering may shift colours. None sets no limit.",
     "back": "Enter or a click goes back to the panel's first page, as Escape does.",
 }
 
@@ -2730,24 +2723,23 @@ PANEL_ARROWS = "Use the arrow keys to pick and change a setting."
 PANEL_HELD = "The program in front holds the mouse. Free the mouse lets you use it here."
 PANEL_KEPT = "The program in front kept the mouse, so the keys are the way."
 PANEL_WHY = {
-    "profile": "The profile in use, with a star once the lens differs from it. A click, or Enter on the row, opens "
-               "the list that loads, saves and ties profiles.",
-    "auto": "With this on, each time the window of a program a profile is tied to comes to the front, the lens "
-            "loads that profile, unless it is the one in use, and says so.",
+    "profile": "The profile in use, with a star once a setting differs from it. Click it or press Enter to load, "
+               "save or tie profiles.",
+    "auto": "Loads the profile tied to a program whenever that program comes to the front, and says so.",
     "nr": "Neural Rendering on or off. Off shows what is under the lens as it is.",
     "tabs": "Which pass the values below show and set. Each pass runs on the result of the one before.",
-    "NRStyle": "The network's style for this pass. Default is the network's own choice.",
-    "NRIntensity": "How strongly the network changes the picture in this pass. At 0 it leaves the picture as it is. "
-                   "The network itself does no more above 1.",
-    "NRLocalTone": "The strength of the network's local tone in this pass.",
-    "NRLocalStructure": "The strength of the network's local structure in this pass.",
-    "NRSkinStructure": "The strength of the network's skin structure in this pass.",
-    "skin_auto": "The network chooses the skin structure for this pass itself.",
-    "NRAutoMask": "The network's auto mask for this pass, which finds the people in the picture.",
+    "NRStyle": "The look this pass gives the picture. Default leaves it to the model.",
+    "NRIntensity": "How strongly Neural Rendering changes the picture in this pass. It does no more above 1, so for "
+                   "a stronger picture turn on Scale the change.",
+    "NRLocalTone": "The strength of this pass's local tone.",
+    "NRLocalStructure": "The strength of this pass's local structure.",
+    "NRSkinStructure": "The strength of this pass's skin structure.",
+    "skin_auto": "The model chooses the skin structure for this pass itself.",
+    "NRAutoMask": "The model's auto mask for this pass, which finds the people in the picture.",
     "tie": "Ticked, this pass runs at the first pass's value, shown greyed. Unticked, the value is this pass's own.",
     "free": FREE_MOUSE_WHY,
-    "passes": "How many passes the network runs, each on the result of the one before, at the values of its own "
-              "tab. A change restarts the picture.",
+    "passes": "How many times Neural Rendering goes over the picture, each pass with the settings of its own tab. A "
+              "change restarts the picture.",
     "shared": SHARED_WHY,
     "scale_change": STRENGTH_SWITCH_WHY,
     "strength": STRENGTH_WHY,
@@ -4934,6 +4926,7 @@ class Lens:
         self.gen_frames = 0         # pictures the fast engine made between frames, see FRAMEGEN
         self.made_now = None        # of those, a second, as stats last worked it out, None for none
         self.framegen_refused = None    # why the engine that runs can make none, by its own word, see FRAMEGEN
+        self.edges_refused = None       # why it cannot use the card's optical flow unit, see EDGES_NONE_WHY
         self._made_hist = collections.deque(maxlen=3)
         self.idle_now = False       # and whether nothing under the lens has changed for a while
         self.exclusive = False      # a program in exclusive fullscreen, as last seen, see check_exclusive
@@ -5344,6 +5337,7 @@ class Lens:
                 ["--quality", str(self.quality_set)] if self.quality_set is not None else []) + (
                 ["--framegen", FRAMEGEN] if FRAMEGEN != "off" else [])
             self.framegen_refused = None        # the new engine says for itself, see FRAMEGEN
+            self.edges_refused = None           # and of the optical flow unit, see EDGES_NONE_WHY
             self.engine_quality, self.engine_asked = None, self.quality_set is not None
             # a step given at the start is answered by the ready line, which
             # names the step the engine runs, see check_quality
@@ -5659,6 +5653,14 @@ class Lens:
                 # at the next sync on the Tk thread, see _panel_framegen_look,
                 # since nothing is called from here, as for the engine's lines
                 self.framegen_refused = line[len("framegen unavailable"):].strip() or "no reason given"
+                print(line, flush=True)
+            elif line.startswith("edges unavailable"):
+                # the engine cannot use the card's optical flow unit, which it
+                # says once, with why, when Edges cut first wants the unit, and
+                # again should the unit stop in the middle of a run. Edges cut
+                # alone is greyed at the next sync on the Tk thread, see
+                # _panel_motion_look, as for the line above
+                self.edges_refused = line[len("edges unavailable"):].strip() or "no reason given"
                 print(line, flush=True)
             elif line.startswith("presenter ready") or line in ("paused", "resumed"):
                 if line.startswith("presenter ready"):
@@ -11459,13 +11461,15 @@ class Lens:
         """The Look page's rows live or greyed, the rows Adjust the look gates
         greyed while it is off and the two Stabilize alone uses while it is Off
         as well, Motion vectors greyed where the engine cannot use the card's
-        motion estimator, see _panel_motion_look, the numbers greyed with their
-        sliders, and the words beside the Look row on the first page, see
-        _look_state."""
+        motion estimator and its Edges cut alone where the engine cannot use
+        the card's optical flow unit, see _panel_motion_look, the numbers
+        greyed with their sliders, and the words beside the Look row on the
+        first page, see _look_state."""
         ui = self.panel_ui
         if self.panel is None or "look_word" not in ui:
             return
         v = self.panel_look
+        cut_off = getattr(self, "edges_refused", None) is not None
         try:
             for key in LOOK_KEYS:
                 live = key not in LOOK_GATED or (bool(v[LOOK_MODE_KEY]) and (
@@ -11476,8 +11480,9 @@ class Lens:
                 if key in LOOK_SWITCHES:
                     ui[key + " box"].config(state=state)
                 elif key in LOOK_CHOICES:
-                    for b in ui[key + " btns"]:
-                        b.config(state=state)
+                    for code, b in zip(LOOK_CHOICES[key], ui[key + " btns"]):
+                        greyed = cut_off and key == LOOK_MOTION_KEY and code == LOOK_MOTION_EDGES
+                        b.config(state="disabled" if greyed else state)
                     strip = ui.get(key + " row")
                     if hasattr(strip, "refresh"):
                         strip.refresh()         # a drawn look's strip, its edge greyed with its choices
@@ -11561,23 +11566,39 @@ class Lens:
         LOOK_WHY, or greyed and explained in every part by MOTION_NONE_WHY
         where the engine that runs has said it cannot use the card's motion
         estimator, see _motion_live, since the network is told then that
-        nothing moved, whatever the row says. load_panel and sync_panel call
-        it, so the engine's word shows within a second, and the row's parts
-        are set again only where it turned greyed or live."""
+        nothing moved, whatever the row says. Where the row is live and the
+        engine has said it cannot use the card's optical flow unit, see
+        edges_refused, Edges cut alone is greyed, since it runs as Card then,
+        and its button explained by EDGES_NONE_WHY, in a drawn look under its
+        own words, as the Frame generation row's choices are, see
+        lens_look.panel.Panel.explain_of. load_panel and sync_panel call it,
+        so the engine's word shows within a second, and the row's parts are
+        set again only where it turned greyed or live."""
         ui, key = self.panel_ui, LOOK_MOTION_KEY
         if self.panel is None or key + " btns" not in ui:
             return
         live = self._motion_live()
-        if ui.get("motion_live") == live:
+        cut = live and getattr(self, "edges_refused", None) is None
+        if ui.get("motion_live") == (live, cut):
             return
         turned = "motion_live" in ui
-        ui["motion_live"] = live
+        ui["motion_live"] = (live, cut)
         try:
             why = LOOK_WHY[key] if live else MOTION_NONE_WHY
             hints = self.panel.hints
+            look = getattr(self.panel, "look_panel", None)
             for part in [ui.get(key + " word"), ui.get(key + " row")] + list(ui.get(key + " btns", ())):
                 if part is not None:
                     hints.add(part, why)
+            for code, b in zip(LOOK_CHOICES[key], ui.get(key + " btns", ())):
+                if code != LOOK_MOTION_EDGES:
+                    continue
+                if live and not cut:
+                    hints.add(b, EDGES_NONE_WHY)
+                    if look is not None:
+                        look.titles[b] = LOOK_MOTION_NAMES[code]
+                elif look is not None:
+                    look.titles.pop(b, None)
             self._panel_look_show()
             n = self.panel_row
             if (turned and n is not None and n < len(self.panel_rows)
@@ -12334,12 +12355,18 @@ class Lens:
                 ui["model"].set(codes[i])
                 self._panel_model("keyboard")
         elif kind == "look_choice":
-            if str(ui[what + " btns"][0].cget("state")) == "disabled":
+            btns = ui[what + " btns"]
+            if all(str(b.cget("state")) == "disabled" for b in btns):
                 return                  # greyed while Adjust the look is off
             codes = list(LOOK_CHOICES[what])
             now = str(ui[what].get())
-            i = max(0, min(len(codes) - 1, (codes.index(now) if now in codes else 0) + d))
-            if codes[i] != now:
+            # the next choice that way, a greyed one stepped over, as Edges
+            # cut is where the engine cannot use the optical flow unit, and
+            # none past either end
+            i = (codes.index(now) if now in codes else 0) + d
+            while 0 <= i < len(codes) and str(btns[i].cget("state")) == "disabled":
+                i += d
+            if 0 <= i < len(codes) and codes[i] != now:
                 ui[what].set(codes[i])
                 self._panel_look_choice(what, "keyboard")
         elif kind == "look_slider":
@@ -13066,11 +13093,8 @@ class Lens:
             if code != MODEL_LARGE and not two:
                 b.config(state="disabled")
 
-        cs_what = ("The Cost Scaler runs the neural model on a smaller copy of the picture and blends the model's "
-                   "change back onto the full-size picture, so the card has less work to do.")
-        heading(pic, "The Cost Scaler",
-                cs_what + " The lens uses it only where the picture and its passes give the model enough work to "
-                          "gain from it.")
+        cs_what = "Saves the card work on the ReShade engine."
+        heading(pic, "The Cost Scaler", cs_what + " The lens uses it only where it helps.")
         if COST_SCALER == "manual":
             line(pic, "neural-lens.ini has cost_scaler = manual, so these two do nothing.",
                  "With cost_scaler = manual the lens leaves the Cost Scaler's own ini alone. Take that line "
@@ -13079,14 +13103,12 @@ class Lens:
         cs_always = tk.BooleanVar(value=COST_SCALER == "always")
         cs_full_btn = switch(
             pic, "Use the Cost Scaler for a fullscreen lens", cs_full,
-            "With this on, a fullscreen lens on the ReShade engine runs the model through the Cost Scaler wherever "
-            "the picture and its passes give the model enough work to gain from it."
-            + (" The fast engine does its own scaling and takes no notice of this switch." if eng_ok else "")
-            + " Applies straight away.")
+            "Saves the card work in a fullscreen lens on the ReShade engine."
+            + (" The fast engine saves work with its quality step instead." if eng_ok else ""))
         cs_always_btn = switch(
             pic, "Use the Cost Scaler for a windowed lens too", cs_always,
-            "A windowed lens gets the Cost Scaler as well, wherever the picture and its passes give the model "
-            "enough work to gain from it. This switch turns the one above on too. Applies straight away.")
+            "A windowed lens gets the Cost Scaler as well, to save the card work. This switch turns the one above "
+            "on too.")
         if COST_SCALER == "manual":
             cs_full_btn.config(state="disabled")
             cs_always_btn.config(state="disabled")
@@ -13106,10 +13128,9 @@ class Lens:
         md_var, md_opened = None, None
         if _drme_in_use():
             # what each detail costs is in docs/NOTES.md, Motion detail
-            md_why = ("How finely the lens works out motion between frames, which keeps moving content clean "
-                      "under the neural pass. Half and Quarter work on a smaller picture, which costs the card "
-                      "less, and fast-moving text then shows a faint double."
-                      + (" The fast engine does not use it, so its picture does not restart." if eng_ok else ""))
+            md_why = ("How finely the lens follows motion. Half and Quarter save power, but fast-moving text can then "
+                      "show a faint double."
+                      + (" The fast engine does not use it." if eng_ok else ""))
             heading(pic, "Motion detail", md_why, beside="a change restarts the picture")
             md_opened = self.motion_detail
             md_var = tk.StringVar(value=self.motion_detail)
@@ -13137,8 +13158,8 @@ class Lens:
 
         # the warning of check_hdr, in the warning colour, where it applies as
         # the dialog opens, since the page is built once
-        hdr_why = ("When Windows HDR is on for the lens's monitor while the ReShade engine draws the picture, a "
-                   "warning says so and goes away by itself. Applies straight away.")
+        hdr_why = ("Warns when Windows HDR is on for the lens's monitor, which washes out the ReShade engine's "
+                   "picture.")
         heading(pic, "Windows HDR", hdr_why)
         if self.hdr_up:
             line(pic, self.hdr_words or HDR_SAID, hdr_why, WARN)
@@ -13151,19 +13172,16 @@ class Lens:
         # what a rest costs the first change after it, and what Ready mode costs,
         # is in docs/NOTES.md, The first frame after a rest, and The still screen
         # and the settle
-        ready_why = ("When nothing under the lens changes, the lens rests and the card runs cooler, and on some "
-                     "cards the first change after a rest is a little slower to show. Ready mode keeps the "
-                     "picture ready all the time, so that change is not held back, for a little more power. "
-                     "Applies straight away.")
+        ready_why = ("Turn it on if the first change after a still moment shows late. It keeps the picture ready, "
+                     "for a little more power.")
         heading(pwr, "Ready mode", ready_why)
         ready = tk.BooleanVar(value=self.ready)
         switch(pwr, "Keep the picture ready while nothing changes", ready, ready_why)
 
         # what a limit saves, and the latency it adds on the ReShade engine, is
         # in docs/NOTES.md, The frame rate limit
-        fps_why = ("At most this many new pictures a second, so the card does less work and draws less power. "
-                   "On the ReShade engine, which every windowed lens uses, a limit also makes the lens run "
-                   "further behind what is under it. Applies straight away.")
+        fps_why = ("At most this many new pictures a second, to save power. On the ReShade engine, which every "
+                   "windowed lens runs on, a limit also adds delay.")
         heading(pwr, "Frame rate limit", fps_why)
         fps_opened = self.max_fps
         fps_var = tk.IntVar(value=self.max_fps)
@@ -13204,23 +13222,21 @@ class Lens:
         # lens is, on the heading, and how it is reached, on the line of keys,
         # whose explanation is the note's other keys, at most four sentences
         keys_why = more
-        full_why = ("The picture alone over the whole monitor, with no title bar. Two rows at the bottom stay "
-                    "free, so notifications and a taskbar that hides itself still come up, and what the title "
-                    "bar would say shows at the top of the screen for a few seconds.")
+        full_why = ("The picture alone over the whole monitor, with no title bar. A thin strip at the bottom stays "
+                    "free, so notifications and a taskbar that hides itself still come up.")
         heading(ful, "A fullscreen lens", full_why)
         line(ful, "It has no title bar. " + keys, keys_why, FG)
         note_opened = self.fs_note
         note_on = tk.BooleanVar(value=note_opened)
         switch(ful, "Show a note on going fullscreen", note_on,
                "A short note each time the lens goes fullscreen, with the keys a fullscreen lens has. Its Don't "
-               "show this again switches this off. Applies the next time the lens goes fullscreen.")
+               "show this again switches this off.")
         # the warning of check_behind, which only the fast engine can give, since
         # only it measures the delay up to the screen
         behind_on = tk.BooleanVar(value=FS_BEHIND_WARN)
         switch(ful, "Warn when the lens falls behind", behind_on,
-               "When the lens's picture keeps running well behind the program in front, a warning at the top of "
-               "the screen says so, with what usually helps, and goes away by itself. It comes only while the "
-               "fast engine draws the picture. Applies straight away.")
+               "Warns when the lens's picture keeps running well behind the program in front, and says what "
+               "usually helps. It works only on the fast engine.")
         # Free the mouse, the same setting as the switch on the NR settings
         # panel, see FREE_MOUSE
         free_on = tk.BooleanVar(value=FREE_MOUSE)
@@ -13273,8 +13289,8 @@ class Lens:
         # four corners on the next, which keeps the page no taller than it must be.
         # Its key, as it is set, see toggle_readout
         ro_key = self.key_for("readout_toggle")
-        ro_why = ("A line of figures in a corner of the screen while the lens is fullscreen, with at least one of "
-                  "these on. %s It stays out of the picture and lets every click through. Applies straight away."
+        ro_why = ("A line of figures in a corner of the screen while the lens is fullscreen, showing the ones "
+                  "ticked below. %s Clicks go through it."
                   % ("%s shows or hides it." % ro_key if ro_key
                      else "A key set on the Hotkeys page can show or hide it."))
         heading(ful, "On-screen readout in fullscreen", ro_why)
@@ -13318,28 +13334,22 @@ class Lens:
         bar = page("Title bar")
 
         heading(bar, "What to show on the title bar",
-                "What the title bar of a windowed lens shows beside its buttons. All of these apply straight "
-                "away. A fullscreen lens has no title bar. Its menu shows the size, the frame rate and the "
-                "latency instead, and the Fullscreen page can put figures on the screen.")
+                "What the title bar of a windowed lens shows. A fullscreen lens shows the size, the frame rate and "
+                "the latency in its menu instead, and the Fullscreen page can put figures on the screen.")
         size_on = tk.BooleanVar(value=self.show_size)
         switch(bar, "Lens size", size_on, "The picture's width and height in pixels.")
         fps_on = tk.BooleanVar(value=self.readout in ("fps", "both"))
         switch(bar, "Frame rate", fps_on,
-               "How many new pictures a second the lens shows, which follows the content under it up to the "
-               "frame rate limit, averaged over the last few seconds. When nothing moves it reads idle, on the "
-               "title bar or in a fullscreen lens's menu, and the picture stays the neural rendering of the last "
-               "frame.")
+               "How many new pictures a second the lens shows, which follows what is under it. It reads idle while "
+               "nothing moves.")
         latency = tk.BooleanVar(value=self.latency_on)
         switch(bar, "Latency", latency, "How far the lens's picture runs behind what is under it.")
         style_on = tk.BooleanVar(value=self.show_style)
         switch(bar, "NR style", style_on,
-               "The Home menu's style, Default, Natural or Cinematic, as a picker on the title bar. Picking "
-               "one there restarts the picture, because the add-on reads its settings only when it starts. A "
-               "change made in the Home menu shows on the bar too.")
+               "Puts the Home menu's style on the title bar as a picker. Picking one there restarts the picture.")
         inten_on = tk.BooleanVar(value=self.show_intensity)
         switch(bar, "Overall intensity", inten_on,
-               "The Home menu's intensity, shown only. A change made in the Home menu shows on the bar too. It "
-               "is changed in the Home menu, where the picture follows it live.")
+               "Shows the Home menu's intensity on the title bar. Change it in the Home menu.")
 
         # ================================================================ profiles
         prof = page("Profiles")
@@ -13568,9 +13578,8 @@ class Lens:
         ties = tk.Frame(side, bg=BG)
         ties.pack(anchor="w", pady=(6, 0))
         tie_btn = act(ties, "Tie to the program last in front", tie_front,
-                      "Ties the profile chosen in the list to the program whose window was in front before this "
-                      "dialog, by that window's title and class. With the switch below on, the lens loads the "
-                      "profile when that program comes to the front.",
+                      "Ties the profile chosen in the list to the program named below. With the switch below on, "
+                      "the lens loads the profile whenever that program comes to the front.",
                       side="left", padx=(0, 6))
         act(ties, "Untie", untie, "Takes the tie to a program off the profile chosen in the list.", side="left")
         if not front:
@@ -13586,9 +13595,8 @@ class Lens:
         auto_opened = bool(AUTO_PROFILE)     # as the dialog opened, see save
         auto_var = tk.BooleanVar(value=auto_opened)
         auto_btn = switch(prof, "Load the profile tied to the program in front", auto_var,
-                          "With this on, each time the window of a program a profile is tied to comes to the front, "
-                          "the lens loads that profile, unless it is the one in use, and says so. The program is known "
-                          "by its window's title and class. Applies straight away.")
+                          "Loads the profile tied to a program whenever that program comes to the front, and says "
+                          "so.")
 
         def tie_note(*_):
             # the switch on with no profile tied, so it would load nothing, said beside it

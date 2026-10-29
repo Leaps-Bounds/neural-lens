@@ -1,6 +1,6 @@
 # DLSS 5 Neural Lens
 
-**Beta, version 0.9.1.** See [CHANGELOG.md](CHANGELOG.md). While the version starts with 0,
+**Beta, version 0.9.2.** See [CHANGELOG.md](CHANGELOG.md). While the version starts with 0,
 settings, the state file format and behaviour may change between releases.
 
 A floating see-through window for Windows. Drag it over anything on your desktop and the
@@ -60,6 +60,10 @@ with the picture alone, drawn by a second engine of the lens's own that is made 
   for the GeForce RTX 50 series and RTX Spark laptops, and the setup fetches NVIDIA's own model,
   which holds it, only for a card of compute capability 12.0 or higher, see [The Neural Rendering
   model](#the-neural-rendering-model).
+- For Edges cut, a choice of Motion vectors on the Look page, a card whose driver offers its
+  optical flow unit through Vulkan, as the RTX 5090 it was tested on does. On any other card the
+  fast engine hands the network the card's motion estimate whole, as Card does, and the lens greys
+  the choice once the engine has said so.
 - Room on disk for about 400 MB once the stack is in place, of which about 150 MB is downloaded
   during installation. On an RTX 50 card, which gets NVIDIA's own model, the stack comes to about
   500 MB, of which about 390 MB is downloaded, and installing it takes about 900 MB for a while.
@@ -197,8 +201,9 @@ fetches each piece from the project that publishes it, see [Install](#install), 
 |---|---|---|
 | `lens-presenter.exe` | captures the screen under the lens and presents it in a Vulkan window of its own | this repository |
 | `lens-fast.exe` | draws a fullscreen lens, capturing the screen on the graphics card and calling the Neural Rendering model directly | this repository |
+| `vulkan-1.dll` | the graphics driver's Vulkan loader, through which the fast engine reaches the card's optical flow unit for Edges cut | the graphics driver |
 | ReShade, installed as its Vulkan layer | hosts the two add-ons below inside the presenter | reshade.me |
-| `dlss5-feed.addon64` | synthesises the inputs DLSS expects, such as depth and motion vectors, for content that has none of its own | its own project |
+| `dlss5-feed.addon64` | makes the motion vectors DLSS expects from the picture, for content that has none of its own, and hands on ReShade's depth buffer, which is flat in the presenter | its own project |
 | `renodx-dlss5.addon64` | performs the neural rendering pass | its own project |
 | `nvngx_dlss.dll` | NVIDIA's DLSS runtime | NVIDIA |
 | `nvngx_dlssnr_real.dll` | NVIDIA's Neural Rendering model | NVIDIA |
@@ -211,10 +216,12 @@ Scaler's `nvngx_dlssnr.dll` with the Cost Scaler's own scaling switched off, and
 itself. See [The fast engine](#the-fast-engine).
 
 What it shows is what Neural Rendering does to this image. A game hands DLSS depth and motion
-vectors from its engine. Here the Feed synthesises them from the picture alone. The fast engine
-hands the model no depth, and the card's own estimate of the motion as motion vectors unless its
-Look page is set to None. So the lens is a preview of how the model treats the material, edges
-and fine detail in front of it, not of what an asset will look like in an engine with DLSS on.
+vectors from its engine. Here the Feed makes the motion vectors from the picture alone and hands
+on ReShade's depth buffer, which is flat in the presenter. The fast engine hands the model no
+depth, and no motion vectors unless its Look page is set to hand it the card's own estimate of the
+motion, as Card, or that estimate with the motion left out along the edges of moving things, as
+Edges cut. So the lens is a preview of how the model treats the material, edges and fine detail in
+front of it, not of what an asset will look like in an engine with DLSS on.
 
 ### The Neural Rendering model
 
@@ -744,11 +751,11 @@ the original at full size, plus what the model changed, is drawn straight into t
 ```
 
 Its window is click-through, always on top and out of the capture, like the presenter's. No
-ReShade and no add-on run in it. The model gets the picture with no depth, and with the card's
-own motion estimate as its motion vectors unless the Look page's Motion vectors is set to None,
-see Motion vectors below. Its settings are the add-on's own values in `ReShade.ini`, with the
-values each pass has of its own, see [Multiple passes](#multiple-passes). The lens's NR settings
-panel writes both.
+ReShade and no add-on run in it. The model gets the picture with no depth, and with no motion
+vectors unless the Look page's Motion vectors is set to Card, the card's own motion estimate, or to
+Edges cut, which leaves that motion out along the edges of moving things, see Motion vectors
+below. Its settings are the add-on's own values in `ReShade.ini`, with the values each pass has of
+its own, see [Multiple passes](#multiple-passes). The lens's NR settings panel writes both.
 
 Measured on an RTX 5090 with a 6144x2560 display at 120 Hz and a second monitor at 1920x1080 and
 60 Hz connected, fullscreen at 6144x2558 with one pass over a white square moving across noise.
@@ -884,8 +891,8 @@ with each new frame. `framegen` in the ini holds the choice.
 
 **The Look page.** The fast engine can tell the network how the picture moves, and can steady or
 reshape what the network changed before it draws the picture. Motion vectors, the page's first
-row, chooses what the network is told of the motion, Card or None, see Motion vectors below.
-Detail stability blends the network's change with that of the last few frames, following the
+row, chooses what the network is told of the motion, Card, Edges cut or None, see Motion vectors
+below. Detail stability blends the network's change with that of the last few frames, following the
 motion the card's motion estimator finds, so fine detail holds still in motion instead of
 shimmering. With Adjust the look on, Tone and Detail scale the broad and the fine part of
 the change, which Detail radius splits by size, Halo and Halo beside dark things take back the dark
@@ -903,28 +910,30 @@ menu in a window, and 5.2.1 leaves them alone. That build writes Detail stabilit
 writes its keys, so once it has run in a window, a fullscreen lens has Detail stability on until
 the Look page sets it to Off. A profile carries the values with the rest of that section, and a
 profile saved before 0.9.0, which has none of them, loads with the look at its defaults, as one
-saved before 0.9.1 loads with Motion vectors at Card. The fast engine reads these thirteen keys
-and no other of the add-on's look keys: `NRDetailStability`, `NRLookMode`, `NRLookTone`,
-`NRLookDetail`, `NRLookDetailRadius`, `NRLookHalo`, `NRLookHaloBrightSide`, `NRLookStabilize`,
-`NRLookStabilizeMs`, `NRLookStabilizeDetail`, `NRLookMaxBrighten`, `NRLookMaxDarken` and
-`NRLookMaxColour`. Keep blacks is `NRKeepBlacks` and Motion vectors is `NRMotionSource` in the same
-section, the fast engine's own, which neither build of the add-on reads, and a profile and a
-switch of the build carry them with the rest. What the stage costs and what was measured is in
-[docs/NOTES.md](docs/NOTES.md), The Look stage.
+saved with no choice of Motion vectors, before 0.9.1 or in 0.9.1 at its default, loads with it at
+None. The fast engine reads these thirteen keys and no other of the add-on's look keys:
+`NRDetailStability`, `NRLookMode`, `NRLookTone`, `NRLookDetail`, `NRLookDetailRadius`,
+`NRLookHalo`, `NRLookHaloBrightSide`, `NRLookStabilize`, `NRLookStabilizeMs`,
+`NRLookStabilizeDetail`, `NRLookMaxBrighten`, `NRLookMaxDarken` and `NRLookMaxColour`. Keep blacks
+is `NRKeepBlacks` and Motion vectors is `NRMotionSource` in the same section, the fast engine's
+own, which neither build of the add-on reads, and a profile and a switch of the build carry them
+with the rest. What the stage costs and what was measured is in [docs/NOTES.md](docs/NOTES.md), The
+Look stage.
 
 **Motion vectors.** The network is temporal. Each picture it makes builds on the one it made
 before, which it reads where the motion vectors say each part of the picture was a frame earlier.
-Motion vectors, the first row of the Look page, chooses what the fast engine tells it. Card, the
-default, hands it the card's own motion estimate, the one frame generation and Detail stability
-follow, one vector for each block of 8 by 8 texels, given to every texel of the size the network
-works at. The estimate runs on the card's video engine for each new picture, and the network
-waits for it. None tells it that nothing moved, as every version before 0.9.1 did, so wherever
-the picture moves the network builds on the wrong part of its last picture. The network of a
-windowed lens has motion vectors from the Feed, and that of a fullscreen lens had none, which
-showed as noise on anything that moved, so Card gives the fast engine's network motion vectors
-too. On a card without a motion estimator the engine can use, the row is greyed and the network
-gets no motion vectors. `NRMotionSource` in the add-on's section of `ReShade.ini` holds the
-choice, 1 for Card and 0 for None.
+Motion vectors, the first row of the Look page, chooses what the fast engine tells it. None, the
+default, tells it that nothing moved, as every version before 0.9.1 did, so wherever the picture
+moves the network builds on the wrong part of its last picture. Card hands it the card's own
+motion estimate, the one frame generation and Detail stability follow, one vector for each block
+of 8 by 8 texels, given to every texel of the size the network works at. The estimate runs on the
+card's video engine for each new picture, and the network waits for it. Edges cut hands it the
+same estimate with the motion left out along the edges of things that move against their
+background, see below. The network of a windowed lens has motion vectors from the Feed. That of
+the fast engine has none under None, which shows as noise on anything that moves, and Card and
+Edges cut give it motion vectors too. On a card without a motion estimator the engine can use, the
+row is greyed and the network gets no motion vectors. `NRMotionSource` in the add-on's section of
+`ReShade.ini` holds the choice, 1 for Card, 2 for Edges cut and 0 for None.
 
 Measured on a test computer with an RTX 5090 over sequences made from a still at 2560x1440 with
 known motion, each picture held against the network's own picture of that frame at rest. With Card
@@ -945,6 +954,40 @@ and 4 to 9 W more, and over a moving square a quarter of its pictures came a ref
 2.6 to 4.0 percent did with None. At Full on that picture, where the network sets the rate, Card
 showed 49 new pictures a second against 60. What was measured is in
 [docs/NOTES.md](docs/NOTES.md), Motion vectors for the network.
+
+**Edges cut.** The card's estimate holds one vector for each block of 8 by 8 texels, which is the
+motion of a moving thing or that of its background and not both, so along the edge the network
+reads its last picture from the wrong place and leaves an outline. Edges cut finds those edges
+with the card's optical flow unit, which the fast engine reaches through Vulkan in its own
+process, with every Vulkan layer kept out of it. For each new picture the unit compares the luma
+of the frame with that of the frame before, at the size the motion estimator takes, and gives one
+vector for each block of 4 by 4 pixels. A block whose vector differs from a neighbouring block's
+by more than 2 pixels across or down marks an edge, and the network is told that nothing moved
+within 16 texels, at the size it works at, of every such edge. A frame where more than 4 percent
+of the picture marks an edge gets the card's estimate whole, as every frame of scrolling text did
+in the measurements below. Frame generation and Detail stability follow the card's estimate as
+before. On a card or driver whose optical flow unit the engine cannot use, Edges cut runs as Card
+and the lens greys it.
+
+Measured on a test computer with an RTX 5090 over sequences of the same set, at the Quality step
+and with the network on a copy at 1066x504, with the large network at one pass. Round a flat and
+a textured square moving across a pan and round still panels over a pan, every figure of the 8 px
+along the edge where Card was worse than None came back to None's, within 3 percent or the
+network's own unrest at rest, with the error over the frame from 4.53 percent below to 7.79
+percent above Card's, the fine detail 0.05 to 0.71 percent above it and the boiling from 3.33
+percent below to 1.21 percent above it. On pans, a zoom and scrolling text the error stayed from
+1.75 percent below to 1.21 percent above Card's, the fine detail within 0.15 percent of it and the
+boiling from 0.71 percent below to 0.74 percent above, and on the scrolling text every frame after
+the first went over the 4 percent and got Card's estimate whole. The optical flow unit took 1.4 ms
+for each new picture at 2560x1440 and 1.4 to 1.6 ms at 3072x1280, the size the estimator takes a
+6144x2560 picture at, beside the estimate's 2.0 to 2.5 ms on the video engine, and the luma, the
+edges and the cut 0.14 to 0.24 ms on the shader cores. Live at 6144x2560 at Balanced, Edges cut
+showed as many new pictures a second as Card, 116 over a moving square and 120 over scrolling
+noise at 120 steps a second, and drew 5 to 9 W more and held 231 MiB more video memory. Over the
+moving square 24 percent of its pictures came a refresh later, against 16 percent with Card, and
+at 60 steps a second, one row each, 8 percent against 41. Games, HDR and the small FP8 network
+were not measured with it. What was measured is in [docs/NOTES.md](docs/NOTES.md), The cut at
+moving edges.
 
 ### Multiple passes
 
@@ -1513,6 +1556,7 @@ ship inside the installer. Each keeps its own licence:
 | DLSSNR-Cost-Scaler, the proxy that runs the model at a fraction of the resolution | xenmods | MIT |
 | openNR, whose native adapter the fast engine's calls to the Neural Rendering runtime follow and in places adapt, which says that adapter comes from RenoDX, and whose licence text is installed as `licenses\OPENNR-LICENSE.txt` | Carlos Lopez Jr. | MIT |
 | C++/WinRT, the Windows Runtime headers the fast engine's capture is compiled with, whose licence text is installed as `licenses\CPPWINRT-LICENSE.txt` | Microsoft | MIT |
+| the Vulkan headers, which the fast engine is compiled with to reach the card's optical flow unit, whose licence text is installed as `licenses\VULKAN-HEADERS-LICENSE.txt` | The Khronos Group | Apache 2.0 or MIT |
 | RHI and its repository, which publish the DLSS manifest and host the add-on and runtimes | RankFTW | GPL-3.0 |
 | ReshadeMotionEstimation, the default motion vector estimator | Jakob Wapenhensch | CC BY-NC 4.0 |
 | vort_Shaders, the alternative estimator | Vortigern, its motion vector code after Jakob Wapenhensch and Pascal Gilcher | MIT, the motion vector code CC BY-NC 4.0, `vort_ACES.fxh` the ACES licence |
@@ -1548,7 +1592,9 @@ The lens itself, meaning everything in this repository apart from the third-part
 `licenses`, is licensed under the PolyForm Strict License 1.0.0. See [LICENSE](LICENSE). The
 character model in the two screenshots at the top is Hawtor Studio's and stays under its CC BY 4.0
 licence. The fonts in `assets\fonts` are their projects' own, named in the FONTS.txt beside them,
-and stay under the SIL Open Font License 1.1.
+and stay under the SIL Open Font License 1.1. The Vulkan headers in
+`fast_engine\third_party\vulkan` are The Khronos Group's, unchanged, and stay under their Apache
+2.0 or MIT licence, whose texts sit beside them.
 In `fast_engine\src\nr.cpp` the calls to the Neural Rendering runtime follow, and in
 places adapt, openNR's native adapter, and what is adapted stays under openNR's MIT licence, whose
 notice that file carries. Releases up to 0.5.1 were published under the GNU General Public

@@ -53,7 +53,10 @@ GLYPHS = {"left": (0xE76B, 0x2039), "right": (0xE76C, 0x203A), "check": (0xE73E,
 # first to the second). Each mix gives the drawn colour back to within a few
 # steps from the kind's own roles
 SHADES = {
-    "console": {},
+    # a greyed choice of a strip that is not the chosen one, whose words would
+    # otherwise be the muted words of a live one, a quarter of the way to the
+    # well, so it shows greyed beside them, see faces.segment_items
+    "console": {"greyed_text": ("muted", "well", 0.25)},
     "folio": {"greyed_line": ("muted", "surface", 0.48), "greyed_track": ("edge", "surface", 0.67),
               "greyed_fill": ("surface", "edge", 0.16), "rule_faint": ("surface", "rule", 0.6),
               "cap_on_ink_edge": ("raised", "on_raised", 0.4), "cap_on_ink_text": ("on_raised", "raised", 0.07)},
